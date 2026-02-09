@@ -31,6 +31,7 @@ import {
 } from "@june_zk/octopus-sdk";
 import { initPoseidon } from "@/lib/poseidon";
 import { NumberInput } from "@/components/NumberInput";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
@@ -178,25 +179,39 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       const selectableNotes: SelectableNote[] = unspentNotes.map((ownedNote: OwnedNote) => ({
         note: ownedNote.note,
         leafIndex: ownedNote.leafIndex,
-        pathElements: ownedNote.pathElements,
+        pathElements: [], // Will be fetched lazily
       }));
 
       const selectedNotes = selectNotesForTransfer(selectableNotes, amountInBigInt);
 
-      if (selectedNotes.some(n => !n.pathElements || n.pathElements.length === 0)) {
-        throw new Error("Selected notes missing Merkle proofs. Please refresh your notes.");
+      // 2. Fetch Merkle proofs lazily for selected notes
+      const merkleProofs = await fetchMerkleProofs(
+        keypair.spendingKey,
+        tokens![tokenIn].poolId,
+        selectedNotes.map((n) => n.leafIndex)
+      );
+
+      // Attach proofs to selected notes
+      const notesWithProofs = selectedNotes.map((n) => ({
+        ...n,
+        pathElements: merkleProofs.get(n.leafIndex)!,
+      }));
+
+      // Validate all notes have proofs
+      if (notesWithProofs.some((n) => !n.pathElements || n.pathElements.length === 0)) {
+        throw new Error("Failed to generate Merkle proofs for selected notes");
       }
 
-      // Mark selected notes as spent locally to prevent double-spending during proof generation
+      // 3. Mark selected notes as spent locally to prevent double-spending during proof generation
       const selectedOwnedNotes = unspentNotes.filter((ownedNote: OwnedNote) =>
-        selectedNotes.some(sn => sn.leafIndex === ownedNote.leafIndex)
+        notesWithProofs.some(sn => sn.leafIndex === ownedNote.leafIndex)
       );
       selectedOwnedNotes.forEach((ownedNote: OwnedNote) => {
         markNoteSpent?.(ownedNote.nullifier);
       });
 
-      // 2. Get token IDs from selected notes
-      const inputTokenId = selectedNotes[0].note.token;
+      // 4. Get token IDs from selected notes
+      const inputTokenId = notesWithProofs[0].note.token;
       // For output token, we use a simple hash for now (TODO: proper token registry)
       // For SUI->USDC swap, output should be USDC token ID
       // For now, we'll use a placeholder that matches the mock implementation
@@ -204,7 +219,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         ? poseidonHash([BigInt(0x3)]) // Mock USDC token ID
         : poseidonHash([BigInt(0x2)]); // SUI token ID
 
-      // 3. Build swap parameters
+      // 5. Build swap parameters
       const swapParams: SwapParams = {
         tokenIn: inputTokenId,
         tokenOut: outputTokenId,
@@ -214,7 +229,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         slippageBps: slippage,
       };
 
-      // 4. Create output note (swapped tokens for recipient - self)
+      // 6. Create output note (swapped tokens for recipient - self)
       const outputRandom = randomFieldElement();
       const outputNote = createNote(
         keypair.masterPublicKey,
@@ -223,8 +238,8 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         outputRandom
       );
 
-      // 5. Calculate change amount (remaining input tokens)
-      const totalInputValue = selectedNotes.reduce((sum, n) => sum + n.note.value, 0n);
+      // 7. Calculate change amount (remaining input tokens)
+      const totalInputValue = notesWithProofs.reduce((sum, n) => sum + n.note.value, 0n);
       const changeAmount = totalInputValue - amountInBigInt;
 
       const changeRandom = randomFieldElement();
@@ -235,21 +250,21 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         changeRandom
       );
 
-      // 6. Build swap input for proof generation
+      // 8. Build swap input for proof generation
       // Debug: Verify NSK derivation and Merkle proofs for each input note
       console.log("=== Swap Input Verification ===");
       const MERKLE_TREE_DEPTH = 16;
       const computedRoots: bigint[] = [];
 
-      for (let i = 0; i < selectedNotes.length; i++) {
-        const note = selectedNotes[i].note;
+      for (let i = 0; i < notesWithProofs.length; i++) {
+        const note = notesWithProofs[i].note;
         const expectedNSK = poseidonHash([keypair.masterPublicKey, note.random]);
         const matches = expectedNSK === note.nsk;
 
         // Compute Merkle root from this note's proof
         let root = note.commitment;
-        const leafIndex = BigInt(selectedNotes[i].leafIndex);
-        const pathElements = selectedNotes[i].pathElements!;
+        const leafIndex = BigInt(notesWithProofs[i].leafIndex);
+        const pathElements = notesWithProofs[i].pathElements!;
 
         for (let level = 0; level < MERKLE_TREE_DEPTH; level++) {
           const sibling = pathElements[level];
@@ -270,7 +285,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           random: note.random.toString(),
           expectedNSK: expectedNSK.toString(),
           nskMatches: matches,
-          leafIndex: selectedNotes[i].leafIndex,
+          leafIndex: notesWithProofs[i].leafIndex,
           commitment: note.commitment.toString(),
           merkleRoot: root.toString(),
         });
@@ -336,9 +351,9 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
       const swapInput: SwapInput = {
         keypair,
-        inputNotes: selectedNotes.map(n => n.note),
-        inputLeafIndices: selectedNotes.map(n => n.leafIndex),
-        inputPathElements: selectedNotes.map(n => n.pathElements!),
+        inputNotes: notesWithProofs.map(n => n.note),
+        inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
+        inputPathElements: notesWithProofs.map(n => n.pathElements!),
         swapParams,
         outputNSK: outputNote.nsk,
         outputRandom: outputNote.random,
@@ -348,21 +363,21 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         changeValue: changeNote.value,
       };
 
-      // 7. Generate ZK proof (30-60 seconds)
+      // 9. Generate ZK proof (30-60 seconds)
       const { proof, publicSignals } = await generateSwapProof(swapInput, {
         wasmPath: CIRCUIT_URLS.SWAP.WASM,
         zkeyPath: CIRCUIT_URLS.SWAP.ZKEY,
       });
 
-      // 8. Convert proof to Sui format
+      // 10. Convert proof to Sui format
       const suiProof = convertSwapProofToSui(proof, publicSignals);
 
-      // 9. Encrypt notes for recipient (self)
+      // 11. Encrypt notes for recipient (self)
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 10. Get DeepBook pool ID
+      // 12. Get DeepBook pool ID
       const poolKey = `${tokenIn}_${tokenOut}`;
       const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
 
@@ -370,7 +385,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         throw new Error(`DeepBook pool not found for ${poolKey}`);
       }
 
-      // 11. Build and execute transaction
+      // 13. Build and execute transaction
       const tx = buildSwapTransaction(
         packageId!,
         tokens![tokenIn].poolId,

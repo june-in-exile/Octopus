@@ -58,6 +58,7 @@ export default function Home() {
     loading: isLoadingNotes,
     error: notesError,
     refresh: refreshNotes,
+    forceFullRefresh: forceFullRefreshNotes,
     markNoteSpent,
     lastScanStats,
   } = useNotes(keypair, isLoading, tokenConfig?.poolId ?? "");
@@ -99,17 +100,14 @@ export default function Home() {
   const handleOperationSuccess = async () => {
     // Refresh notes and pool info from blockchain after successful operation
     // Add delay to allow blockchain events to be indexed
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    refreshNotes();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // Use forceFullRefresh to clear cache and do a full scan
+    // This ensures we query from the beginning and catch the new event
+    // even if the GraphQL indexer has a slight delay
+    forceFullRefreshNotes();
     refreshPoolInfo();
     refreshAllPoolCounts();
-
-    // Retry after another delay to ensure we catch the event
-    setTimeout(() => {
-      refreshNotes();
-      refreshPoolInfo();
-      refreshAllPoolCounts();
-    }, 3000);
   };
 
   return (

@@ -35,6 +35,7 @@ export {
   encryptNoteExplicit,
   encryptNote,
   decryptNote,
+  quickCheckNote,
 } from "./crypto.js";
 
 // DEX Integration (DeepBook price fetching - legacy Cetus exports deprecated)
@@ -54,7 +55,6 @@ export {
   estimateDeepBookSwap,
   getDeepBookPrice,
   getDeepBookPool,
-  DEEPBOOK_TESTNET_POOLS,
   type DeepBookPoolConfig,
 } from "./dex/deepbook.js";
 

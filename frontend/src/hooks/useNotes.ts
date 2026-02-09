@@ -7,6 +7,7 @@ import type { Note } from "@june_zk/octopus-sdk";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { bigIntToLE32 } from "@june_zk/octopus-sdk";
 import { getWorkerManager } from "@/lib/workerManager";
+import { generateCacheKey } from "@/lib/notesCache";
 
 /**
  * Owned note with metadata for selection and spending
@@ -97,6 +98,10 @@ export function useNotes(
   const currentPoolIdRef = useRef<string | null>(null);
   // Track if a scan is currently in progress to prevent concurrent scans
   const isScanningRef = useRef(false);
+  // Track previous refreshTrigger to detect manual refresh button clicks
+  const prevRefreshTrigger = useRef(refreshTrigger);
+  // Track whether next refresh should force full cache clear (used after operations)
+  const [shouldClearCache, setShouldClearCache] = useState(false);
 
   // Initialize localSpentSet from localStorage
   const [localSpentSet, setLocalSpentSet] = useState<Set<string>>(() => {
@@ -113,8 +118,14 @@ export function useNotes(
     setLocalSpentSet(loadSpentNullifiers(keypair.masterPublicKey));
   }, [keypair?.masterPublicKey]);
 
-  // Manual refresh function
+  // Manual refresh function (incremental scan with cache)
   const refresh = () => {
+    setRefreshTrigger((prev) => prev + 1);
+  };
+
+  // Force full refresh (clear cache, used after operations)
+  const forceFullRefresh = () => {
+    setShouldClearCache(true);
     setRefreshTrigger((prev) => prev + 1);
   };
 
@@ -215,6 +226,10 @@ export function useNotes(
     currentKeypairRef.current = keypair.masterPublicKey;
     currentPoolIdRef.current = poolId;
 
+    // Determine if this is a manual refresh button click
+    const isManualRefresh = refreshTrigger !== prevRefreshTrigger.current;
+    prevRefreshTrigger.current = refreshTrigger;
+
     let isCancelled = false;
 
     async function scanNotesWithWorker() {
@@ -234,6 +249,30 @@ export function useNotes(
 
       try {
         const worker = getWorkerManager();
+
+        // Determine if we should clear cache:
+        // 1. Page load or keypair change → always clear
+        // 2. Manual refresh with shouldClearCache flag → clear (e.g., after operations)
+        // 3. Regular manual refresh → incremental scan with cache
+        const needsCacheClear = !isManualRefresh || shouldClearCache;
+
+        if (needsCacheClear && keypair) {
+          const reason = !isManualRefresh
+            ? 'Page load or keypair change'
+            : 'Post-operation refresh (forced full scan)';
+          console.log(`[useNotes] ${reason} detected. Clearing cache for full scan...`);
+          const cacheKey = await generateCacheKey(keypair.spendingKey.toString());
+          if (poolId) {
+            await worker.clearCache(cacheKey, poolId);
+            console.log('[useNotes] Cache cleared successfully');
+          }
+          // Reset the flag after clearing
+          if (shouldClearCache) {
+            setShouldClearCache(false);
+          }
+        } else if (isManualRefresh) {
+          console.log('[useNotes] Manual refresh detected. Using cache for incremental scan...');
+        }
 
         // Scan notes using Worker (GraphQL + decrypt + Merkle tree in background)
         const result = await worker.scanNotes(
@@ -393,7 +432,7 @@ export function useNotes(
       // Reset scanning flag when effect is cleaned up
       isScanningRef.current = false;
     };
-  }, [keypair?.masterPublicKey, poolId, client, refreshTrigger, isInitializing]);
+  }, [keypair?.masterPublicKey, poolId, client, refreshTrigger, isInitializing, shouldClearCache, batchCheckNullifierStatus]);
 
   // Periodic reconciliation: re-check unspent notes to catch missed events
   useEffect(() => {
@@ -477,6 +516,7 @@ export function useNotes(
     loading,
     error,
     refresh,
+    forceFullRefresh, // Force full cache clear (use after operations)
     markNoteSpent,
     scanProgress, // Include progress in return value
     lastScanStats, // Include scan statistics

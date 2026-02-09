@@ -21,6 +21,7 @@ import type { TokenConfig } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { NumberInput } from "@/components/NumberInput";
 import { RecipientInput } from "@/components/RecipientInput";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface TransferFormProps {
   keypair: OctopusKeypair | null;
@@ -34,7 +35,7 @@ interface TransferFormProps {
 
 type TransferState =
   | "idle"
-  | "refreshing"
+  | "fetching-merkle-proofs"
   | "generating-proof"
   | "submitting"
   | "success"
@@ -83,16 +84,7 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       // - Pool deployed with transfer VK
       // ============================================
 
-      // 0. Refresh notes to get latest Merkle paths and spent status
-      setState("refreshing");
-      if (onRefresh) {
-        await onRefresh();
-        // Wait longer for notes to be refetched with latest on-chain state
-        // This prevents using stale notes that might have been spent
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-
-      // 1. Get unspent notes (after refresh to ensure we have latest on-chain status)
+      // 1. Get unspent notes
       const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
 
       if (unspentNotes.length === 0) {
@@ -104,22 +96,11 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       // 2. Select notes to cover amount
       const amountNano = BigInt(Math.floor(parseFloat(amount) * 10 ** tokenConfig.decimals));
 
-      // Extra safety check: Ensure we only use notes with Merkle proofs
-      const notesWithProofs = unspentNotes.filter(
-        (n) => n.pathElements && n.pathElements.length > 0
-      );
-
-      if (notesWithProofs.length === 0) {
-        setState("error");
-        setError("No notes with Merkle proofs available. Please refresh and try again.");
-        return;
-      }
-
       const selectedNotes = selectNotesForTransfer(
-        notesWithProofs.map((n) => ({
+        unspentNotes.map((n) => ({
           note: n.note,
           leafIndex: n.leafIndex,
-          pathElements: n.pathElements || [], // Merkle proof
+          pathElements: [], // Will be fetched lazily
         })),
         amountNano
       );
@@ -139,9 +120,28 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
         return ownedNote;
       });
 
-      // 3. Create output notes (recipient + change)
-      const inputTotal = selectedNotes.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
-      const noteToken = selectedNotes[0].note.token; // Use actual token from selected note
+      // 3. Fetch Merkle proofs lazily for selected notes
+      setState("fetching-merkle-proofs");
+      const merkleProofs = await fetchMerkleProofs(
+        keypair.spendingKey,
+        tokenConfig.poolId,
+        selectedNotes.map((n) => n.leafIndex)
+      );
+
+      // Attach proofs to selected notes
+      const notesWithProofs = selectedNotes.map((n) => ({
+        ...n,
+        pathElements: merkleProofs.get(n.leafIndex)!,
+      }));
+
+      // Validate all notes have proofs
+      if (notesWithProofs.some((n) => !n.pathElements || n.pathElements.length === 0)) {
+        throw new Error("Failed to generate Merkle proofs for selected notes");
+      }
+
+      // 4. Create output notes (recipient + change)
+      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
+      const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const [recipientNote, changeNote] = createTransferOutputs(
         recipientProfile.mpk,
         keypair.masterPublicKey,
@@ -150,28 +150,28 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
         noteToken
       );
 
-      // 4. Mark notes as spent BEFORE generating proof
+      // 5. Mark notes as spent BEFORE generating proof
       // This prevents the same notes from being selected again while proof is generating
       // Even if transaction fails later, the periodic on-chain reconciliation will fix the state
       selectedOwnedNotes.forEach((ownedNote) => {
         markNoteSpent?.(ownedNote.nullifier);
       });
 
-      // 5. Generate ZK proof (30-60 seconds)
+      // 6. Generate ZK proof (30-60 seconds)
       setState("generating-proof");
 
       const proof = await generateTransferProof(
         {
           keypair,
-          inputNotes: selectedNotes.map((n) => n.note),
-          inputLeafIndices: selectedNotes.map((n) => n.leafIndex),
-          inputPathElements: selectedNotes.map((n) => n.pathElements!),
+          inputNotes: notesWithProofs.map((n) => n.note),
+          inputLeafIndices: notesWithProofs.map((n) => n.leafIndex),
+          inputPathElements: notesWithProofs.map((n) => n.pathElements!),
           recipientMpk: recipientProfile.mpk,
           transferValue: amountNano,
           transferRandom: recipientNote.random,
           changeValue: inputTotal - amountNano,
           changeRandom: changeNote.random,
-          token: selectedNotes[0].note.token,
+          token: notesWithProofs[0].note.token,
         },
         {
           wasmPath: CIRCUIT_URLS.TRANSFER.WASM,
@@ -179,7 +179,7 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
         }
       );
 
-      // 6. Convert proof to Sui format
+      // 7. Convert proof to Sui format
       const suiProof = convertTransferProofToSui(proof.proof, proof.publicSignals);
 
       // 7. Encrypt output notes for recipients using viewing public keys
@@ -280,7 +280,7 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       </div>
 
       {/* Progress indicator */}
-      {(state === "refreshing" || state === "generating-proof" || state === "submitting") && (
+      {(state === "fetching-merkle-proofs" || state === "generating-proof" || state === "submitting") && (
         <div className="p-4 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
           <div className="flex items-center gap-3">
             <svg
@@ -304,18 +304,16 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
             </svg>
             <div>
               <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
-                {state === "refreshing"
-                  ? "Refreshing Notes..."
+                {state === "fetching-merkle-proofs"
+                  ? "Building Merkle Tree..."
                   : state === "generating-proof"
                     ? "Generating ZK Proof..."
                     : "Submitting Transaction..."}
               </p>
               <p className="text-[10px] text-gray-400 font-mono mt-0.5">
-                {state === "refreshing"
-                  ? "// Fetching latest Merkle proofs"
-                  : state === "generating-proof"
-                    ? "// Proof generation in progress (30-60s)"
-                    : "// Awaiting wallet confirmation"}
+                {state === "generating-proof"
+                  ? "// Proof generation in progress (30-60s)"
+                  : "// Awaiting wallet confirmation"}
               </p>
             </div>
           </div>

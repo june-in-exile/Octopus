@@ -62,8 +62,15 @@ export interface TokenConfig {
   poolId: string;
 }
 
-// DeepBook pool mappings (SUI/USDC pair - mainnet only)
+// DeepBook pool mappings (SUI/USDC pair - network-specific)
+const getDeepBookPoolId = () => {
+  if (NETWORK === "mainnet") {
+    return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
+  }
+  return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_USDC || "0x...";
+};
+
 export const DEEPBOOK_POOLS: Record<string, string> = {
-  SUI_USDC: process.env.NEXT_PUBLIC_DEEPBOOK_SUI_USDC || "0x...",
-  USDC_SUI: process.env.NEXT_PUBLIC_DEEPBOOK_SUI_USDC || "0x...", // Same pool, reverse direction
+  SUI_USDC: getDeepBookPoolId(),
+  USDC_SUI: getDeepBookPoolId(), // Same pool, reverse direction
 };

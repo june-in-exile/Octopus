@@ -116,11 +116,17 @@ export async function getDeepBookPrice(
 }
 
 /**
- * Known DeepBook testnet pools
+ * Known DeepBook pools (network-specific)
  *
  * Note: These need to be configured with actual pool IDs from testnet
  */
-export const DEEPBOOK_TESTNET_POOLS = {
-  /** SUI/USDC pool ID - needs to be configured */
-  SUI_USDC: process.env.NEXT_PUBLIC_DEEPBOOK_SUI_USDC || "0x...",
+export const DEEPBOOK_POOLS = {
+  mainnet: {
+    /** SUI/USDC pool ID - mainnet */
+    SUI_USDC: process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...",
+  },
+  testnet: {
+    /** SUI/USDC pool ID - testnet */
+    SUI_USDC: process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_USDC || "0x...",
+  },
 };

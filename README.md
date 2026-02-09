@@ -27,6 +27,17 @@ Octopus enables private token operations on Sui by implementing a UTXO-based pri
     2. total input amount = total output amount
 - **Swap**: Exchange tokens privately through integrated DEXs 🚧 **85% Complete** (DeepBook V3 Mainnet only)
 
+## Design & References
+
+Octopus builds upon proven privacy protocols while introducing innovations for the Sui ecosystem. The UTXO-based privacy pool design is inspired by **Tornado Cash** and **Zcash**, while the viewing key mechanism follows **Zcash's** selective disclosure model. Future milestones will incorporate relayer network patterns from **Railgun** and **Tornado Cash** (Milestone 3), and compliance features like **Railgun's Private Proofs of Innocence** (Milestone 4).
+
+**Key Innovations:**
+
+- **Sui Blockchain Integration**: First privacy protocol on Sui, leveraging Move language for on-chain proof verification
+- **Private DEX Swaps**: ZK circuit integration with DeepBook for privacy-preserving token exchanges
+- **Modern Cryptographic Stack**: ChaCha20-Poly1305 AEAD encryption with HKDF-SHA256 key derivation
+- **Automatic Change Handling**: Built-in change note creation in unshield operations to prevent fund loss
+
 ### Cryptographic Primitives
 
 ![Cryptographic Primitives Overview](frontend/public//technical.svg)

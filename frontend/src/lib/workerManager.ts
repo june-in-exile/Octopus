@@ -15,7 +15,11 @@ import type {
   ComputeNullifierResponse,
   BuildMerkleTreeResponse,
   GetMerkleProofResponse,
+  GetCommitmentsResponse,
+  ClearCacheResponse,
+  GetCacheInfoResponse,
 } from "@/workers/types";
+import { generateCacheKey } from "./notesCache";
 
 type PendingRequest = {
   resolve: (value: any) => void;
@@ -74,8 +78,11 @@ class NoteScanWorkerManager {
    * Handle messages from worker
    */
   private handleMessage(response: WorkerResponse): void {
+    console.log('[WorkerManager] Received message from worker:', response.type, 'id' in response ? response.id : 'N/A');
+
     switch (response.type) {
       case "init_complete": {
+        console.log('[WorkerManager] Worker initialization complete');
         const initRequest = this.pendingRequests.get("init");
         if (initRequest) {
           initRequest.resolve(true);
@@ -89,20 +96,29 @@ class NoteScanWorkerManager {
       case "batch_decrypt_result":
       case "compute_nullifier_result":
       case "build_merkle_tree_result":
-      case "get_merkle_proof_result": {
+      case "get_merkle_proof_result":
+      case "get_commitments_result":
+      case "clear_cache_result":
+      case "get_cache_info_result": {
+        console.log('[WorkerManager] Resolving request:', response.type, response.id);
         const request = this.pendingRequests.get(response.id);
         if (request) {
           request.resolve(response);
           this.pendingRequests.delete(response.id);
+        } else {
+          console.warn('[WorkerManager] No pending request found for:', response.id);
         }
         break;
       }
 
       case "error": {
+        console.error('[WorkerManager] Worker error:', response.error, response.id);
         const errorRequest = this.pendingRequests.get(response.id || "");
         if (errorRequest) {
           errorRequest.reject(new Error(response.error));
           this.pendingRequests.delete(response.id || "");
+        } else {
+          console.warn('[WorkerManager] No pending request found for error:', response.id);
         }
         break;
       }
@@ -136,18 +152,22 @@ class NoteScanWorkerManager {
     }) => void
   ): Promise<T> {
     if (!this.worker) {
+      console.error('[WorkerManager] sendRequest failed: Worker not initialized');
       return Promise.reject(new Error("Worker not initialized"));
     }
 
     const id = "id" in request ? request.id : "init";
+    console.log('[WorkerManager] sendRequest:', request.type, 'ID:', id);
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject, onProgress });
+      console.log('[WorkerManager] Posting message to worker:', request.type);
       this.worker!.postMessage(request);
 
       // Timeout after 90s (allows for 2x 30s GraphQL queries + processing time)
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
+          console.error('[WorkerManager] Request timed out after 90s:', request.type, id);
           this.pendingRequests.delete(id);
           reject(new Error("Request timeout after 90s"));
         }
@@ -184,7 +204,7 @@ class NoteScanWorkerManager {
     notes: Array<{
       note: SerializedNote;
       leafIndex: number;
-      pathElements: bigint[];
+      pathElements?: bigint[]; // OPTIONAL: generated lazily at transaction time
       nullifier: bigint;
       txDigest: string;
     }>;
@@ -210,7 +230,7 @@ class NoteScanWorkerManager {
     const processedNotes = response.notes.map((n) => ({
       note: n.note,
       leafIndex: n.leafIndex,
-      pathElements: n.pathElements.map((p) => BigInt(p)),
+      pathElements: n.pathElements?.map((p) => BigInt(p)),
       nullifier: BigInt(n.nullifier),
       txDigest: n.txDigest,
     }));
@@ -288,9 +308,11 @@ class NoteScanWorkerManager {
   async buildMerkleTree(
     commitments: Array<{ commitment: bigint; leafIndex: number }>
   ): Promise<string> {
+    console.log('[WorkerManager] buildMerkleTree called with', commitments.length, 'commitments');
     await this.initialize();
 
     const id = this.generateId();
+    console.log('[WorkerManager] Sending build_merkle_tree request:', id);
 
     const response = await this.sendRequest<BuildMerkleTreeResponse>({
       type: "build_merkle_tree",
@@ -301,6 +323,7 @@ class NoteScanWorkerManager {
       })),
     });
 
+    console.log('[WorkerManager] Tree built successfully. Tree ID:', response.treeId);
     return response.treeId;
   }
 
@@ -321,6 +344,121 @@ class NoteScanWorkerManager {
     });
 
     return response.pathElements.map((p) => BigInt(p));
+  }
+
+  /**
+   * Public API: Clear scan cache
+   * @param userKey - Optional user key (hash of spending key)
+   * @param poolId - Optional pool ID
+   */
+  async clearCache(userKey?: string, poolId?: string): Promise<boolean> {
+    await this.initialize();
+
+    const response = await this.sendRequest<ClearCacheResponse>({
+      type: "clear_cache",
+      id: this.generateId(),
+      userKey,
+      poolId,
+    });
+
+    return response.success;
+  }
+
+  /**
+   * Public API: Get cache info
+   * @param userKey - User key (hash of spending key)
+   * @param poolId - Pool ID
+   */
+  async getCacheInfo(
+    userKey: string,
+    poolId: string
+  ): Promise<{
+    cacheExists: boolean;
+    lastScanned?: number;
+    noteCount?: number;
+    totalNotesInPool?: number;
+  }> {
+    await this.initialize();
+
+    const response = await this.sendRequest<GetCacheInfoResponse>({
+      type: "get_cache_info",
+      id: this.generateId(),
+      userKey,
+      poolId,
+    });
+
+    return {
+      cacheExists: response.cacheExists,
+      lastScanned: response.lastScanned,
+      noteCount: response.noteCount,
+      totalNotesInPool: response.totalNotesInPool,
+    };
+  }
+
+  /**
+   * Public API: Get cached commitments (for lazy Merkle proof generation)
+   * @param userKey - User key (hash of spending key)
+   * @param poolId - Pool ID
+   */
+  async getCommitmentsFromCache(
+    userKey: string,
+    poolId: string
+  ): Promise<Array<{ commitment: bigint; leafIndex: number }>> {
+    console.log('[WorkerManager] getCommitmentsFromCache starting...', { userKey, poolId });
+    await this.initialize();
+
+    const requestId = this.generateId();
+    console.log('[WorkerManager] Sending get_commitments request:', requestId);
+
+    const response = await this.sendRequest<GetCommitmentsResponse>({
+      type: "get_commitments",
+      id: requestId,
+      userKey,
+      poolId,
+    });
+
+    console.log('[WorkerManager] Received commitments response:', response.commitments?.length ?? 0, 'commitments');
+
+    return response.commitments.map((c) => ({
+      commitment: BigInt(c.commitment),
+      leafIndex: c.leafIndex,
+    }));
+  }
+
+  /**
+   * Public API: Generate Merkle proofs on-demand for specific notes
+   * Called at transaction time, not during scanning
+   * @param leafIndices - Leaf indices of notes to generate proofs for
+   * @param commitments - All commitments for tree building
+   */
+  async generateMerkleProofs(
+    leafIndices: number[],
+    commitments: Array<{ commitment: bigint; leafIndex: number }>
+  ): Promise<Map<number, bigint[]>> {
+    console.log('[WorkerManager] generateMerkleProofs starting...', {
+      leafIndices,
+      commitmentsCount: commitments.length,
+    });
+    await this.initialize();
+
+    // Build tree
+    console.log('[WorkerManager] Building Merkle tree with', commitments.length, 'commitments...');
+    const startBuild = Date.now();
+    const treeId = await this.buildMerkleTree(commitments);
+    console.log('[WorkerManager] Tree built in', Date.now() - startBuild, 'ms. Tree ID:', treeId);
+
+    // Get proofs for requested leaves
+    console.log('[WorkerManager] Getting proofs for', leafIndices.length, 'leaves...');
+    const proofMap = new Map<number, bigint[]>();
+    for (const leafIndex of leafIndices) {
+      const startProof = Date.now();
+      const pathElements = await this.getMerkleProof(treeId, leafIndex);
+      console.log(`[WorkerManager] Proof for leaf ${leafIndex} generated in`, Date.now() - startProof, 'ms');
+      proofMap.set(leafIndex, pathElements);
+    }
+
+    console.log('[WorkerManager] All proofs generated. Total:', proofMap.size);
+    return proofMap;
   }
 
   /**

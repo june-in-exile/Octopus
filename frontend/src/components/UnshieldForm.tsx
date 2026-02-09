@@ -19,6 +19,7 @@ import {
   encryptNote,
 } from "@june_zk/octopus-sdk";
 import { NumberInput } from "@/components/NumberInput";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface UnshieldFormProps {
   keypair: OctopusKeypair | null;
@@ -31,6 +32,7 @@ interface UnshieldFormProps {
 
 type UnshieldState =
   | "idle"
+  | "fetching-merkle-proofs"
   | "generating-proof"
   | "submitting"
   | "success"
@@ -117,11 +119,47 @@ export function UnshieldForm({
       // For other notes, unshield the full note value
       const unshieldAmount = isLastNote ? remaining : note.note.value;
 
-      // Validate that Merkle proof exists
+      // Fetch Merkle proof lazily if not already present
+      let noteWithProof = note;
       if (!note.pathElements || note.pathElements.length === 0) {
-        throw new Error(
-          `Merkle proof not available for note ${i + 1}/${selectedNotes.length}. Please refresh and try again.`
-        );
+        console.log(`[UnshieldForm] Fetching Merkle proof for note ${i + 1}/${selectedNotes.length} at leaf index ${note.leafIndex}...`);
+        setState("fetching-merkle-proofs");
+        const startFetch = Date.now();
+
+        let merkleProofs: Map<number, bigint[]>;
+        try {
+          merkleProofs = await fetchMerkleProofs(
+            keypair!.spendingKey,
+            tokenConfig.poolId,
+            [note.leafIndex]
+          );
+        } catch (err) {
+          // If stale cache detected, automatically trigger rescan
+          if (err instanceof Error && err.message.includes("Stale cache detected")) {
+            console.log("[UnshieldForm] Stale cache detected. Triggering automatic rescan...");
+
+            // Trigger rescan in background
+            const rescanPromise = onSuccess?.();
+            if (rescanPromise) {
+              rescanPromise.catch(console.error);
+            }
+
+            // Throw clear error to user
+            throw new Error(
+              "Your notes are outdated. Refreshing your notes... Please wait for the refresh to complete and try again."
+            );
+          }
+          throw err;
+        }
+
+        console.log(`[UnshieldForm] Merkle proof fetched in ${Date.now() - startFetch}ms`);
+        noteWithProof = { ...note, pathElements: merkleProofs.get(note.leafIndex) };
+
+        if (!noteWithProof.pathElements || noteWithProof.pathElements.length === 0) {
+          throw new Error(
+            `Failed to generate Merkle proof for note ${i + 1}/${selectedNotes.length}`
+          );
+        }
       }
 
       // Generate proof (10-30s per proof)
@@ -129,9 +167,9 @@ export function UnshieldForm({
       setState("generating-proof");
 
       const { proof, publicSignals, changeNote } = await generateUnshieldProof({
-        note: note.note,
-        leafIndex: note.leafIndex,
-        pathElements: note.pathElements,
+        note: noteWithProof.note,
+        leafIndex: noteWithProof.leafIndex,
+        pathElements: noteWithProof.pathElements!,
         keypair: keypair!,
         unshieldAmount: unshieldAmount,
       });
@@ -255,7 +293,7 @@ export function UnshieldForm({
     }
   };
 
-  const isProcessing = state === "generating-proof" || state === "submitting";
+  const isProcessing = state === "fetching-merkle-proofs" || state === "generating-proof" || state === "submitting";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
@@ -346,7 +384,9 @@ export function UnshieldForm({
             </svg>
             <div>
               <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
-                {state === "generating-proof"
+                {state === "fetching-merkle-proofs"
+                  ? "Building Merkle Tree..."
+                  : state === "generating-proof"
                   ? totalProofs > 1
                     ? `Generating Proof ${currentProofIndex}/${totalProofs}...`
                     : "Generating ZK Proof..."
@@ -355,7 +395,9 @@ export function UnshieldForm({
                   : "Submitting Transaction..."}
               </p>
               <p className="text-[10px] text-gray-400 font-mono mt-0.5">
-                {state === "generating-proof"
+                {state === "fetching-merkle-proofs"
+                  ? "// Fetching Merkle proof for note"
+                  : state === "generating-proof"
                   ? totalProofs > 1
                     ? `// Proof ${currentProofIndex} of ${totalProofs} (10-30s each)`
                     : "// Proof generation in progress (10-30s)"

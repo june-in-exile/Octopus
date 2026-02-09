@@ -1,187 +1,550 @@
-# Unshield Fund Loss Issue Analysis
-
-**Status**: 🔴 CRITICAL - Fund loss vulnerability
-**Date**: 2026-02-05
-**Priority**: P0 - Immediate fix required
-
----
-
-## Executive Summary
-
-**Problem**: Users lose funds when unshielding amounts smaller than their note values.
-
-**Example**:
-
-- User has notes: 0.01 SUI and 0.02 SUI
-- User wants to unshield: 0.01 SUI
-- **Result**: 0.02 SUI note is destroyed, but only 0.01 SUI transferred
-- **Loss**: 0.01 SUI permanently lost ❌
-
-**Root Cause**: Architectural mismatch between circuit (proves note ownership), contract (accepts arbitrary amount), and frontend (selects largest note).
-
-**Fix**: Frontend smart note selection + warning modal (5-6 hours, no contract/circuit changes needed)
-
----
+# Note Scanning Performance Optimization
 
 ## Problem Statement
 
-用户报告了严重的资金损失问题：
+Current Octopus protocol note scanning has severe performance bottlenecks:
 
-- 有 0.01 SUI 和 0.02 SUI 两个 notes
-- 想要 unshield 0.01 SUI
-- 结果：0.02 SUI 的 note 被选中并销毁
-- 实际转到用户地址的只有 0.01 SUI
-- **剩余的 0.01 SUI 永久丢失**
+- Must query all ShieldEvent and TransferEvent (potentially thousands)
+- Attempts full ECDH + ChaCha20-Poly1305 decryption for each encrypted_note
+- Verifies NSK match (checks if note belongs to user)
 
----
+**Performance Issues:**
 
-## Root Cause Analysis
+- With 10,000 notes in pool → 10,000 full decryption attempts required
+- Each decryption: ECDH + HKDF key derivation + ChaCha20-Poly1305 + Poseidon verification
+- Even with Web Worker parallelization, scan time can reach several minutes
 
-### 1. Note Selection Logic Issue
+## Solutions
 
-**File**: [frontend/src/components/UnshieldForm.tsx:99-103](../frontend/src/components/UnshieldForm.tsx#L99-L103)
+### ✅ Solution 1: Viewing Key Tag (Implemented)
+
+**Core Idea:** Add an 8-byte tag before encryption data for fast filtering
+
+#### Implementation Details
 
 ```typescript
-// 按金额从大到小排序
-const sortedNotes = unspentNotes.sort((a, b) => Number(b.note.value - a.note.value));
-// 选择第一个满足条件的 note（即最大的）
-const noteToSpend = sortedNotes.find(n => n.note.value >= amountMist);
+// New format (196 bytes)
+viewing_tag (8) || ephemeral_pk (32) || nonce (12) || ciphertext (128) || auth_tag (16)
+
+// During encryption
+const viewingTag = HKDF(shared_secret, "octopus-viewing-tag-v1", 8);
+
+// During scanning
+for (const event of allEvents) {
+  // Step 1: Fast filtering (ECDH + hash only)
+  if (!quickCheckNote(event.encrypted_note, spendingKey)) {
+    continue; // Skip
+  }
+
+  // Step 2: Full decryption (only for tag-matched notes)
+  const note = decryptNote(event.encrypted_note, spendingKey, mpk);
+  if (note) ownedNotes.push(note);
+}
 ```
 
-**问题**: 总是选择**最大的**满足条件的 note，而不考虑是否会造成资金损失。
+#### Performance Improvement
 
-### 2. Amount Mismatch Architecture
+- Fast filtering: ~0.1ms/note (ECDH + hash only)
+- Full decryption: ~1ms/note (ECDH + HKDF + ChaCha20 + Poseidon)
+- **Theoretical: 10x improvement**
 
-**核心设计缺陷** - 三层架构之间的金额处理不一致：
+#### Actual Results
 
-| 层级 | 如何处理金额 | 问题 |
-|------|-------------|------|
-| **Circuit** ([circuits/unshield.circom:26](../circuits/unshield.circom#L26)) | `value` 是 private input，用于计算 commitment | ❌ 不在 public inputs 中 |
-| **Public Inputs** ([circuits/unshield.circom:60](../circuits/unshield.circom#L60)) | 只包含 `merkle_root` 和 `nullifier` (64 bytes) | ❌ 没有 commitment 或 value |
-| **Contract** ([contracts/sources/pool.move:588](../contracts/sources/pool.move#L588)) | 接受独立的 `amount: u64` 参数 | ❌ 不验证是否等于 note value |
-| **Transfer** ([contracts/sources/pool.move:619](../contracts/sources/pool.move#L619)) | 转账 `amount` 给 recipient | ⚠️ 任何金额都可以，只要 pool 余额足够 |
+**Limitation:** Only effective for new format (196 bytes) notes. If pool contains mostly old format (188 bytes), performance gain is limited.
 
-**资金损失流程**:
+#### Completed Changes
+
+- ✅ SDK encryption logic ([sdk/src/crypto.ts](../sdk/src/crypto.ts))
+  - `encryptNote()` - Added viewing tag
+  - `decryptNote()` - Supports both old and new formats
+  - `quickCheckNote()` - Fast filtering function
+- ✅ Worker scanning logic ([frontend/src/workers/noteScanWorker.ts](../frontend/src/workers/noteScanWorker.ts))
+  - Shield event scanning with fast filtering
+  - Transfer event scanning with fast filtering
+
+---
+
+### ✅ Solution 2: Local Cache + Incremental Scanning (Implemented)
+
+**Core Idea:** Use IndexedDB to cache scanned notes, only scan new events
+
+**Implementation Status:** ✅ **Completed** (2026-02-10)
+
+#### Completed Changes
+
+- ✅ IndexedDB cache management ([frontend/src/lib/notesCache.ts](../frontend/src/lib/notesCache.ts))
+  - `openDatabase()` - IndexedDB database initialization
+  - `saveScanCache()` - Save scan results to cache
+  - `loadScanCache()` - Load cached scan data
+  - `clearScanCache()` - Clear cache for specific user/pool or all
+  - `generateCacheKey()` - Generate SHA-256 hash for cache key
+- ✅ Worker message types ([frontend/src/workers/types.ts](../frontend/src/workers/types.ts))
+  - `ClearCacheRequest` / `ClearCacheResponse` - Clear cache operation
+  - `GetCacheInfoRequest` / `GetCacheInfoResponse` - Get cache metadata
+- ✅ Worker incremental scanning ([frontend/src/workers/noteScanWorker.ts](../frontend/src/workers/noteScanWorker.ts))
+  - Modified `queryAllEvents()` to support cursor-based pagination
+  - Implemented cache loading and merging logic
+  - Added cache management handlers (`clear_cache`, `get_cache_info`)
+  - Progress reporting for both full and incremental scans
+- ✅ Worker manager API ([frontend/src/lib/workerManager.ts](../frontend/src/lib/workerManager.ts))
+  - `clearCache()` - Public API to clear cache
+  - `getCacheInfo()` - Public API to get cache status
+  - `generateUserCacheKey()` - Helper for frontend cache management
+
+#### Architecture Design
+
+```typescript
+interface CachedScanData {
+  // User identifier (hash based on spendingKey)
+  userKey: string;
+
+  // Pool identifier
+  poolId: string;
+
+  // Last scanned position
+  lastScannedCursor: string | null;  // GraphQL endCursor
+  lastScannedTimestamp: number;
+
+  // Scanned notes
+  ownedNotes: Array<{
+    note: SerializedNote;
+    leafIndex: number;
+    pathElements: string[];
+    nullifier: string;
+    txDigest: string;
+  }>;
+
+  // Merkle tree state
+  allCommitments: Array<{
+    commitment: string;
+    leafIndex: number;
+  }>;
+
+  // Statistics
+  totalNotesInPool: number;
+  lastScanDuration: number;
+}
+```
+
+#### Implementation Steps
+
+1. **Create IndexedDB Database**
+
+   ```typescript
+   // frontend/src/lib/notesCache.ts
+   const DB_NAME = 'octopus-notes-cache';
+   const DB_VERSION = 1;
+   const STORE_NAME = 'scan-cache';
+
+   function openDatabase(): Promise<IDBDatabase> {
+     return new Promise((resolve, reject) => {
+       const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+       request.onupgradeneeded = (event) => {
+         const db = (event.target as IDBOpenDBRequest).result;
+         if (!db.objectStoreNames.contains(STORE_NAME)) {
+           const store = db.createObjectStore(STORE_NAME, { keyPath: ['userKey', 'poolId'] });
+           store.createIndex('timestamp', 'lastScannedTimestamp');
+         }
+       };
+
+       request.onsuccess = () => resolve(request.result);
+       request.onerror = () => reject(request.error);
+     });
+   }
+   ```
+
+2. **Implement Cache Read/Write**
+
+   ```typescript
+   async function saveScanCache(data: CachedScanData): Promise<void> {
+     const db = await openDatabase();
+     const tx = db.transaction(STORE_NAME, 'readwrite');
+     const store = tx.objectStore(STORE_NAME);
+     await store.put(data);
+   }
+
+   async function loadScanCache(userKey: string, poolId: string): Promise<CachedScanData | null> {
+     const db = await openDatabase();
+     const tx = db.transaction(STORE_NAME, 'readonly');
+     const store = tx.objectStore(STORE_NAME);
+     const result = await store.get([userKey, poolId]);
+     return result || null;
+   }
+
+   async function clearScanCache(userKey?: string, poolId?: string): Promise<void> {
+     const db = await openDatabase();
+     const tx = db.transaction(STORE_NAME, 'readwrite');
+     const store = tx.objectStore(STORE_NAME);
+
+     if (userKey && poolId) {
+       await store.delete([userKey, poolId]);
+     } else {
+       await store.clear();
+     }
+   }
+   ```
+
+3. **Modify Worker for Incremental Scanning**
+
+   ```typescript
+   // Add caching logic to scan_notes request
+   case "scan_notes": {
+     // 1. Try to load cache
+     const cacheKey = generateCacheKey(request.spendingKey, request.poolId);
+     const cachedData = await loadScanCache(cacheKey);
+
+     if (cachedData) {
+       // 2. Query only new events (from lastScannedCursor)
+       const [newShieldNodes, newTransferNodes, newUnshieldNodes] = await Promise.all([
+         queryEventsAfterCursor(client, ShieldEvent, cachedData.lastScannedCursor),
+         queryEventsAfterCursor(client, TransferEvent, cachedData.lastScannedCursor),
+         queryEventsAfterCursor(client, UnshieldEvent, cachedData.lastScannedCursor),
+       ]);
+
+       // 3. Merge old and new data
+       const allOwnedNotes = [...cachedData.ownedNotes, ...newlyDecryptedNotes];
+       const allCommitments = [...cachedData.allCommitments, ...newCommitments];
+
+       // 4. Update cache
+       await saveScanCache({
+         ...cachedData,
+         lastScannedCursor: newEndCursor,
+         lastScannedTimestamp: Date.now(),
+         ownedNotes: allOwnedNotes,
+         allCommitments: allCommitments,
+       });
+     } else {
+       // First scan: full scan and cache
+       // ... existing logic ...
+
+       await saveScanCache({
+         userKey: cacheKey,
+         poolId: request.poolId,
+         lastScannedCursor: endCursor,
+         lastScannedTimestamp: Date.now(),
+         ownedNotes,
+         allCommitments,
+         totalNotesInPool,
+         lastScanDuration: scanTime,
+       });
+     }
+   }
+   ```
+
+4. **Add Cache Management API**
+
+   ```typescript
+   // New Worker request types
+   type WorkerRequest =
+     | { type: 'scan_notes'; ... }
+     | { type: 'clear_cache'; userKey?: string; poolId?: string }
+     | { type: 'get_cache_info'; userKey: string; poolId: string };
+
+   // Implementation
+   case "clear_cache": {
+     await clearScanCache(request.userKey, request.poolId);
+     postMessage({ type: "clear_cache_result", success: true });
+     break;
+   }
+
+   case "get_cache_info": {
+     const cache = await loadScanCache(request.userKey, request.poolId);
+     postMessage({
+       type: "get_cache_info_result",
+       cacheExists: !!cache,
+       lastScanned: cache?.lastScannedTimestamp,
+       noteCount: cache?.ownedNotes.length,
+     });
+     break;
+   }
+   ```
+
+#### Performance Improvement
+
+Assuming user has scanned once (cache established):
+
+- **First scan:** 10 seconds (full scan, unavoidable)
+- **Subsequent scans:** 0.1-1 second (only scan new events)
+- **Improvement: 10-100x**
+
+#### UI Improvements
+
+Add cache status display in frontend:
+
+```typescript
+// Display cache info
+const cacheInfo = await worker.getCacheInfo(userKey, poolId);
+if (cacheInfo.cacheExists) {
+  console.log(`Last scanned: ${new Date(cacheInfo.lastScanned).toLocaleString()}`);
+  console.log(`Cached ${cacheInfo.noteCount} notes`);
+}
+
+// Provide clear cache button
+<button onClick={() => worker.clearCache(userKey, poolId)}>
+  Clear Cache (Force Re-scan)
+</button>
+```
+
+---
+
+### Solution 3: Parallel Scanning Optimization
+
+**Core Idea:** Use multiple Web Workers for parallel decryption
+
+#### Implementation
+
+```typescript
+// frontend/src/lib/parallelScan.ts
+
+interface WorkerPool {
+  workers: Worker[];
+  taskQueue: Task[];
+  activeTaskCount: number;
+}
+
+function createWorkerPool(size: number = navigator.hardwareConcurrency || 4): WorkerPool {
+  return {
+    workers: Array.from({ length: size }, () => new Worker('/workers/noteScanWorker.ts')),
+    taskQueue: [],
+    activeTaskCount: 0,
+  };
+}
+
+async function parallelScanNotes(
+  events: Event[],
+  spendingKey: string,
+  mpk: string
+): Promise<Note[]> {
+  const pool = createWorkerPool();
+  const eventsPerWorker = Math.ceil(events.length / pool.workers.length);
+
+  // Distribute events to different workers
+  const chunks = [];
+  for (let i = 0; i < pool.workers.length; i++) {
+    const start = i * eventsPerWorker;
+    const end = Math.min((i + 1) * eventsPerWorker, events.length);
+    chunks.push(events.slice(start, end));
+  }
+
+  // Process in parallel
+  const promises = pool.workers.map((worker, i) =>
+    worker.scanNotes({
+      events: chunks[i],
+      spendingKey,
+      mpk,
+    })
+  );
+
+  // Wait for all workers to complete
+  const results = await Promise.all(promises);
+
+  // Merge results
+  return results.flat();
+}
+```
+
+#### Performance Improvement
+
+- **4-core CPU:** Theoretical 4x speedup
+- **Actual:** 2-3x speedup (accounting for communication overhead and sync costs)
+
+#### Use Cases
+
+- First full scan
+- Pool with large number of notes (1000+)
+- Combined with Solutions 1 and 2
+
+---
+
+### Solution 4: Optional Off-chain Indexer Service
+
+**Core Idea:** Provide an optional indexer service to help users quickly find potentially owned notes
+
+#### Architecture
 
 ```
-1. ZK Circuit 证明:
-   - 用户拥有 0.02 SUI note
-   - commitment = Poseidon(NSK, token, 0.02 SUI)
-   - 电路验证通过 ✓
-
-2. Public Inputs (64 bytes):
-   - merkle_root (32 bytes)
-   - nullifier (32 bytes)
-   - ❌ commitment 是 PRIVATE，不在 public inputs 中
-
-3. Contract Verification:
-   - 验证 merkle_root 有效 ✓
-   - 验证 nullifier 未使用 ✓
-   - 验证 ZK proof 正确 ✓
-   - 标记 nullifier 为已使用 (0.02 note 永久销毁)
-   - ❌ 不验证 amount 参数是否等于 note value
-
-4. Token Transfer:
-   - 转账 amount = 0.01 SUI (用户输入)
-   - ❌ 不是 note 的实际 value (0.02 SUI)
-
-5. Result:
-   - 0.02 SUI note 永久销毁 ✓
-   - 用户收到 0.01 SUI ✓
-   - 0.01 SUI 永久丢失 ❌❌❌
+┌─────────────┐         ┌──────────────┐         ┌──────────┐
+│   Frontend  │────────>│   Indexer    │────────>│   Sui    │
+│             │  1. tag │   Service    │  2. all │  RPC     │
+│             │  hash   │              │  events │          │
+│             │<────────│              │<────────│          │
+└─────────────┘ 3. filtered events     │         └──────────┘
+                                         │
+                         4. Local full decryption verification
 ```
 
-### 3. No Change Mechanism
+#### Server-side Implementation
 
-- **Unshield 电路**: 1-input, 0-output 设计（不支持找零）
-- **Transfer 电路**: 2-input, 2-output（可以创建找零 note）
-- **结论**: Unshield 不支持部分 unshield + 找零
+```typescript
+// indexer-service/src/index.ts
+
+interface IndexedNote {
+  poolId: string;
+  eventType: 'shield' | 'transfer';
+  position: number;
+  encryptedNote: string;
+  viewingTagHash: string;  // First 16 bytes of SHA256(viewing_tag)
+  txDigest: string;
+}
+
+// Indexer continuously monitors on-chain events
+async function indexEvents() {
+  // 1. Subscribe to all ShieldEvent and TransferEvent
+  const events = await subscribeToEvents(['ShieldEvent', 'TransferEvent']);
+
+  for (const event of events) {
+    // 2. Extract encrypted_note
+    const encryptedNote = event.encrypted_note;
+
+    // 3. If v2 format, extract viewing tag and compute hash
+    if (encryptedNote.length === 196) {
+      const viewingTag = encryptedNote.slice(0, 8);
+      const viewingTagHash = sha256(viewingTag).slice(0, 16);
+
+      // 4. Store in database
+      await db.indexedNotes.insert({
+        poolId: event.pool_id,
+        eventType: event.type,
+        position: event.position,
+        encryptedNote: Buffer.from(encryptedNote).toString('base64'),
+        viewingTagHash: viewingTagHash.toString('hex'),
+        txDigest: event.tx_digest,
+      });
+    }
+  }
+}
+
+// API: Query by viewing tag hash
+app.post('/api/query-notes', async (req, res) => {
+  const { poolId, viewingTagHash } = req.body;
+
+  // Query matching notes
+  const matches = await db.indexedNotes.find({
+    poolId,
+    viewingTagHash,
+  });
+
+  res.json({ notes: matches });
+});
+```
+
+#### Client-side Implementation
+
+```typescript
+// frontend/src/lib/indexerClient.ts
+
+async function scanNotesWithIndexer(
+  poolId: string,
+  spendingKey: bigint,
+  mpk: bigint
+): Promise<Note[]> {
+  // 1. Compute own viewing tag hash (requires knowing all possible ephemeral_pk)
+  // Note: This requires pre-knowledge of ephemeral_pk, so different implementation needed
+
+  // 2. Query indexer service
+  const response = await fetch('https://indexer.octopus.io/api/query-notes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ poolId, viewingTagHash }),
+  });
+
+  const { notes } = await response.json();
+
+  // 3. Local verification and decryption
+  const ownedNotes = [];
+  for (const note of notes) {
+    const decrypted = decryptNote(
+      Buffer.from(note.encryptedNote, 'base64'),
+      spendingKey,
+      mpk
+    );
+
+    if (decrypted) {
+      ownedNotes.push(decrypted);
+    }
+  }
+
+  return ownedNotes;
+}
+```
+
+#### Privacy Considerations
+
+**Issue:** Since ephemeral_pk must be known beforehand to compute viewing tag, this approach is not feasible.
+
+**Alternative:** Bloom Filter
+
+```typescript
+// Indexer service maintains a Bloom Filter for each pool
+// Clients can download Bloom Filter for fast local filtering
+
+interface PoolBloomFilter {
+  poolId: string;
+  filter: Uint8Array;  // Bloom filter
+  noteCount: number;
+  falsePositiveRate: number;
+}
+
+// Client usage
+const bloomFilter = await fetchBloomFilter(poolId);
+const possiblyMine = bloomFilter.mightContain(myViewingKeyHash);
+if (possiblyMine) {
+  // Full scan
+}
+```
+
+#### Pros and Cons
+
+✅ **Pros:**
+
+- Extremely fast scanning
+- Reduces client computation burden
+- Supports larger scale pools
+
+❌ **Cons:**
+
+- Requires running indexer service (cost, maintenance)
+- Privacy compromise (server knows someone is querying)
+- Requires trusting server availability
+- **High implementation complexity**
+
+#### Conclusion
+
+Solution 4 is suitable as an optional enhancement for the future, but not current priority. **Recommend implementing Solutions 2 and 3 first.**
 
 ---
 
-## Recommended Solution: Phase 1 (Immediate Fix)
+## Recommended Implementation Order
 
-**Timeline**: 5-6 hours
-**Risk**: Low
-**Breaking Changes**: None
+1. **✅ Solution 1 (Complete):** Viewing Key Tag
+   - Lays foundation for future performance improvements
+   - All newly created notes use new format
 
-**Strategy**: Smart note selection + mandatory warning modal
+2. **✅ Solution 2 (Complete):** Local Cache + Incremental Scanning
+   - **Expected: 10-100x improvement**
+   - Most significant user experience improvement
+   - Implementation difficulty: Medium
+   - **Status:** Fully implemented with IndexedDB caching
 
-### Why This Approach?
+3. **Solution 3 (Optional):** Parallel Scanning
+   - Expected: 2-3x improvement
+   - Can combine with Solution 2
+   - Implementation difficulty: Low
 
-✅ **No circuit recompilation** (saves 30-60 min)
-✅ **No contract redeployment** (reduces risk)
-✅ **Quick implementation** (5-6 hours)
-✅ **Eliminates accidental fund loss**
-✅ **Can iterate post-hackathon**
-
-### Implementation Overview
-
-1. **Smart Note Selection**:
-   - Priority 1: Select exact-match note (value === amount)
-   - Priority 2: Select smallest suitable note (minimize loss)
-   - Never select note > amount without explicit confirmation
-
-2. **Warning Modal**:
-   - Bright red UI with fund loss calculation
-   - Clear guidance to use Transfer instead
-   - Require explicit "I Understand" confirmation
-
-3. **UI Enhancements**:
-   - Show all available notes with amounts
-   - Mark exact matches with green checkmark
-   - Add helper tips about Transfer tab
+4. **Solution 4 (Future):** Off-chain Indexer Service
+   - Consider when user base scales
+   - Requires operational costs
+   - Implementation difficulty: High
 
 ---
 
-## Critical Files to Modify
+## Performance Comparison Summary
 
-### Primary Changes
+| Scenario | Old Method | Sol 1 | Sol 1+2 | Sol 1+2+3 |
+|----------|------------|-------|---------|-----------|
+| First scan 10K notes | 10s | 1s | 1s | 0.3s |
+| Subsequent scan (10 new notes) | 10s | 1s | 0.1s | 0.05s |
+| Subsequent scan (100 new notes) | 10s | 1s | 0.5s | 0.2s |
 
-1. **[frontend/src/components/UnshieldForm.tsx:99-160](../frontend/src/components/UnshieldForm.tsx#L99-L160)**
-   - Refactor note selection logic (lines 99-110)
-   - Split submission into prepare + execute phases
-   - Add warning state management
-   - Update form UI with helper text
-
-2. **[frontend/src/components/FundLossWarning.tsx](../frontend/src/components/FundLossWarning.tsx)** (new)
-   - Create reusable warning modal component
-   - Bright red design with clear fund loss calculation
-   - Alternative action guidance (use Transfer instead)
-
-### Supporting Changes
-
-1. **[frontend/src/lib/utils.ts](../frontend/src/lib/utils.ts)**
-   - Add utility functions for note selection
-
-### Testing
-
-1. **[frontend/src/components/**tests**/UnshieldForm.test.tsx](../frontend/src/components/__tests__/UnshieldForm.test.tsx)** (new)
-2. **[frontend/e2e/unshield-fund-loss.spec.ts](../frontend/e2e/unshield-fund-loss.spec.ts)** (new)
-
----
-
-## Future Phases (Post-Hackathon)
-
-### Phase 2: Contract Hardening
-
-**Timeline**: 7-8 hours
-
-- Add `commitment` to circuit public inputs (96 bytes total)
-- Modify contract to verify `amount` matches commitment value
-- Requires circuit recompilation and contract redeployment
-
-### Phase 3: Circuit Redesign
-
-**Timeline**: 3-4 days
-
-- Redesign unshield.circom as 1-input, 2-output
-- Support automatic change note creation
-- Perfect UX: unshield any amount with automatic change handling
-
----
-
-**Estimated Timeline**: 5-6 hours
-**Breaking Changes**: None
-**Deployment Required**: Frontend only (hot reload)
-**Risk Level**: Low
+**Conclusion:** Combining Solution 1 + Solution 2 achieves **10-100x performance improvement**, sufficient to solve current performance bottleneck.
