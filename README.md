@@ -4,8 +4,6 @@
 
 A privacy protocol implementation for the Sui blockchain, enabling shielded transactions using zero-knowledge proofs.
 
-[**ETHGlobal HackMoney 2026**](https://ethglobal.com/events/hackmoney2026)
-
 ## Overview
 
 ![concept](frontend/public/concept.svg)
@@ -187,7 +185,7 @@ The circuit proves:
 
 ## Security Considerations
 
-- **MVP Simplifications**: This is a hackathon proof-of-concept
+- **MVP Simplifications**: This is a proof-of-concept implementation
 - **`Viewing Key`**: A key that grants read-only access to transaction details. In this project, it has two forms:
   - **Personal Viewing Key (Implemented)**: An encryption/decryption keypair is derived from the `spendingKey`. This allows the user to decrypt and view their own notes.
   - **Third-Party Viewing Key (Planned)**: A future feature will allow for a separate key to be shared with third parties (e.g., for compliance) for selective disclosure, without granting them spending authority.
@@ -216,6 +214,10 @@ The circuit proves:
 | **Milestone 4: Compliance Features** | ⏳ Planned | 0% |
 
 See [docs/](docs/) for detailed milestone documentation.
+
+## Acknowledgments
+
+**Disclosure**: This project was developed in collaboration with AI tools, primarily using Gemini for data search, research, and integration, and using Claude Code for architecture design, code implementation, and documentation organization.
 
 ## License
 

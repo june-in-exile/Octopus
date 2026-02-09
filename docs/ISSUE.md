@@ -113,7 +113,7 @@ const noteToSpend = sortedNotes.find(n => n.note.value >= amountMist);
 ✅ **No contract redeployment** (reduces risk)
 ✅ **Quick implementation** (5-6 hours)
 ✅ **Eliminates accidental fund loss**
-✅ **Can iterate post-hackathon**
+✅ **Can iterate in future versions**
 
 ### Implementation Overview
 
@@ -161,7 +161,7 @@ const noteToSpend = sortedNotes.find(n => n.note.value >= amountMist);
 
 ---
 
-## Future Phases (Post-Hackathon)
+## Future Phases
 
 ### Phase 2: Contract Hardening
 

@@ -6,7 +6,7 @@ This document provides a comprehensive overview of the Octopus project, its arch
 
 **Octopus** is a privacy protocol for the Sui blockchain that enables on-chain transaction obfuscation. It implements a UTXO-based privacy pool using Groth16 ZK-SNARKs, allowing users to shield, transfer, swap, and unshield tokens privately.
 
-The project is a "Highly Functional MVP" developed for a hackathon, with core features like private transfers fully working and DeFi (DEX) integration nearly complete.
+The project is a "Highly Functional MVP" with core features like private transfers fully working and DeFi (DEX) integration nearly complete.
 
 **Key Technologies:**
 
