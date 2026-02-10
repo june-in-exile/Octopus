@@ -220,165 +220,165 @@ export default function Home() {
         ) : (
           // Connected state
           <>
-          {!isConfigured && (
-            <div className="mb-6 p-3 border border-amber-600/40 bg-amber-900/20 clip-corner">
-              <p className="text-xs text-amber-400 font-mono">
-                ⚠ No contract deployed on <span className="font-bold uppercase">{network}</span>. Switch to Testnet or deploy contracts first.
-              </p>
-            </div>
-          )}
-          <div className="grid gap-8 lg:grid-cols-[1fr_1.2fr]">
-            {/* Left Column */}
-            <div className="space-y-6">
-              <KeypairSetup
-                keypair={keypair}
-                isLoading={isLoading}
-                savedKeypairs={savedKeypairs}
-                onGenerate={generateKeypair}
-                onSelect={selectKeypair}
-                onClear={clearKeypair}
-                onRemove={removeKeypair}
-                onRestore={restoreKeypair}
-                onRename={renameKeypair}
-              />
-              {tokenConfig && (
-                <>
-                  <BalanceCard
-                    shieldedBalance={shieldedBalance}
-                    noteCount={noteCount}
-                    tokenConfig={tokenConfig}
-                    isLoading={isLoading}
-                    isRefreshing={isLoadingNotes}
-                    onRefresh={refreshNotes}
-                  />
-                  <AvailableNotesList
-                    notes={notes}
-                    loading={isLoadingNotes}
-                    error={notesError}
-                    tokenConfig={tokenConfig}
-                    lastScanStats={lastScanStats}
-                  />
-                </>
-              )}
-            </div>
+            {!isConfigured && (
+              <div className="mb-6 p-3 border border-amber-600/40 bg-amber-900/20 clip-corner">
+                <p className="text-xs text-amber-400 font-mono">
+                  ⚠ No contract deployed on <span className="font-bold uppercase">{network}</span>. Switch to Testnet or deploy contracts first.
+                </p>
+              </div>
+            )}
+            <div className="grid gap-8 lg:grid-cols-[1fr_1.2fr]">
+              {/* Left Column */}
+              <div className="space-y-6">
+                <KeypairSetup
+                  keypair={keypair}
+                  isLoading={isLoading}
+                  savedKeypairs={savedKeypairs}
+                  onGenerate={generateKeypair}
+                  onSelect={selectKeypair}
+                  onClear={clearKeypair}
+                  onRemove={removeKeypair}
+                  onRestore={restoreKeypair}
+                  onRename={renameKeypair}
+                />
+                {tokenConfig && (
+                  <>
+                    <BalanceCard
+                      shieldedBalance={shieldedBalance}
+                      noteCount={noteCount}
+                      tokenConfig={tokenConfig}
+                      isLoading={isLoading}
+                      isRefreshing={isLoadingNotes}
+                      onRefresh={refreshNotes}
+                    />
+                    <AvailableNotesList
+                      notes={notes}
+                      loading={isLoadingNotes}
+                      error={notesError}
+                      tokenConfig={tokenConfig}
+                      lastScanStats={lastScanStats}
+                    />
+                  </>
+                )}
+              </div>
 
-            {/* Right Column */}
-            <div className="space-y-6">
-              {/* Token Selector */}
-              <div className="card">
-                <div className="flex items-center gap-3 px-4 py-3">
-                  <span className="text-[10px] text-gray-500 font-mono uppercase tracking-wider">Token:</span>
-                  {(["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
-                    <button
-                      key={sym}
-                      onClick={() => setSelectedToken(sym)}
-                      className={`text-xs font-mono px-3 py-1 border transition-colors ${
-                        selectedToken === sym
+              {/* Right Column */}
+              <div className="space-y-6">
+                {/* Token Selector */}
+                <div className="card">
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    <span className="text-[10px] text-gray-500 font-mono uppercase tracking-wider">Token:</span>
+                    {(["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
+                      <button
+                        key={sym}
+                        onClick={() => setSelectedToken(sym)}
+                        className={`text-xs font-mono px-3 py-1 border transition-colors ${selectedToken === sym
                           ? "border-cyber-blue text-cyber-blue bg-cyber-blue/10"
                           : "border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300"
-                      }`}
+                          }`}
+                      >
+                        {sym}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tab Navigation */}
+                <div className="card">
+                  <div className="flex border-b-2 border-gray-800 relative">
+                    <button
+                      onClick={() => setActiveTab("shield")}
+                      className={`tab-button flex-1 ${activeTab === "shield"
+                        ? "text-cyber-blue active"
+                        : "text-gray-500 hover:text-gray-300"
+                        }`}
                     >
-                      {sym}
+                      ▲ SHIELD
                     </button>
-                  ))}
-                </div>
-              </div>
+                    <button
+                      onClick={() => setActiveTab("transfer")}
+                      className={`tab-button flex-1 ${activeTab === "transfer"
+                        ? "text-cyber-blue active"
+                        : "text-gray-500 hover:text-gray-300"
+                        }`}
+                    >
+                      ⇄ TRANSFER
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("swap")}
+                      className={`tab-button flex-1 ${activeTab === "swap"
+                        ? "text-cyber-blue active"
+                        : isMainnet
+                          ? "text-gray-500 hover:text-gray-300"
+                          : "text-gray-600 opacity-60"
+                        }`}
+                    >
+                      ⇌ SWAP
+                      {!isMainnet && (
+                        <span className="ml-1 text-[8px] text-amber-500/70 font-mono">MAINNET</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setActiveTab("unshield")}
+                      className={`tab-button flex-1 ${activeTab === "unshield"
+                        ? "text-cyber-blue active"
+                        : "text-gray-500 hover:text-gray-300"
+                        }`}
+                    >
+                      ▼ UNSHIELD
+                    </button>
+                  </div>
 
-              {/* Tab Navigation */}
-              <div className="card">
-                <div className="flex border-b-2 border-gray-800 relative">
-                  <button
-                    onClick={() => setActiveTab("shield")}
-                    className={`tab-button flex-1 ${activeTab === "shield"
-                      ? "text-cyber-blue active"
-                      : "text-gray-500 hover:text-gray-300"
-                      }`}
-                  >
-                    ▲ SHIELD
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("transfer")}
-                    className={`tab-button flex-1 ${activeTab === "transfer"
-                      ? "text-cyber-blue active"
-                      : "text-gray-500 hover:text-gray-300"
-                      }`}
-                  >
-                    ⇄ TRANSFER
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("swap")}
-                    className={`tab-button flex-1 ${activeTab === "swap"
-                      ? "text-cyber-blue active"
-                      : isMainnet
-                        ? "text-gray-500 hover:text-gray-300"
-                        : "text-gray-600 opacity-60"
-                      }`}
-                  >
-                    ⇌ SWAP
-                    {!isMainnet && (
-                      <span className="ml-1 text-[8px] text-amber-500/70 font-mono">MAINNET</span>
+                  {/* Tab Content */}
+                  <div className="p-6">
+                    {!tokenConfig ? (
+                      <p className="text-xs text-amber-400 font-mono text-center py-4">
+                        ⚠ No contract on {network}
+                      </p>
+                    ) : (
+                      <>
+                        {activeTab === "shield" && (
+                          <ShieldForm keypair={keypair} tokenConfig={tokenConfig} onSuccess={handleOperationSuccess} />
+                        )}
+                        {activeTab === "transfer" && (
+                          <TransferForm
+                            keypair={keypair}
+                            tokenConfig={tokenConfig}
+                            maxAmount={shieldedBalance}
+                            notes={notes}
+                            loading={isLoadingNotes}
+                            onSuccess={handleOperationSuccess}
+                            markNoteSpent={markNoteSpent}
+                          />
+                        )}
+                        {activeTab === "swap" && (
+                          <SwapForm
+                            keypair={keypair}
+                            notes={notes}
+                            loading={isLoadingNotes}
+                            error={notesError}
+                            onSuccess={handleOperationSuccess}
+                            onRefresh={refreshNotes}
+                            markNoteSpent={markNoteSpent}
+                          />
+                        )}
+                        {activeTab === "unshield" && (
+                          <UnshieldForm
+                            keypair={keypair}
+                            tokenConfig={tokenConfig}
+                            maxAmount={shieldedBalance}
+                            notes={notes}
+                            loading={isLoadingNotes}
+                            onSuccess={handleOperationSuccess}
+                            markNoteSpent={markNoteSpent}
+                          />
+                        )}
+                      </>
                     )}
-                  </button>
-                  <button
-                    onClick={() => setActiveTab("unshield")}
-                    className={`tab-button flex-1 ${activeTab === "unshield"
-                      ? "text-cyber-blue active"
-                      : "text-gray-500 hover:text-gray-300"
-                      }`}
-                  >
-                    ▼ UNSHIELD
-                  </button>
-                </div>
-
-                {/* Tab Content */}
-                <div className="p-6">
-                  {!tokenConfig ? (
-                    <p className="text-xs text-amber-400 font-mono text-center py-4">
-                      ⚠ No contract on {network}
-                    </p>
-                  ) : (
-                    <>
-                      {activeTab === "shield" && (
-                        <ShieldForm keypair={keypair} tokenConfig={tokenConfig} onSuccess={handleOperationSuccess} />
-                      )}
-                      {activeTab === "transfer" && (
-                        <TransferForm
-                          keypair={keypair}
-                          tokenConfig={tokenConfig}
-                          notes={notes}
-                          loading={isLoadingNotes}
-                          onSuccess={handleOperationSuccess}
-                          onRefresh={refreshNotes}
-                          markNoteSpent={markNoteSpent}
-                        />
-                      )}
-                      {activeTab === "swap" && (
-                        <SwapForm
-                          keypair={keypair}
-                          notes={notes}
-                          loading={isLoadingNotes}
-                          error={notesError}
-                          onSuccess={handleOperationSuccess}
-                          onRefresh={refreshNotes}
-                          markNoteSpent={markNoteSpent}
-                        />
-                      )}
-                      {activeTab === "unshield" && (
-                        <UnshieldForm
-                          keypair={keypair}
-                          tokenConfig={tokenConfig}
-                          maxAmount={shieldedBalance}
-                          notes={notes}
-                          onSuccess={handleOperationSuccess}
-                          markNoteSpent={markNoteSpent}
-                        />
-                      )}
-                    </>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
           </>
         )}
 

@@ -48,14 +48,11 @@ const STORE_NAME = 'scan-cache';
  */
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    console.log('[notesCache] Opening IndexedDB:', DB_NAME, 'version:', DB_VERSION);
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = (event) => {
-      console.log('[notesCache] Database upgrade needed');
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
-        console.log('[notesCache] Creating object store:', STORE_NAME);
         const store = db.createObjectStore(STORE_NAME, {
           keyPath: ['userKey', 'poolId'],
         });
@@ -64,11 +61,9 @@ function openDatabase(): Promise<IDBDatabase> {
     };
 
     request.onsuccess = () => {
-      console.log('[notesCache] Database opened successfully');
       resolve(request.result);
     };
     request.onerror = () => {
-      console.error('[notesCache] Error opening database:', request.error);
       reject(request.error);
     };
   });
@@ -96,29 +91,17 @@ export async function loadScanCache(
   userKey: string,
   poolId: string
 ): Promise<CachedScanData | null> {
-  console.log('[notesCache] loadScanCache called. userKey:', userKey, 'poolId:', poolId);
-  console.log('[notesCache] Opening database...');
-  const startDb = Date.now();
   const db = await openDatabase();
-  console.log('[notesCache] Database opened in', Date.now() - startDb, 'ms');
 
-  console.log('[notesCache] Creating transaction...');
   const tx = db.transaction(STORE_NAME, 'readonly');
   const store = tx.objectStore(STORE_NAME);
 
   return new Promise((resolve, reject) => {
-    console.log('[notesCache] Getting data from store...');
-    const startGet = Date.now();
     const request = store.get([userKey, poolId]);
     request.onsuccess = () => {
-      console.log('[notesCache] Data retrieved in', Date.now() - startGet, 'ms. Result:', !!request.result);
-      if (request.result) {
-        console.log('[notesCache] Cache data size - notes:', request.result.ownedNotes?.length, 'commitments:', request.result.allCommitments?.length);
-      }
       resolve(request.result || null);
     };
     request.onerror = () => {
-      console.error('[notesCache] Error loading cache:', request.error);
       reject(request.error);
     };
   });

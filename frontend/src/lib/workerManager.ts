@@ -78,11 +78,8 @@ class NoteScanWorkerManager {
    * Handle messages from worker
    */
   private handleMessage(response: WorkerResponse): void {
-    console.log('[WorkerManager] Received message from worker:', response.type, 'id' in response ? response.id : 'N/A');
-
     switch (response.type) {
       case "init_complete": {
-        console.log('[WorkerManager] Worker initialization complete');
         const initRequest = this.pendingRequests.get("init");
         if (initRequest) {
           initRequest.resolve(true);
@@ -100,25 +97,19 @@ class NoteScanWorkerManager {
       case "get_commitments_result":
       case "clear_cache_result":
       case "get_cache_info_result": {
-        console.log('[WorkerManager] Resolving request:', response.type, response.id);
         const request = this.pendingRequests.get(response.id);
         if (request) {
           request.resolve(response);
           this.pendingRequests.delete(response.id);
-        } else {
-          console.warn('[WorkerManager] No pending request found for:', response.id);
         }
         break;
       }
 
       case "error": {
-        console.error('[WorkerManager] Worker error:', response.error, response.id);
         const errorRequest = this.pendingRequests.get(response.id || "");
         if (errorRequest) {
           errorRequest.reject(new Error(response.error));
           this.pendingRequests.delete(response.id || "");
-        } else {
-          console.warn('[WorkerManager] No pending request found for error:', response.id);
         }
         break;
       }
@@ -152,22 +143,18 @@ class NoteScanWorkerManager {
     }) => void
   ): Promise<T> {
     if (!this.worker) {
-      console.error('[WorkerManager] sendRequest failed: Worker not initialized');
       return Promise.reject(new Error("Worker not initialized"));
     }
 
     const id = "id" in request ? request.id : "init";
-    console.log('[WorkerManager] sendRequest:', request.type, 'ID:', id);
 
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject, onProgress });
-      console.log('[WorkerManager] Posting message to worker:', request.type);
       this.worker!.postMessage(request);
 
       // Timeout after 90s (allows for 2x 30s GraphQL queries + processing time)
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
-          console.error('[WorkerManager] Request timed out after 90s:', request.type, id);
           this.pendingRequests.delete(id);
           reject(new Error("Request timeout after 90s"));
         }
@@ -308,11 +295,9 @@ class NoteScanWorkerManager {
   async buildMerkleTree(
     commitments: Array<{ commitment: bigint; leafIndex: number }>
   ): Promise<string> {
-    console.log('[WorkerManager] buildMerkleTree called with', commitments.length, 'commitments');
     await this.initialize();
 
     const id = this.generateId();
-    console.log('[WorkerManager] Sending build_merkle_tree request:', id);
 
     const response = await this.sendRequest<BuildMerkleTreeResponse>({
       type: "build_merkle_tree",
@@ -323,7 +308,6 @@ class NoteScanWorkerManager {
       })),
     });
 
-    console.log('[WorkerManager] Tree built successfully. Tree ID:', response.treeId);
     return response.treeId;
   }
 
@@ -404,11 +388,9 @@ class NoteScanWorkerManager {
     userKey: string,
     poolId: string
   ): Promise<Array<{ commitment: bigint; leafIndex: number }>> {
-    console.log('[WorkerManager] getCommitmentsFromCache starting...', { userKey, poolId });
     await this.initialize();
 
     const requestId = this.generateId();
-    console.log('[WorkerManager] Sending get_commitments request:', requestId);
 
     const response = await this.sendRequest<GetCommitmentsResponse>({
       type: "get_commitments",
@@ -416,8 +398,6 @@ class NoteScanWorkerManager {
       userKey,
       poolId,
     });
-
-    console.log('[WorkerManager] Received commitments response:', response.commitments?.length ?? 0, 'commitments');
 
     return response.commitments.map((c) => ({
       commitment: BigInt(c.commitment),
@@ -435,29 +415,18 @@ class NoteScanWorkerManager {
     leafIndices: number[],
     commitments: Array<{ commitment: bigint; leafIndex: number }>
   ): Promise<Map<number, bigint[]>> {
-    console.log('[WorkerManager] generateMerkleProofs starting...', {
-      leafIndices,
-      commitmentsCount: commitments.length,
-    });
     await this.initialize();
 
     // Build tree
-    console.log('[WorkerManager] Building Merkle tree with', commitments.length, 'commitments...');
-    const startBuild = Date.now();
     const treeId = await this.buildMerkleTree(commitments);
-    console.log('[WorkerManager] Tree built in', Date.now() - startBuild, 'ms. Tree ID:', treeId);
 
     // Get proofs for requested leaves
-    console.log('[WorkerManager] Getting proofs for', leafIndices.length, 'leaves...');
     const proofMap = new Map<number, bigint[]>();
     for (const leafIndex of leafIndices) {
-      const startProof = Date.now();
       const pathElements = await this.getMerkleProof(treeId, leafIndex);
-      console.log(`[WorkerManager] Proof for leaf ${leafIndex} generated in`, Date.now() - startProof, 'ms');
       proofMap.set(leafIndex, pathElements);
     }
 
-    console.log('[WorkerManager] All proofs generated. Total:', proofMap.size);
     return proofMap;
   }
 

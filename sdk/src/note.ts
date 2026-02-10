@@ -5,7 +5,6 @@
  */
 
 import type { Note } from "./types.js";
-import { createNote } from "./crypto.js";
 
 /**
  * Note with metadata for selection
