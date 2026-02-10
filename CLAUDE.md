@@ -8,6 +8,8 @@ Start every interaction with 'June' (the username). For example: 'Hi June, the j
 
 Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
 
+When modifying features, do not leave deprecated versions; remove them directly.
+
 Sync all modifications with the existing documentation. If a change conflicts with files like README.md, CLAUDE.md, or GEMINI.md, ensure the documentation is updated accordingly.
 
 ## 1. Project Overview

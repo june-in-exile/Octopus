@@ -19,7 +19,7 @@ import {
   calculateMinOutput,
   estimateDeepBookSwap,
   buildSwapTransaction,
-  selectNotesForTransfer,
+  selectNotes,
   createNote,
   randomFieldElement,
   encryptNote,
@@ -182,7 +182,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         pathElements: [], // Will be fetched lazily
       }));
 
-      const selectedNotes = selectNotesForTransfer(selectableNotes, amountInBigInt);
+      const selectedNotes = selectNotes(selectableNotes, amountInBigInt);
 
       // 2. Fetch Merkle proofs lazily for selected notes
       const merkleProofs = await fetchMerkleProofs(

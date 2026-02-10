@@ -17,6 +17,8 @@ import {
   deriveViewingPublicKey,
   buildUnshieldTransaction,
   encryptNote,
+  selectNotes,
+  type SelectableNote,
 } from "@june_zk/octopus-sdk";
 import { NumberInput } from "@/components/NumberInput";
 import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
@@ -67,36 +69,6 @@ export function UnshieldForm({
     if (account?.address) {
       setRecipient(account.address);
     }
-  };
-
-  // Select notes for unshield using greedy algorithm (largest first)
-  const selectNotesForUnshield = (targetAmount: bigint): OwnedNote[] => {
-    const unspent = notes.filter(n => !n.spent);
-
-    // Check total balance first
-    const totalBalance = unspent.reduce((sum, n) => sum + n.note.value, 0n);
-    if (targetAmount > totalBalance) {
-      throw new Error(
-        `Insufficient balance: need ${formatTokenAmount(targetAmount, tokenConfig.decimals)} ${tokenConfig.symbol}, have ${formatTokenAmount(totalBalance, tokenConfig.decimals)} ${tokenConfig.symbol}`
-      );
-    }
-
-    // Sort by value descending (largest first)
-    const sorted = [...unspent].sort((a, b) =>
-      a.note.value > b.note.value ? -1 : 1
-    );
-
-    // Greedy selection: pick largest notes until target is met
-    const selected: OwnedNote[] = [];
-    let accumulated = 0n;
-
-    for (const note of sorted) {
-      if (accumulated >= targetAmount) break;
-      selected.push(note);
-      accumulated += note.note.value;
-    }
-
-    return selected;
   };
 
   // Execute sequential unshields for multiple notes
@@ -244,8 +216,20 @@ export function UnshieldForm({
         throw new Error("No unspent notes available");
       }
 
-      // Select notes for unshield (greedy algorithm: largest first)
-      const selectedNotes = selectNotesForUnshield(amountMist);
+      // Convert OwnedNote[] to SelectableNote[] format for SDK
+      const selectableNotes: SelectableNote[] = unspentNotes.map(n => ({
+        note: n.note,
+        leafIndex: n.leafIndex,
+        pathElements: n.pathElements
+      }));
+
+      // Select notes using SDK's optimized strategy (single note or smallest pair)
+      const selected = selectNotes(selectableNotes, amountMist);
+
+      // Convert back to OwnedNote[]
+      const selectedNotes = selected.map((s: SelectableNote) =>
+        unspentNotes.find(n => n.leafIndex === s.leafIndex)!
+      );
 
       // Execute sequential unshields
       const { txDigests, totalChange } = await executeSequentialUnshields(

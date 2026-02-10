@@ -17,18 +17,20 @@ export interface SelectableNote {
 }
 
 /**
- * Select notes to cover transfer amount.
+ * Select notes to cover the required amount.
  *
  * Strategy:
  * 1. Try to find a single note >= amount (minimize inputs)
  * 2. If not found, try two notes (minimize total value to reduce change)
  * 3. If still not enough, throw error
  *
+ * This function is used for transfers, unshields, and swaps.
+ *
  * @param availableNotes - List of unspent notes owned by user
- * @param amount - Amount to transfer
+ * @param amount - Amount required
  * @returns Selected notes (1 or 2)
  */
-export function selectNotesForTransfer(
+export function selectNotes(
   availableNotes: SelectableNote[],
   amount: bigint
 ): SelectableNote[] {

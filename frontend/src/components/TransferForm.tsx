@@ -6,7 +6,7 @@ import { cn, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import {
-  selectNotesForTransfer,
+  selectNotes,
   createTransferOutputs,
   generateTransferProof,
   convertTransferProofToSui,
@@ -96,7 +96,7 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       // 2. Select notes to cover amount
       const amountNano = BigInt(Math.floor(parseFloat(amount) * 10 ** tokenConfig.decimals));
 
-      const selectedNotes = selectNotesForTransfer(
+      const selectedNotes = selectNotes(
         unspentNotes.map((n) => ({
           note: n.note,
           leafIndex: n.leafIndex,

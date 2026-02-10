@@ -89,9 +89,9 @@ export {
   type SuiConfig,
 } from "./transaction.js";
 
-// Wallet utilities (Note selection for transfers)
+// Wallet utilities (Note selection for transfers, unshields, and swaps)
 export {
-  selectNotesForTransfer,
+  selectNotes,
   createTransferOutputs,
   type SelectableNote,
 } from "./transfer.js";
