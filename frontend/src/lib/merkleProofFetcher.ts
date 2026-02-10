@@ -23,24 +23,13 @@ export async function fetchMerkleProofs(
   poolId: string,
   selectedLeafIndices: number[]
 ): Promise<Map<number, bigint[]>> {
-  console.log('[fetchMerkleProofs] Starting...', {
-    poolId,
-    selectedLeafIndices,
-  });
-
   try {
-    console.log('[fetchMerkleProofs] Getting worker manager...');
     const worker = getWorkerManager();
 
-    console.log('[fetchMerkleProofs] Generating cache key...');
     const cacheKey = await generateCacheKey(spendingKey.toString());
-    console.log('[fetchMerkleProofs] Cache key generated:', cacheKey);
 
     // 1. Get cached commitments
-    console.log('[fetchMerkleProofs] Fetching cached commitments...');
-    const startFetch = Date.now();
     const commitments = await worker.getCommitmentsFromCache(cacheKey, poolId);
-    console.log('[fetchMerkleProofs] Commitments fetched in', Date.now() - startFetch, 'ms. Count:', commitments?.length ?? 0);
 
     if (!commitments || commitments.length === 0) {
       throw new Error(
@@ -57,8 +46,6 @@ export async function fetchMerkleProofs(
     );
 
     if (missingIndices.length > 0) {
-      console.error('[fetchMerkleProofs] Missing commitments for leaf indices:', missingIndices);
-      console.error('[fetchMerkleProofs] Cache range:', minLeafIndex, 'to', maxLeafIndex);
       throw new Error(
         `Stale cache detected! Your notes are outdated. Missing commitments for leaf indices: ${missingIndices.join(', ')}. ` +
         `Cache has commitments ${minLeafIndex}-${maxLeafIndex}, but you need ${selectedLeafIndices.join(', ')}. ` +
@@ -67,15 +54,11 @@ export async function fetchMerkleProofs(
     }
 
     // 2. Build tree and get proofs for selected notes only
-    console.log('[fetchMerkleProofs] Building Merkle tree and generating proofs...');
     const startProof = Date.now();
     const proofs = await worker.generateMerkleProofs(selectedLeafIndices, commitments);
-    console.log('[fetchMerkleProofs] Proofs generated in', Date.now() - startProof, 'ms');
 
-    console.log('[fetchMerkleProofs] Complete! Generated', proofs.size, 'proofs');
     return proofs;
   } catch (error) {
-    console.error('[fetchMerkleProofs] Error:', error);
     if (error instanceof Error) {
       if (error.message.includes("timeout")) {
         throw new Error(

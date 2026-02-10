@@ -26,6 +26,13 @@ export {
 // Byte conversion, math, and proof compression utilities
 export * from "./utils/index.js";
 
+// Proof generation
+export {
+  convertUnshieldProofToSui,
+  convertTransferProofToSui,
+  convertSwapProofToSui,
+} from "./converter.js";
+
 // Cryptographic utilities
 export {
   initPoseidon,
@@ -60,13 +67,9 @@ export {
 
 // Proof generation
 export {
-  type ProverConfig,
   generateUnshieldProof,
-  convertUnshieldProofToSui,
   generateTransferProof,
-  convertTransferProofToSui,
   generateSwapProof,
-  convertSwapProofToSui,
 } from "./prover.js";
 
 // Sui interactions
@@ -86,3 +89,8 @@ export {
 
 // Types
 export * from "./types.js";
+
+// Transfer utilities
+export {
+  createUnshieldOutputs,
+} from "./unshield.js";

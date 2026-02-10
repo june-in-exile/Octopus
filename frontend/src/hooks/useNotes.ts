@@ -257,21 +257,14 @@ export function useNotes(
         const needsCacheClear = !isManualRefresh || shouldClearCache;
 
         if (needsCacheClear && keypair) {
-          const reason = !isManualRefresh
-            ? 'Page load or keypair change'
-            : 'Post-operation refresh (forced full scan)';
-          console.log(`[useNotes] ${reason} detected. Clearing cache for full scan...`);
           const cacheKey = await generateCacheKey(keypair.spendingKey.toString());
           if (poolId) {
             await worker.clearCache(cacheKey, poolId);
-            console.log('[useNotes] Cache cleared successfully');
           }
           // Reset the flag after clearing
           if (shouldClearCache) {
             setShouldClearCache(false);
           }
-        } else if (isManualRefresh) {
-          console.log('[useNotes] Manual refresh detected. Using cache for incremental scan...');
         }
 
         // Scan notes using Worker (GraphQL + decrypt + Merkle tree in background)

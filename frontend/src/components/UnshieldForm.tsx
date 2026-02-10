@@ -1,33 +1,31 @@
 "use client";
 
 import { useState } from "react";
-import {
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
-} from "@mysten/dapp-kit";
-import { Transaction } from "@mysten/sui/transactions";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
 import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
+import { NumberInput } from "@/components/NumberInput";
 import {
+  selectNotes,
+  createUnshieldOutputs,
   generateUnshieldProof,
   convertUnshieldProofToSui,
   deriveViewingPublicKey,
-  buildUnshieldTransaction,
   encryptNote,
-  selectNotes,
+  buildUnshieldTransaction,
   type SelectableNote,
 } from "@june_zk/octopus-sdk";
-import { NumberInput } from "@/components/NumberInput";
-import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface UnshieldFormProps {
   keypair: OctopusKeypair | null;
   tokenConfig: TokenConfig;
-  maxAmount: bigint;
+  maxAmount: bigint,
   notes: OwnedNote[];
+  loading: boolean;
   onSuccess?: () => void | Promise<void>;
   markNoteSpent?: (nullifier: bigint) => void;
 }
@@ -45,17 +43,17 @@ export function UnshieldForm({
   tokenConfig,
   maxAmount,
   notes,
+  loading: notesLoading,
   onSuccess,
   markNoteSpent,
 }: UnshieldFormProps) {
-  const [amount, setAmount] = useState("");
-  const [recipient, setRecipient] = useState("");
-  const [state, setState] = useState<UnshieldState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<{ message: string; txDigests?: string[] } | null>(null);
-
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [state, setState] = useState<UnshieldState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   // Auto-fill recipient with connected wallet
@@ -64,7 +62,6 @@ export function UnshieldForm({
       setRecipient(account.address);
     }
   };
-
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,80 +78,61 @@ export function UnshieldForm({
       return;
     }
 
-    if (!amount || parseFloat(amount) <= 0) {
-      setError("Please enter a valid amount");
-      return;
-    }
-
     if (!recipient || !recipient.startsWith("0x")) {
       setError("Please enter a valid recipient address");
       return;
     }
 
-    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
-    if (amountMist > maxAmount) {
-      setError("Insufficient shielded balance");
+    if (!amount || parseFloat(amount) <= 0) {
+      setError("Please enter a valid amount");
       return;
     }
+    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // Get unspent notes
+      // 1. Get unspent notes
       const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
       if (unspentNotes.length === 0) {
-        throw new Error("No unspent notes available");
+        setState("error");
+        setError("No unspent notes available. Shield some tokens first!");
+        return;
       }
 
-      // Convert OwnedNote[] to SelectableNote[] format for SDK
+      // 2. Select notes to cover amount
       const selectableNotes: SelectableNote[] = unspentNotes.map(n => ({
         note: n.note,
         leafIndex: n.leafIndex,
         pathElements: n.pathElements
       }));
 
-      // Select notes using SDK's optimized strategy (supports 1-2 notes)
-      const selected = selectNotes(selectableNotes, amountMist);
-
-      if (selected.length > 2) {
-        throw new Error("SDK optimization allows max 2 notes per unshield. Please use a smaller amount.");
+      const selectedNotes = selectNotes(selectableNotes, amountMist);
+      if (!selectedNotes || selectedNotes.length === 0) {
+        setState("error");
+        setError("Insufficient balance or unable to select appropriate notes!");
+        return;
       }
 
       // Convert back to OwnedNote[]
-      const selectedNotes = selected.map((s: SelectableNote) =>
-        unspentNotes.find(n => n.leafIndex === s.leafIndex)!
+      const selectedOwnedNotes = selectedNotes.map((selectedNote: SelectableNote) => {
+        const ownedNote = unspentNotes.find((n) => n.leafIndex === selectedNote.leafIndex);
+        if (!ownedNote) {
+          throw new Error(`Could not find owned note for leafIndex ${selectedNote.leafIndex}`);
+        }
+        return ownedNote;
+      });
+
+      // 3. Fetch Merkle proofs for selected notes
+      setState("fetching-merkle-proofs");
+      const leafIndices = selectedOwnedNotes.map(n => n.leafIndex);
+
+      const merkleProofs = await fetchMerkleProofs(
+        keypair.spendingKey,
+        tokenConfig.poolId,
+        leafIndices
       );
 
-      // Fetch Merkle proofs for all selected notes
-      setState("fetching-merkle-proofs");
-      const leafIndices = selectedNotes.map(n => n.leafIndex);
-
-      let merkleProofs: Map<number, bigint[]>;
-      try {
-        merkleProofs = await fetchMerkleProofs(
-          keypair!.spendingKey,
-          tokenConfig.poolId,
-          leafIndices
-        );
-      } catch (err) {
-        // If stale cache detected, automatically trigger rescan
-        if (err instanceof Error && err.message.includes("Stale cache detected")) {
-          console.log("[UnshieldForm] Stale cache detected. Triggering automatic rescan...");
-
-          // Trigger rescan in background
-          const rescanPromise = onSuccess?.();
-          if (rescanPromise) {
-            rescanPromise.catch(console.error);
-          }
-
-          // Throw clear error to user
-          throw new Error(
-            "Your notes are outdated. Refreshing your notes... Please wait for the refresh to complete and try again."
-          );
-        }
-        throw err;
-      }
-
-      // Build note array with proofs
-      const notesWithProofs = selectedNotes.map(n => {
+      // Attach Merkle proofs to selected notes
+      const notesWithProofs = selectedOwnedNotes.map(n => {
         const pathElements = merkleProofs.get(n.leafIndex);
         if (!pathElements || pathElements.length === 0) {
           throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
@@ -162,24 +140,42 @@ export function UnshieldForm({
         return { ...n, pathElements };
       });
 
-      // Generate single proof for all notes (1 or 2)
-      setState("generating-proof");
-      const { proof, publicSignals, changeNote } = await generateUnshieldProof({
-        inputNotes: notesWithProofs.map(n => n.note),
-        leafIndices: notesWithProofs.map(n => n.leafIndex),
-        inputPathElements: notesWithProofs.map(n => n.pathElements!),
-        keypair: keypair!,
-        unshieldValue: amountMist,
+      // 4. Mark notes as spent before generating proof
+      selectedOwnedNotes.forEach((ownedNote) => {
+        markNoteSpent?.(ownedNote.nullifier);
       });
 
-      // Submit single transaction
-      setState("submitting");
-      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
-      const encryptedChangeNote = changeNote
-        ? encryptNote(changeNote, viewingPk)
-        : new Uint8Array(0);
+      // 5. Create output notes (change note)
+      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
+      const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
+      const outputNote = createUnshieldOutputs(
+        keypair.masterPublicKey,
+        amountMist,
+        inputTotal,
+        noteToken
+      );
 
+      // 6. Generate ZK proof
+      setState("generating-proof");
+      const { proof, publicSignals } = await generateUnshieldProof({
+        keypair,
+        inputNotes: notesWithProofs.map(n => n.note),
+        inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
+        inputPathElements: notesWithProofs.map(n => n.pathElements!),
+        unshieldValue: amountMist,
+        outputNote,
+        token: notesWithProofs[0].note.token,
+      });
+
+      // 7. Convert proof to Sui format
+      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
+
+      // 8. Encrypt output note using viewing public keys
+      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
+      const encryptedChangeNote = encryptNote(outputNote, viewingPk)
+
+      // 9. Build and submit transaction
+      setState("submitting");
       const tx = buildUnshieldTransaction(
         packageId!,
         tokenConfig.poolId,
@@ -191,22 +187,18 @@ export function UnshieldForm({
 
       const result = await signAndExecute({ transaction: tx });
 
-      // Mark all notes spent optimistically
-      selectedNotes.forEach(n => markNoteSpent?.(n.nullifier));
-
+      // 10. Success!
       setState("success");
-
-      // Build success message
-      const changeValue = changeNote ? changeNote.value : 0n;
-      let successMessage = `Successfully unshielded ${formatTokenAmount(amountMist, tokenConfig.decimals)} ${tokenConfig.symbol}`;
-      if (changeValue > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(changeValue, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
+      if (outputNote.value > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(outputNote.value, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
-
       setSuccess({
         message: successMessage,
-        txDigests: [result.digest]
+        txDigest: result.digest
       });
+
+      // Clear form inputs on success
       setAmount("");
       setRecipient("");
 
@@ -241,7 +233,9 @@ export function UnshieldForm({
             disabled={isProcessing}
           />
           <p className="mt-2 text-[10px] text-gray-500 font-mono">
-            {notes.length > 0 ? (
+            {notesLoading ? (
+              <>LOADING NOTES...</>
+            ) : notes.length > 0 ? (
               <>
                 TOTAL: {formatTokenAmount(maxAmount, tokenConfig.decimals)}
                 {notes.filter((n: OwnedNote) => !n.spent).length > 1 && (
@@ -251,7 +245,7 @@ export function UnshieldForm({
                 )}
               </>
             ) : (
-              <>MAX: {formatTokenAmount(maxAmount, tokenConfig.decimals)}</>
+              <>NO NOTES // Shield tokens first</>
             )}
           </p>
         </div>
@@ -343,39 +337,19 @@ export function UnshieldForm({
             <span className="text-green-500 text-sm">✓</span>
             <div className="text-xs text-green-400 font-mono leading-relaxed">
               <p>{success.message}</p>
-              {success.txDigests && success.txDigests.length > 0 && (
-                <p className="mt-1">
-                  {success.txDigests.length === 1 ? (
-                    <>
-                      TX:{' '}
-                      <a
-                        href={`https://${network}.suivision.xyz/txblock/${success.txDigests[0]}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-cyber-blue hover:text-cyber-blue/80 underline"
-                      >
-                        [{truncateAddress(success.txDigests[0], 6)}]
-                      </a>
-                    </>
-                  ) : (
-                    <>
-                      TXs:{' '}
-                      {success.txDigests.map((digest, i) => (
-                        <span key={digest}>
-                          {i > 0 && ', '}
-                          <a
-                            href={`https://${network}.suivision.xyz/txblock/${digest}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-cyber-blue hover:text-cyber-blue/80 underline"
-                          >
-                            [{i + 1}]
-                          </a>
-                        </span>
-                      ))}
-                    </>
-                  )}
-                </p>
+              {success.txDigest && (
+                <>
+                  {' '}
+                  <a
+                    href={`https://${network}.suivision.xyz/txblock/${success.txDigest}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cyber-blue hover:text-cyber-blue/80 underline"
+                    title={`View transaction: ${success.txDigest}`}
+                  >
+                    [{truncateAddress(success.txDigest, 6)}]
+                  </a>
+                </>
               )}
             </div>
           </div>

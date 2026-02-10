@@ -9,7 +9,7 @@ import {
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { cn, parseSui, formatSui } from "@/lib/utils";
-import { SUI_COIN_TYPE, DEEPBOOK_POOLS, CIRCUIT_URLS } from "@/lib/constants";
+import { SUI_COIN_TYPE, DEEPBOOK_POOLS } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
@@ -364,10 +364,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       };
 
       // 9. Generate ZK proof (30-60 seconds)
-      const { proof, publicSignals } = await generateSwapProof(swapInput, {
-        wasmPath: CIRCUIT_URLS.SWAP.WASM,
-        zkeyPath: CIRCUIT_URLS.SWAP.ZKEY,
-      });
+      const { proof, publicSignals } = await generateSwapProof(swapInput);
 
       // 10. Convert proof to Sui format
       const suiProof = convertSwapProofToSui(proof, publicSignals);

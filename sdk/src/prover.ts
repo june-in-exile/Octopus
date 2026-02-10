@@ -8,27 +8,17 @@ import * as snarkjs from "snarkjs";
 import {
   type UnshieldInput,
   type UnshieldCircuitInput,
-  type SuiUnshieldProof,
   type TransferInput,
   type TransferCircuitInput,
-  type SuiTransferProof,
   type SwapInput,
   type SwapCircuitInput,
-  type SuiSwapProof,
   type Note,
   MERKLE_TREE_DEPTH,
 } from "./types.js";
 import {
-  computeNullifier,
   computeMerkleRoot,
   poseidonHash,
-  randomFieldElement,
-  encryptNote,
 } from "./crypto.js";
-import {
-  serializeProof,
-  serializePublicInputs,
-} from "./utils/index.js";
 
 // Lazy-loaded Node.js modules (only used in Node.js environment)
 let fs: any;
@@ -73,15 +63,6 @@ function validateMerkleRoot(expected: string, actual: string): void {
   }
 }
 
-/**
- * Prover configuration
- */
-export interface ProverConfig {
-  wasmPath?: string;
-  zkeyPath?: string;
-  vkPath?: string;
-}
-
 // ============ Unshield Proof Functions ============
 
 /** Get default paths to unshield circuit artifacts */
@@ -114,21 +95,23 @@ function getUnshieldCircuitPaths() {
 /**
  * Build circuit input for unshield proof (2-input support with change)
  */
-export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput: UnshieldCircuitInput; changeNote: Note | null; changeRandom: bigint } {
-  const { keypair, inputNotes, leafIndices, inputPathElements, unshieldValue } = unshieldInput;
+function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput {
+  const {
+    keypair,
+    inputNotes,
+    inputLeafIndices,
+    inputPathElements,
+    unshieldValue,
+    outputNote,
+    token
+  } = unshieldInput;
 
   // Validate inputs
   if (inputNotes.length < 1 || inputNotes.length > 2) {
     throw new Error("Unshield requires 1 or 2 input notes");
   }
-  if (leafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
+  if (inputLeafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
     throw new Error("Leaf indices and path elements must match notes count");
-  }
-
-  // Verify all notes have same token
-  const token = inputNotes[0].token;
-  if (inputNotes.some(n => n.token !== token)) {
-    throw new Error("All input notes must be same token type");
   }
 
   // Verify all path elements have correct length
@@ -140,29 +123,37 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
     }
   }
 
+  // Verify all notes have same token
+  if (inputNotes.some(n => n.token !== token)) {
+    throw new Error("All input notes must be same token type");
+  }
+
   // Pad to 2 inputs if only 1 provided (dummy note with value=0)
-  const paddedNotes = [...inputNotes];
-  const paddedIndices = [...leafIndices];
+  const paddedInputs = [...inputNotes];
+  const paddedIndices = [...inputLeafIndices];
   const paddedPaths = [...inputPathElements];
 
-  if (paddedNotes.length === 1) {
+  if (paddedInputs.length === 1) {
     // Create dummy note (value=0 triggers Merkle bypass in circuit)
+    const dummyRandom = 0n;
     const dummyNote: Note = {
       nsk: 0n,
       token: token,
       value: 0n,               // Triggers Merkle bypass
-      random: 0n,
+      random: dummyRandom,
       commitment: 0n
     };
-    paddedNotes.push(dummyNote);
-    // Use a unique leaf index for dummy note (avoid collision)
-    paddedIndices.push(leafIndices[0] === 0 ? 1 : 0);
+    paddedInputs.push(dummyNote);
+    // Use a unique leaf index for the dummy note to avoid nullifier collision.
+    const dummyIndex = inputLeafIndices[0] === 0 ? 1 : 0;
+    paddedIndices.push(dummyIndex);
     // For dummy input, path elements should all be zero
     paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
   }
 
   // Validate balance
-  const inputSum = paddedNotes.reduce((sum, n) => sum + n.value, 0n);
+  const inputSum = paddedInputs.reduce((sum, n) => sum + n.value, 0n);
+  const changeNote = outputNote;
   if (unshieldValue <= 0n) {
     throw new Error(`Unshield amount must be positive, got: ${unshieldValue}`);
   }
@@ -171,42 +162,25 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
       `Unshield amount (${unshieldValue}) exceeds total input value (${inputSum})`
     );
   }
+  const outputSum = unshieldValue + changeNote.value;
+  if (inputSum !== outputSum) {
+    throw new Error(
+      `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
+      `Unshield requires input_sum === unshield_value + change_value`
+    );
+  }
 
-  // Compute MPK (master public key) - needed for change note
-  const mpk = poseidonHash([keypair.spendingKey, keypair.nullifyingKey]);
-
-  // Calculate change amount
-  const changeValue = inputSum - unshieldValue;
-
-  // Generate random for change note
-  const changeRandom = randomFieldElement();
-
-  // Compute change NSK and commitment
-  const changeNpk = poseidonHash([mpk, changeRandom]);
-  const changeCommitment = changeValue > 0n
-    ? poseidonHash([changeNpk, token, changeValue])
-    : 0n;
-
-  // Create change note object (if any)
-  const changeNote = changeValue > 0n ? {
-    nsk: changeNpk,
-    token: token,
-    value: changeValue,
-    random: changeRandom,
-    commitment: changeCommitment,
-  } : null;
-
-  // Compute merkle root from first real note
+  // Compute merkle root from first input note
   const merkleRoot = computeMerkleRoot(
-    paddedNotes[0].commitment,
+    paddedInputs[0].commitment,
     paddedPaths[0],
     paddedIndices[0]
   );
 
-  // CRITICAL VALIDATION: Verify second input (if non-dummy) has same root
-  if (paddedNotes[1].value > 0n) {
+  // Verify second input (if non-dummy) has same root
+  if (paddedInputs.length === 2 && paddedInputs[1].value > 0n) {
     const root2 = computeMerkleRoot(
-      paddedNotes[1].commitment,
+      paddedInputs[1].commitment,
       paddedPaths[1],
       paddedIndices[1]
     );
@@ -215,31 +189,31 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
       throw new Error(
         `Merkle root mismatch! This will cause circuit failure.\n` +
         `Input 0: leafIndex=${paddedIndices[0]}, root=${merkleRoot.toString()}\n` +
-        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n` +
-        `Reason: Notes were created at different tree states.\n` +
-        `Solution: Refresh your notes to get the latest Merkle proofs and try again.`
+        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n`
       );
     }
   }
 
   const circuitInput: UnshieldCircuitInput = {
-    // Private inputs (matching new 2-input circuit)
+    // Private inputs
     spending_key: keypair.spendingKey.toString(),
     nullifying_key: keypair.nullifyingKey.toString(),
-    input_randoms: paddedNotes.map(n => n.random.toString()),
-    input_values: paddedNotes.map(n => n.value.toString()),
+
+    input_randoms: paddedInputs.map(n => n.random.toString()),
+    input_values: paddedInputs.map(n => n.value.toString()),
     input_leaf_indices: paddedIndices.map(idx => idx.toString()),
     input_path_elements: paddedPaths.map(path => path.map(e => e.toString())),
-    change_value: changeValue.toString(),
-    change_random: changeRandom.toString(),
+
+    change_value: changeNote.value.toString(),
+    change_random: changeNote.random.toString(),
+
     // Public inputs
     unshield_value: unshieldValue.toString(),
     token: token.toString(),
     merkle_root: merkleRoot.toString(),
-    // Note: input_nullifiers[2], change_commitment are outputs, not inputs
   };
 
-  return { circuitInput, changeNote, changeRandom };
+  return circuitInput;
 }
 
 /**
@@ -247,50 +221,25 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
  */
 export async function generateUnshieldProof(
   unshieldInput: UnshieldInput,
-  config: ProverConfig = {}
-): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[]; changeNote: Note | null; changeRandom: bigint }> {
-  const { wasmPath, zkeyPath } = { ...getUnshieldCircuitPaths(), ...config };
+): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
+  const { wasmPath, zkeyPath } = getUnshieldCircuitPaths();
 
-  // Build circuit input
-  const { circuitInput, changeNote, changeRandom } = buildUnshieldInput(unshieldInput);
+  // 1. Build circuit input
+  const circuitInput = buildUnshieldInput(unshieldInput);
 
-  // 1. Prepare resources (get content or paths based on environment)
+  // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
     ? validateAndGetPaths(wasmPath, zkeyPath)
     : await loadBrowserBuffers(wasmPath, zkeyPath);
 
-  // 2. Execute proof generation
+  // 3. Execute proof generation
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput as unknown as snarkjs.CircuitSignals,
     wasm,
     zkey
   );
 
-  return { proof, publicSignals, changeNote, changeRandom };
-}
-
-/**
- * Convert snarkjs proof to Sui-compatible format (Arkworks compressed) with 2-input support
- *
- * Uses shared compression utilities for consistent serialization.
- */
-export function convertUnshieldProofToSui(
-  proof: snarkjs.Groth16Proof,
-  publicSignals: string[],
-): SuiUnshieldProof {
-  // Validate public signals count for 2-input unshield circuit
-  // Expected: [unshield_value, token, merkle_root] (public inputs) + [nullifiers[2], change_commitment] (outputs) = 6 total
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for 2-input unshield, got ${publicSignals.length}`);
-  }
-
-  const proofBytes = serializeProof(proof as any);
-  const publicInputsBytes = serializePublicInputs(publicSignals);
-
-  return {
-    proofBytes,
-    publicInputsBytes
-  };
+  return { proof, publicSignals };
 }
 
 // ============ Transfer Proof Functions ============
@@ -310,12 +259,14 @@ function getTransferCircuitPaths() {
     return {
       wasmPath: path.resolve(__dirname, "../../circuits/build/transfer_js/transfer.wasm"),
       zkeyPath: path.resolve(__dirname, "../../circuits/build/transfer_final.zkey"),
+      vkPath: path.resolve(__dirname, "../../circuits/build/transfer_vk.json"),
     };
   } else {
     // Browser: Load from public directory via fetch
     return {
       wasmPath: "/circuits/transfer_js/transfer.wasm",
       zkeyPath: "/circuits/transfer_final.zkey",
+      vkPath: "/circuits/transfer_vk.json",
     };
   }
 }
@@ -324,17 +275,14 @@ function getTransferCircuitPaths() {
  * Build circuit input for transfer proof (2-input, 2-output)
  * Updated to match new transfer.circom interface with separate transfer/change outputs
  */
-export function buildTransferInput(transferInput: TransferInput): TransferCircuitInput {
+function buildTransferInput(transferInput: TransferInput): TransferCircuitInput {
   const {
     keypair,
     inputNotes,
     inputLeafIndices,
     inputPathElements,
     recipientMpk,
-    transferValue,
-    transferRandom,
-    changeValue,
-    changeRandom,
+    outputNotes,
     token
   } = transferInput;
 
@@ -342,8 +290,8 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
   if (inputNotes.length < 1 || inputNotes.length > 2) {
     throw new Error("Transfer requires 1 or 2 input notes");
   }
-  if (inputPathElements.length !== inputNotes.length) {
-    throw new Error("Path elements must match input notes count");
+  if (inputLeafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
+    throw new Error("Leaf indices and path elements must match notes count");
   }
 
   // Verify all path elements have correct length
@@ -355,14 +303,9 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
     }
   }
 
-  // Validate balance conservation
-  const inputSum = inputNotes.reduce((sum, note) => sum + note.value, 0n);
-  const outputSum = transferValue + changeValue;
-  if (inputSum !== outputSum) {
-    throw new Error(
-      `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
-      `Transfer requires input_sum === transfer_value + change_value`
-    );
+  // Verify all notes have same token
+  if (inputNotes.some(n => n.token !== token)) {
+    throw new Error("All input notes must be same token type");
   }
 
   // Pad to 2 inputs if only 1 provided (use dummy note with value=0)
@@ -371,12 +314,8 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
   const paddedPaths = [...inputPathElements];
 
   if (paddedInputs.length === 1) {
-    // Create a dummy note with value=0 to pad to 2 inputs.
-    // The circuit uses conditional constraints (isValueZero flag):
-    //   - When value=0: Merkle proof check and root equality are bypassed
-    //   - Nullifier is still computed: Poseidon(nullifying_key, leaf_index)
+    // Create dummy note (value=0 triggers Merkle bypass in circuit)
     const dummyRandom = 0n;
-
     const dummyNote: Note = {
       nsk: 0n,
       token: token,
@@ -384,25 +323,42 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
       random: dummyRandom,
       commitment: 0n
     };
-
     paddedInputs.push(dummyNote);
-
     // Use a unique leaf index for the dummy note to avoid nullifier collision.
     const dummyIndex = inputLeafIndices[0] === 0 ? 1 : 0;
     paddedIndices.push(dummyIndex);
-
-    // For a dummy/zero input, the path elements should all be zero.
+    // For dummy input, path elements should all be zero
     paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
   }
 
-  // Compute merkle root from first input
+  // Validate balance
+  const inputSum = inputNotes.reduce((sum, note) => sum + note.value, 0n);
+  const transferNote = outputNotes[0];
+  const changeNote = outputNotes[1];
+  if (transferNote.value <= 0n) {
+    throw new Error(`Transfer amount must be positive, got: ${transferNote.value}`);
+  }
+  if (transferNote.value > inputSum) {
+    throw new Error(
+      `Transfer amount (${transferNote.value}) exceeds total input value (${inputSum})`
+    );
+  }
+  const outputSum = transferNote.value + changeNote.value;
+  if (inputSum !== outputSum) {
+    throw new Error(
+      `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
+      `Transfer requires input_sum === transfer_value + change_value`
+    );
+  }
+
+  // Compute merkle root from first input note
   const merkleRoot = computeMerkleRoot(
     paddedInputs[0].commitment,
     paddedPaths[0],
     paddedIndices[0]
   );
 
-  // CRITICAL VALIDATION: Verify second input (if non-dummy) has same root
+  // Verify second input (if non-dummy) has same root
   if (paddedInputs.length === 2 && paddedInputs[1].value > 0n) {
     const root2 = computeMerkleRoot(
       paddedInputs[1].commitment,
@@ -414,33 +370,34 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
       throw new Error(
         `Merkle root mismatch! This will cause circuit failure.\n` +
         `Input 0: leafIndex=${paddedIndices[0]}, root=${merkleRoot.toString()}\n` +
-        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n` +
-        `Reason: Notes were created at different tree states.\n` +
-        `Solution: Refresh your notes to get the latest Merkle proofs and try again.`
+        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n`
       );
     }
   }
 
-  return {
+  const circuitInput: TransferCircuitInput = {
     // Private inputs
     spending_key: keypair.spendingKey.toString(),
     nullifying_key: keypair.nullifyingKey.toString(),
+
     input_randoms: paddedInputs.map((n) => n.random.toString()),
     input_values: paddedInputs.map((n) => n.value.toString()),
     input_leaf_indices: paddedIndices.map((idx) => idx.toString()),
     input_path_elements: paddedPaths.map((path) => path.map((e) => e.toString())),
 
-    // NEW: Separate transfer and change outputs
     recipient_mpk: recipientMpk.toString(),
-    transfer_value: transferValue.toString(),
-    transfer_random: transferRandom.toString(),
-    change_value: changeValue.toString(),
-    change_random: changeRandom.toString(),
+    transfer_value: transferNote.value.toString(),
+    transfer_random: transferNote.random.toString(),
+
+    change_value: changeNote.value.toString(),
+    change_random: changeNote.random.toString(),
 
     // Public inputs
     token: token.toString(),
     merkle_root: merkleRoot.toString(),
   };
+
+  return circuitInput;
 }
 
 /**
@@ -448,58 +405,28 @@ export function buildTransferInput(transferInput: TransferInput): TransferCircui
  */
 export async function generateTransferProof(
   transferInput: TransferInput,
-  config: ProverConfig = {}
 ): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
-  const { wasmPath, zkeyPath } = { ...getTransferCircuitPaths(), ...config };
+  const { wasmPath, zkeyPath } = getTransferCircuitPaths();
 
-  // Build circuit input
-  const input = buildTransferInput(transferInput);
+  // 1. Build circuit input
+  const circuitInput = buildTransferInput(transferInput);
 
-  // 1. Prepare resources (get content or paths based on environment)
+  // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
     ? validateAndGetPaths(wasmPath, zkeyPath)
     : await loadBrowserBuffers(wasmPath, zkeyPath);
 
-  // 2. Execute proof generation
+  // 3. Execute proof generation
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-    input as unknown as snarkjs.CircuitSignals,
+    circuitInput as unknown as snarkjs.CircuitSignals,
     wasm,
     zkey
   );
 
-  validateMerkleRoot(input.merkle_root, publicSignals[5]);
+  validateMerkleRoot(circuitInput.merkle_root, publicSignals[5]);
 
   return { proof, publicSignals };
 }
-
-/**
- * Convert transfer proof to Sui-compatible format (Arkworks compressed)
- *
- * Uses shared compression utilities for consistent serialization.
- *
- * IMPORTANT: Circom outputs public signals in this order:
- *   [0] nullifier1, [1] nullifier2, [2] transfer_commitment, [3] change_commitment, [4] token, [5] merkle_root
- *
- * But Move contract expects this order:
- *   [0] token, [1] merkle_root, [2] nullifier1, [3] nullifier2, [4] transfer_commitment, [5] change_commitment
- *
- * So we need to reorder the signals before serialization.
- */
-export function convertTransferProofToSui(
-  proof: snarkjs.Groth16Proof,
-  publicSignals: string[]
-): SuiTransferProof {
-  // Validate public signals count for transfer circuit
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for transfer, got ${publicSignals.length}`);
-  }
-
-  const proofBytes = serializeProof(proof as any);
-  const publicInputsBytes = serializePublicInputs(publicSignals);
-
-  return { proofBytes, publicInputsBytes };
-}
-
 
 // ============ Swap Proof Functions ============
 
@@ -533,7 +460,7 @@ function getSwapCircuitPaths() {
 /**
  * Build circuit input for swap proof
  */
-export function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
+function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
   const {
     keypair,
     inputNotes,
@@ -678,9 +605,8 @@ export function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
  */
 export async function generateSwapProof(
   swapInput: SwapInput,
-  config?: { wasmPath?: string; zkeyPath?: string }
 ): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
-  const { wasmPath, zkeyPath } = { ...getSwapCircuitPaths(), ...config };
+  const { wasmPath, zkeyPath } = getSwapCircuitPaths();
 
   // Build circuit input
   const input = buildSwapInput(swapInput);
@@ -698,26 +624,4 @@ export async function generateSwapProof(
   );
 
   return { proof, publicSignals };
-}
-
-/**
- * Convert swap proof to Sui-compatible format (Arkworks compressed)
- *
- * Uses shared compression utilities for consistent serialization.
- * This matches the pattern used in prover.ts for unshield and transfer proofs.
- */
-export function convertSwapProofToSui(
-  proof: snarkjs.Groth16Proof,
-  publicSignals: string[]
-): SuiSwapProof {
-  // Validate public signals count for swap circuit
-  // Expected: merkle_root, nullifier1, nullifier2, output_commitment, change_commitment, swap_data_hash
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for swap, got ${publicSignals.length}`);
-  }
-
-  const proofBytes = serializeProof(proof as any);
-  const publicInputsBytes = serializePublicInputs(publicSignals);
-
-  return { proofBytes, publicInputsBytes };
 }

@@ -1,35 +1,35 @@
 "use client";
 
 import { useState } from "react";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
-import { cn, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import type { TokenConfig } from "@/lib/constants";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
+import { NumberInput } from "@/components/NumberInput";
+import { RecipientInput } from "@/components/RecipientInput";
 import {
   selectNotes,
   createTransferOutputs,
   generateTransferProof,
   convertTransferProofToSui,
-  buildTransferTransaction,
-  deriveViewingPublicKey,
   importViewingPublicKey,
+  deriveViewingPublicKey,
   encryptNote,
+  buildTransferTransaction,
   type RecipientProfile,
+  type SelectableNote,
 } from "@june_zk/octopus-sdk";
-import { CIRCUIT_URLS } from "@/lib/constants";
-import type { TokenConfig } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
-import { NumberInput } from "@/components/NumberInput";
-import { RecipientInput } from "@/components/RecipientInput";
-import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface TransferFormProps {
   keypair: OctopusKeypair | null;
   tokenConfig: TokenConfig;
+  maxAmount: bigint,
   notes: OwnedNote[];
   loading: boolean;
   onSuccess?: () => void | Promise<void>;
-  onRefresh?: () => void | Promise<void>;
   markNoteSpent?: (nullifier: bigint) => void;
 }
 
@@ -41,15 +41,22 @@ type TransferState =
   | "success"
   | "error";
 
-export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoading, onSuccess, onRefresh, markNoteSpent }: TransferFormProps) {
+export function TransferForm({
+  keypair,
+  tokenConfig,
+  maxAmount,
+  notes,
+  loading: notesLoading,
+  onSuccess,
+  markNoteSpent,
+}: TransferFormProps) {
   const { packageId, network } = useNetworkConfig();
+  const account = useCurrentAccount();
   const [recipientProfile, setRecipientProfile] = useState<RecipientProfile | null>(null);
   const [amount, setAmount] = useState("");
   const [state, setState] = useState<TransferState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
-
-  const account = useCurrentAccount();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -67,26 +74,20 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       return;
     }
 
-    if (!recipientProfile || !amount || parseFloat(amount) <= 0) {
-      setError("Please enter valid recipient profile and amount");
+    if (!recipientProfile) {
+      setError("Please enter valid recipient profile");
       return;
     }
 
-    try {
-      // ============================================
-      // PRIVATE TRANSFER FLOW
-      // ============================================
-      // ✅ All components implemented:
-      // - Note encryption/decryption (ChaCha20-Poly1305 + ECDH)
-      // - Merkle proof generation from on-chain events
-      // - Transfer circuit (21,649 constraints)
-      // - Move contract with transfer() function
-      // - Pool deployed with transfer VK
-      // ============================================
+    if (!amount || parseFloat(amount) <= 0) {
+      setError("Please enter a valid amount");
+      return;
+    }
+    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
 
+    try {
       // 1. Get unspent notes
       const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
-
       if (unspentNotes.length === 0) {
         setState("error");
         setError("No unspent notes available. Shield some tokens first!");
@@ -94,25 +95,21 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       }
 
       // 2. Select notes to cover amount
-      const amountNano = BigInt(Math.floor(parseFloat(amount) * 10 ** tokenConfig.decimals));
+      const selectableNotes: SelectableNote[] = unspentNotes.map((n) => ({
+        note: n.note,
+        leafIndex: n.leafIndex,
+        pathElements: n.pathElements,
+      }))
 
-      const selectedNotes = selectNotes(
-        unspentNotes.map((n) => ({
-          note: n.note,
-          leafIndex: n.leafIndex,
-          pathElements: [], // Will be fetched lazily
-        })),
-        amountNano
-      );
-
+      const selectedNotes = selectNotes(selectableNotes, amountMist);
       if (!selectedNotes || selectedNotes.length === 0) {
         setState("error");
         setError("Insufficient balance or unable to select appropriate notes!");
         return;
       }
 
-      // Create a map to track which OwnedNotes were selected (for nullifier lookup)
-      const selectedOwnedNotes = selectedNotes.map((selectedNote) => {
+      // Convert back to OwnedNote[]
+      const selectedOwnedNotes = selectedNotes.map((selectedNote: SelectableNote) => {
         const ownedNote = unspentNotes.find((n) => n.leafIndex === selectedNote.leafIndex);
         if (!ownedNote) {
           throw new Error(`Could not find owned note for leafIndex ${selectedNote.leafIndex}`);
@@ -120,78 +117,66 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
         return ownedNote;
       });
 
-      // 3. Fetch Merkle proofs lazily for selected notes
+      // 3. Fetch Merkle proofs for selected notes
       setState("fetching-merkle-proofs");
+      const leafIndices = selectedOwnedNotes.map(n => n.leafIndex);
+
       const merkleProofs = await fetchMerkleProofs(
         keypair.spendingKey,
         tokenConfig.poolId,
-        selectedNotes.map((n) => n.leafIndex)
+        leafIndices
       );
 
-      // Attach proofs to selected notes
-      const notesWithProofs = selectedNotes.map((n) => ({
-        ...n,
-        pathElements: merkleProofs.get(n.leafIndex)!,
-      }));
+      // Attach Merkle proofs to selected notes
+      const notesWithProofs = selectedOwnedNotes.map(n => {
+        const pathElements = merkleProofs.get(n.leafIndex);
+        if (!pathElements || pathElements.length === 0) {
+          throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
+        }
+        return { ...n, pathElements };
+      });
 
-      // Validate all notes have proofs
-      if (notesWithProofs.some((n) => !n.pathElements || n.pathElements.length === 0)) {
-        throw new Error("Failed to generate Merkle proofs for selected notes");
-      }
+      // 4. Mark notes as spent before generating proof
+      selectedOwnedNotes.forEach((ownedNote) => {
+        markNoteSpent?.(ownedNote.nullifier);
+      });
 
-      // 4. Create output notes (recipient + change)
+      // 5. Create output notes (recipient + change)
       const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const [recipientNote, changeNote] = createTransferOutputs(
         recipientProfile.mpk,
         keypair.masterPublicKey,
-        amountNano,
+        amountMist,
         inputTotal,
         noteToken
       );
 
-      // 5. Mark notes as spent BEFORE generating proof
-      // This prevents the same notes from being selected again while proof is generating
-      // Even if transaction fails later, the periodic on-chain reconciliation will fix the state
-      selectedOwnedNotes.forEach((ownedNote) => {
-        markNoteSpent?.(ownedNote.nullifier);
-      });
-
-      // 6. Generate ZK proof (30-60 seconds)
+      // 6. Generate ZK proof
       setState("generating-proof");
-
-      const proof = await generateTransferProof(
-        {
-          keypair,
-          inputNotes: notesWithProofs.map((n) => n.note),
-          inputLeafIndices: notesWithProofs.map((n) => n.leafIndex),
-          inputPathElements: notesWithProofs.map((n) => n.pathElements!),
-          recipientMpk: recipientProfile.mpk,
-          transferValue: amountNano,
-          transferRandom: recipientNote.random,
-          changeValue: inputTotal - amountNano,
-          changeRandom: changeNote.random,
-          token: notesWithProofs[0].note.token,
-        },
-        {
-          wasmPath: CIRCUIT_URLS.TRANSFER.WASM,
-          zkeyPath: CIRCUIT_URLS.TRANSFER.ZKEY,
-        }
-      );
+      const proof = await generateTransferProof({
+        keypair,
+        inputNotes: notesWithProofs.map((n) => n.note),
+        inputLeafIndices: notesWithProofs.map((n) => n.leafIndex),
+        inputPathElements: notesWithProofs.map((n) => n.pathElements!),
+        recipientMpk: recipientProfile.mpk,
+        outputNotes: [recipientNote, changeNote],
+        token: notesWithProofs[0].note.token,
+      });
 
       // 7. Convert proof to Sui format
       const suiProof = convertTransferProofToSui(proof.proof, proof.publicSignals);
 
-      // 7. Encrypt output notes for recipients using viewing public keys
+      // 8. Encrypt output notes using viewing public keys
       const recipientViewingPk = typeof recipientProfile.viewingPublicKey === 'string'
         ? importViewingPublicKey(recipientProfile.viewingPublicKey)
         : recipientProfile.viewingPublicKey;
-      const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
-
       const encryptedRecipientNote = encryptNote(recipientNote, recipientViewingPk);
+
+      const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 8. Build and submit transaction
+      // 9. Build and submit transaction
       setState("submitting");
       const tx = buildTransferTransaction(
         packageId!,
@@ -203,10 +188,14 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
 
       const result = await signAndExecute({ transaction: tx });
 
-      // 8. Success!
+      // 10. Success!
       setState("success");
+      let successMessage = `Transferred ${amount} ${tokenConfig.symbol}!`;
+      if (changeNote.value > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeNote.value, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      }
       setSuccess({
-        message: `Transferred ${amount} ${tokenConfig.symbol}!`,
+        message: successMessage,
         txDigest: result.digest
       });
 
@@ -214,20 +203,12 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
       setRecipientProfile(null);
       setAmount("");
 
+      // Trigger note rescan to pick up the change note
       await onSuccess?.();
-
     } catch (err) {
       console.error("Transfer failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Transfer failed");
-
-      // CRITICAL FIX: If transaction fails, trigger refresh to reconcile state
-      // This will clean up any incorrect localStorage entries via the cleanup logic in useNotes
-      if (onRefresh) {
-        setTimeout(() => {
-          onRefresh();
-        }, 1000);
-      }
     }
   };
 
@@ -252,7 +233,7 @@ export function TransferForm({ keypair, tokenConfig, notes, loading: notesLoadin
               <>LOADING NOTES...</>
             ) : notes.length > 0 ? (
               <>
-                TOTAL: {formatTokenAmount(notes.filter((n: OwnedNote) => !n.spent).reduce((sum: bigint, n: OwnedNote) => sum + n.note.value, 0n), tokenConfig.decimals)}
+                TOTAL: {formatTokenAmount(maxAmount, tokenConfig.decimals)}
                 {notes.filter((n: OwnedNote) => !n.spent).length > 1 && (
                   <span className="text-gray-600">
                     {" "}// {notes.filter((n: OwnedNote) => !n.spent).length} NOTES
