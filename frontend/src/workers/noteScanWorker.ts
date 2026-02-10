@@ -643,15 +643,23 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
             continue;
           }
 
+          // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
+          try {
+            allCommitments.push({
+              commitment: parseCommitment(eventData.commitment),
+              leafIndex: Number(eventData.position),
+            });
+          } catch (err) {
+            throw new Error(`Failed to parse commitment at position ${eventData.position}: ${err instanceof Error ? err.message : err}`);
+          }
+
+          // Then check if note belongs to us (for ownedNotes only)
           const encryptedNoteBytes = decodeEncryptedNote(eventData.encrypted_note);
           if (!encryptedNoteBytes) continue;
 
-          // Fast filtering: skip full decryption if viewing tag doesn't match (v2 format only)
-          // For v1 format (188 bytes), quickCheckNote returns false and we proceed to full decryption
-          if (encryptedNoteBytes.length === 196) {
-            if (!quickCheckNote(encryptedNoteBytes, BigInt(request.spendingKey))) {
-              continue; // Tag doesn't match, skip this note
-            }
+          // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
+          if (!quickCheckNote(encryptedNoteBytes, BigInt(request.spendingKey))) {
+            continue; // Tag doesn't match, skip decryption (but commitment already collected)
           }
 
           const note = decryptNote(
@@ -671,16 +679,6 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
               txDigest: (node.transaction as any)?.digest || "",
             });
           }
-
-          // Collect commitment for Merkle tree
-          try {
-            allCommitments.push({
-              commitment: parseCommitment(eventData.commitment),
-              leafIndex: Number(eventData.position),
-            });
-          } catch (err) {
-            throw new Error(`Failed to parse commitment at position ${eventData.position}: ${err instanceof Error ? err.message : err}`);
-          }
         }
 
         console.log('[DEBUG] Shield event processing complete. Decrypted:', shieldNotesDecrypted);
@@ -696,14 +694,23 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           const { output_notes, output_positions, output_commitments } = eventData;
 
           for (let i = 0; i < output_notes.length; i++) {
+            // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
+            try {
+              allCommitments.push({
+                commitment: parseCommitment(output_commitments[i]),
+                leafIndex: Number(output_positions[i]),
+              });
+            } catch (err) {
+              throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
+            }
+
+            // Then check if note belongs to us (for ownedNotes only)
             const outputNoteBytes = decodeEncryptedNote(output_notes[i]);
             if (!outputNoteBytes) continue;
 
-            // Fast filtering: skip full decryption if viewing tag doesn't match (v2 format only)
-            if (outputNoteBytes.length === 196) {
-              if (!quickCheckNote(outputNoteBytes, BigInt(request.spendingKey))) {
-                continue; // Tag doesn't match, skip this note
-              }
+            // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
+            if (!quickCheckNote(outputNoteBytes, BigInt(request.spendingKey))) {
+              continue; // Tag doesn't match, skip decryption (but commitment already collected)
             }
 
             const note = decryptNote(
@@ -722,16 +729,6 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
                 nullifier: computeNullifier(BigInt(request.nullifyingKey), leafIndex),
                 txDigest: (node.transaction as any)?.digest || "",
               });
-            }
-
-            // Collect commitment
-            try {
-              allCommitments.push({
-                commitment: parseCommitment(output_commitments[i]),
-                leafIndex: Number(output_positions[i]),
-              });
-            } catch (err) {
-              throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
             }
           }
         }

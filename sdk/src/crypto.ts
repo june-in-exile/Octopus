@@ -381,18 +381,17 @@ export function encryptNote(
 /**
  * Decrypt and verify note ownership using ECDH + ChaCha20-Poly1305
  *
- * Supports both v1 (188 bytes) and v2 (196 bytes with viewing tag) formats.
+ * Only supports v2 format (196 bytes with viewing tag).
  *
  * Decryption scheme:
- * 1. Detect format (v1 or v2) based on data length
- * 2. Extract ephemeral public key from encrypted data
- * 3. Compute shared secret via ECDH with our viewing private key
- * 4. (v2 only) Verify viewing tag matches
- * 5. Derive decryption key using HKDF-SHA256
- * 6. Decrypt with ChaCha20-Poly1305
- * 7. Verify note ownership by recomputing NSK
+ * 1. Extract viewing tag and ephemeral public key from encrypted data
+ * 2. Compute shared secret via ECDH with our viewing private key
+ * 3. Verify viewing tag matches (fast filtering)
+ * 4. Derive decryption key using HKDF-SHA256
+ * 5. Decrypt with ChaCha20-Poly1305
+ * 6. Verify note ownership by recomputing NSK
  *
- * @param encryptedData - Encrypted note (v1: 188 bytes, v2: 196 bytes)
+ * @param encryptedData - Encrypted note (v2: 196 bytes)
  * @param mySpendingKey - Our spending key (to derive viewing private key)
  * @param myMpk - Our master public key (to verify ownership)
  * @returns Decrypted note if we own it, null otherwise
@@ -409,51 +408,18 @@ export function decryptNote(
         ? encryptedData
         : new Uint8Array(encryptedData);
 
-    // Detect format based on length
-    const V1_LENGTH = 188; // ephemeral_pk (32) + nonce (12) + ciphertext (144)
+    // Only support v2 format (196 bytes)
     const V2_LENGTH = 196; // viewing_tag (8) + ephemeral_pk (32) + nonce (12) + ciphertext (144)
 
-    let ephemeralPk: Uint8Array;
-    let nonce: Uint8Array;
-    let ciphertext: Uint8Array;
-
-    if (data.length === V2_LENGTH) {
-      // v2 format with viewing tag
-      const viewingTag = data.slice(0, 8);
-      ephemeralPk = data.slice(8, 40);
-      nonce = data.slice(40, 52);
-      ciphertext = data.slice(52);
-
-      // Derive our viewing private key
-      const { privateKey: myViewingSk } = deriveViewingKeypair(mySpendingKey);
-
-      // Perform ECDH to get shared secret
-      const sharedSecret = x25519.getSharedSecret(myViewingSk, ephemeralPk);
-
-      // Verify viewing tag
-      const tagInfo = new TextEncoder().encode("octopus-viewing-tag-v1");
-      const expectedTag = hkdf(sha256, sharedSecret, undefined, tagInfo, 8);
-
-      // Constant-time comparison to prevent timing attacks
-      let tagMatch = true;
-      for (let i = 0; i < 8; i++) {
-        if (viewingTag[i] !== expectedTag[i]) {
-          tagMatch = false;
-        }
-      }
-
-      if (!tagMatch) {
-        return null; // Tag doesn't match, not our note
-      }
-    } else if (data.length === V1_LENGTH) {
-      // v1 format (backward compatibility)
-      ephemeralPk = data.slice(0, 32);
-      nonce = data.slice(32, 44);
-      ciphertext = data.slice(44);
-    } else {
-      // Invalid length
-      return null;
+    if (data.length !== V2_LENGTH) {
+      return null; // Invalid length
     }
+
+    // 1. Extract components
+    const viewingTag = data.slice(0, 8);
+    const ephemeralPk = data.slice(8, 40);
+    const nonce = data.slice(40, 52);
+    const ciphertext = data.slice(52);
 
     // 2. Derive our viewing private key
     const { privateKey: myViewingSk } = deriveViewingKeypair(mySpendingKey);
@@ -461,28 +427,44 @@ export function decryptNote(
     // 3. Perform ECDH to get shared secret
     const sharedSecret = x25519.getSharedSecret(myViewingSk, ephemeralPk);
 
-    // 4. Derive decryption key using HKDF
+    // 4. Verify viewing tag (fast filtering)
+    const tagInfo = new TextEncoder().encode("octopus-viewing-tag-v1");
+    const expectedTag = hkdf(sha256, sharedSecret, undefined, tagInfo, 8);
+
+    // Constant-time comparison to prevent timing attacks
+    let tagMatch = true;
+    for (let i = 0; i < 8; i++) {
+      if (viewingTag[i] !== expectedTag[i]) {
+        tagMatch = false;
+      }
+    }
+
+    if (!tagMatch) {
+      return null; // Tag doesn't match, not our note
+    }
+
+    // 5. Derive decryption key using HKDF
     const info = new TextEncoder().encode("octopus-note-encryption-v1");
     const decryptionKey = hkdf(sha256, sharedSecret, undefined, info, 32);
 
-    // 5. Decrypt with ChaCha20-Poly1305
+    // 6. Decrypt with ChaCha20-Poly1305
     const cipher = chacha20poly1305(decryptionKey, nonce);
     const noteData = cipher.decrypt(ciphertext);
 
-    // 6. Parse decrypted data
+    // 7. Parse decrypted data
     const nsk = bytesToBigIntBE(noteData.slice(0, 32));
     const token = bytesToBigIntBE(noteData.slice(32, 64));
     const value = bytesToBigIntBE(noteData.slice(64, 96));
     const random = bytesToBigIntBE(noteData.slice(96, 128));
 
-    // 7. Verify ownership by recomputing NSK
+    // 8. Verify ownership by recomputing NSK
     // If this note belongs to us, NSK should equal Poseidon(myMpk, random)
     const expectedNpk = poseidonHash([myMpk, random]);
     if (expectedNpk !== nsk) {
       return null; // Not our note
     }
 
-    // 8. Recompute commitment to verify data integrity
+    // 9. Recompute commitment to verify data integrity
     const commitment = poseidonHash([nsk, token, value]);
 
     return {
