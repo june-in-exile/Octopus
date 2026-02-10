@@ -9,6 +9,7 @@ import {
   decryptNote as sdkDecryptNote,
   computeNullifier as sdkComputeNullifier,
   initPoseidon as sdkInitPoseidon,
+  quickCheckNote as sdkQuickCheckNote,
   bytesToBigIntLE_BN254,
 } from "@june_zk/octopus-sdk";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
@@ -18,6 +19,13 @@ import type {
   WorkerResponse,
   SerializedNote,
 } from "./types";
+import {
+  saveScanCache,
+  loadScanCache,
+  clearScanCache,
+  generateCacheKey,
+  type CachedScanData,
+} from "../lib/notesCache";
 
 // Worker State
 let isInitialized = false;
@@ -91,6 +99,14 @@ function decryptNote(
 
 function computeNullifier(nullifyingKey: bigint, leafIndex: number): string {
   return sdkComputeNullifier(nullifyingKey, leafIndex).toString();
+}
+
+function quickCheckNote(encryptedData: number[], mySpendingKey: bigint): boolean {
+  try {
+    return sdkQuickCheckNote(encryptedData, mySpendingKey);
+  } catch {
+    return false;
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operationName: string): Promise<T> {
@@ -189,13 +205,15 @@ class ClientMerkleTree {
 async function queryAllEvents(
   client: SuiGraphQLClient,
   eventType: string,
-  eventName: string
-): Promise<any[]> {
+  eventName: string,
+  startCursor?: string | null
+): Promise<{ nodes: any[]; endCursor: string | null }> {
   let allNodes: any[] = [];
   let hasNextPage = true;
-  let cursor: string | null = null;
+  let cursor: string | null = startCursor || null;
   let pageCount = 0;
   const MAX_PAGES = 10;
+  let finalEndCursor: string | null = null;
 
   while (hasNextPage && pageCount < MAX_PAGES) {
     pageCount++;
@@ -236,10 +254,11 @@ async function queryAllEvents(
     allNodes.push(...nodes);
 
     hasNextPage = query.data?.events?.pageInfo?.hasNextPage || false;
-    cursor = query.data?.events?.pageInfo?.endCursor || null;
+    finalEndCursor = query.data?.events?.pageInfo?.endCursor || null;
+    cursor = finalEndCursor;
   }
 
-  return allNodes;
+  return { nodes: allNodes, endCursor: finalEndCursor };
 }
 
 /**
@@ -305,13 +324,20 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           throw new Error("Worker not initialized");
         }
 
+        const scanStartTime = Date.now();
+
         // Create GraphQL client
         const client = new SuiGraphQLClient({ url: request.graphqlUrl });
+
+        // Generate cache key from spending key
+        const cacheKey = await generateCacheKey(request.spendingKey);
+
+        // Try to load existing cache
+        const cachedData = await loadScanCache(cacheKey, request.poolId);
 
         const ownedNotes: Array<{
           note: SerializedNote;
           leafIndex: number;
-          pathElements: string[];
           nullifier: string;
           txDigest: string;
         }> = [];
@@ -322,20 +348,38 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           leafIndex: number;
         }> = [];
 
-        postMessage({
-          type: "progress",
-          id: request.id,
-          current: 0,
-          total: 100,
-          message: "Starting to scan blockchain events...",
-        } as WorkerResponse);
+        if (cachedData) {
+          postMessage({
+            type: "progress",
+            id: request.id,
+            current: 0,
+            total: 100,
+            message: `Found cache (${cachedData.ownedNotes.length} notes). Scanning for new events...`,
+          } as WorkerResponse);
+        } else {
+          postMessage({
+            type: "progress",
+            id: request.id,
+            current: 0,
+            total: 100,
+            message: "Starting full scan of blockchain events...",
+          } as WorkerResponse);
+        }
 
         // Parallel query of Shield, Transfer, and Unshield events
-        const [allShieldNodes, allTransferNodes, allUnshieldNodes] = await Promise.all([
-          queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents'),
-          queryAllEvents(client, `${request.packageId}::pool::TransferEvent`, 'TransferEvents'),
-          queryAllEvents(client, `${request.packageId}::pool::UnshieldEvent`, 'UnshieldEvents'),
+        // If cache exists, start from last scanned cursor
+        const startCursor = cachedData?.lastScannedCursor || null;
+
+        const [shieldResult, transferResult, unshieldResult] = await Promise.all([
+          queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents', startCursor),
+          queryAllEvents(client, `${request.packageId}::pool::TransferEvent`, 'TransferEvents', startCursor),
+          queryAllEvents(client, `${request.packageId}::pool::UnshieldEvent`, 'UnshieldEvents', startCursor),
         ]);
+
+        const allShieldNodes = shieldResult.nodes;
+        const allTransferNodes = transferResult.nodes;
+        const allUnshieldNodes = unshieldResult.nodes;
+        const finalEndCursor = transferResult.endCursor; // Use any result's cursor for cache
 
         // Filter events by pool_id
         const filterByPool = (nodes: any[]) =>
@@ -446,7 +490,9 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
             hasNextPage = dfQuery.data?.object?.dynamicFields?.pageInfo?.hasNextPage || false;
             cursor = dfQuery.data?.object?.dynamicFields?.pageInfo?.endCursor || null;
 
-            if (nullifierCount >= 1000) break;
+            if (nullifierCount >= 1000) {
+              break;
+            }
           }
         } catch (err) {
           // Comprehensive fallback: count all spending events
@@ -561,8 +607,24 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
             continue;
           }
 
+          // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
+          try {
+            allCommitments.push({
+              commitment: parseCommitment(eventData.commitment),
+              leafIndex: Number(eventData.position),
+            });
+          } catch (err) {
+            throw new Error(`Failed to parse commitment at position ${eventData.position}: ${err instanceof Error ? err.message : err}`);
+          }
+
+          // Then check if note belongs to us (for ownedNotes only)
           const encryptedNoteBytes = decodeEncryptedNote(eventData.encrypted_note);
           if (!encryptedNoteBytes) continue;
+
+          // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
+          if (!quickCheckNote(encryptedNoteBytes, BigInt(request.spendingKey))) {
+            continue; // Tag doesn't match, skip decryption (but commitment already collected)
+          }
 
           const note = decryptNote(
             encryptedNoteBytes,
@@ -577,20 +639,9 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
             ownedNotes.push({
               note,
               leafIndex,
-              pathElements: [],
               nullifier: computeNullifier(BigInt(request.nullifyingKey), leafIndex),
               txDigest: (node.transaction as any)?.digest || "",
             });
-          }
-
-          // Collect commitment for Merkle tree
-          try {
-            allCommitments.push({
-              commitment: parseCommitment(eventData.commitment),
-              leafIndex: Number(eventData.position),
-            });
-          } catch (err) {
-            throw new Error(`Failed to parse commitment at position ${eventData.position}: ${err instanceof Error ? err.message : err}`);
           }
         }
 
@@ -604,8 +655,24 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           const { output_notes, output_positions, output_commitments } = eventData;
 
           for (let i = 0; i < output_notes.length; i++) {
+            // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
+            try {
+              allCommitments.push({
+                commitment: parseCommitment(output_commitments[i]),
+                leafIndex: Number(output_positions[i]),
+              });
+            } catch (err) {
+              throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
+            }
+
+            // Then check if note belongs to us (for ownedNotes only)
             const outputNoteBytes = decodeEncryptedNote(output_notes[i]);
             if (!outputNoteBytes) continue;
+
+            // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
+            if (!quickCheckNote(outputNoteBytes, BigInt(request.spendingKey))) {
+              continue; // Tag doesn't match, skip decryption (but commitment already collected)
+            }
 
             const note = decryptNote(
               outputNoteBytes,
@@ -620,59 +687,36 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
               ownedNotes.push({
                 note,
                 leafIndex,
-                pathElements: [],
                 nullifier: computeNullifier(BigInt(request.nullifyingKey), leafIndex),
                 txDigest: (node.transaction as any)?.digest || "",
               });
             }
-
-            // Collect commitment
-            try {
-              allCommitments.push({
-                commitment: parseCommitment(output_commitments[i]),
-                leafIndex: Number(output_positions[i]),
-              });
-            } catch (err) {
-              throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
-            }
           }
         }
 
-        const totalNotesDecrypted = shieldNotesDecrypted + transferNotesDecrypted;
+        // Merge with cached data if cache exists
+        if (cachedData) {
+          // Add cached notes (prepend to maintain order)
+          const cachedNotes = cachedData.ownedNotes.map(cachedNote => ({
+            note: cachedNote.note,
+            leafIndex: cachedNote.leafIndex,
+            nullifier: cachedNote.nullifier,
+            txDigest: cachedNote.txDigest,
+          }));
+          ownedNotes.unshift(...cachedNotes);
 
-        postMessage({
-          type: "progress",
-          id: request.id,
-          current: 60,
-          total: 100,
-          message: `Decrypted ${totalNotesDecrypted} notes (${shieldNotesDecrypted} Shield, ${transferNotesDecrypted} Transfer)`,
-        } as WorkerResponse);
+          // Add cached commitments
+          for (const cachedCommitment of cachedData.allCommitments) {
+            allCommitments.push({
+              commitment: BigInt(cachedCommitment.commitment),
+              leafIndex: cachedCommitment.leafIndex,
+            });
+          }
+        }
 
-        // Build Merkle tree
+        // Sort commitments for consistent tree building later
         if (allCommitments.length > 0) {
           allCommitments.sort((a, b) => a.leafIndex - b.leafIndex);
-
-          const tree = new ClientMerkleTree();
-          for (const { commitment, leafIndex } of allCommitments) {
-            tree.insert(leafIndex, commitment);
-          }
-
-          // Generate proofs for owned notes
-          for (const ownedNote of ownedNotes) {
-            const pathElements = tree.getMerkleProof(ownedNote.leafIndex);
-            ownedNote.pathElements = pathElements.map((p) => p.toString());
-
-            // Verify proof locally
-            let currentHash = BigInt(ownedNote.note.commitment);
-            const leafIndex = ownedNote.leafIndex;
-            for (let level = 0; level < pathElements.length; level++) {
-              const isRight = (leafIndex >> level) & 1;
-              const sibling = pathElements[level];
-              currentHash = isRight
-                ? hash([sibling, currentHash])
-                : hash([currentHash, sibling]);
-            }
-          }
         }
         postMessage({
           type: "progress",
@@ -681,6 +725,27 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           total: 100,
           message: `Scan complete! Found ${ownedNotes.length} notes.`,
         } as WorkerResponse);
+
+        // Save to cache
+        const scanDuration = Date.now() - scanStartTime;
+        await saveScanCache({
+          userKey: cacheKey,
+          poolId: request.poolId,
+          lastScannedCursor: finalEndCursor,
+          lastScannedTimestamp: Date.now(),
+          ownedNotes: ownedNotes.map(n => ({
+            note: n.note,
+            leafIndex: n.leafIndex,
+            nullifier: n.nullifier,
+            txDigest: n.txDigest,
+          })),
+          allCommitments: allCommitments.map(c => ({
+            commitment: c.commitment.toString(),
+            leafIndex: c.leafIndex,
+          })),
+          totalNotesInPool,
+          lastScanDuration: scanDuration,
+        });
 
         const response: WorkerResponse = {
           type: "scan_notes_result",
@@ -748,11 +813,13 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         const treeId = request.id;
         merkleTreeCache.set(treeId, tree);
 
+        const root = tree.getRoot().toString();
+
         const response: WorkerResponse = {
           type: "build_merkle_tree_result",
           id: request.id,
           treeId,
-          root: tree.getRoot().toString(),
+          root,
         };
         postMessage(response);
         break;
@@ -761,11 +828,15 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       case "count_pool_notes": {
         const client = new SuiGraphQLClient({ url: request.graphqlUrl });
 
-        const [shieldNodes, transferNodes, unshieldNodes] = await Promise.all([
+        const [shieldResult, transferResult, unshieldResult] = await Promise.all([
           queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents'),
           queryAllEvents(client, `${request.packageId}::pool::TransferEvent`, 'TransferEvents'),
           queryAllEvents(client, `${request.packageId}::pool::UnshieldEvent`, 'UnshieldEvents'),
         ]);
+
+        const shieldNodes = shieldResult.nodes;
+        const transferNodes = transferResult.nodes;
+        const unshieldNodes = unshieldResult.nodes;
 
         const filterByPool = (nodes: any[]) =>
           nodes.filter(node => (node.contents?.json as any)?.pool_id === request.poolId);
@@ -813,6 +884,61 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           type: "get_merkle_proof_result",
           id: request.id,
           pathElements: pathElements.map((p) => p.toString()),
+        };
+        postMessage(response);
+        break;
+      }
+
+      case "get_commitments": {
+        try {
+          const cache = await loadScanCache(request.userKey, request.poolId);
+
+          if (!cache) {
+            throw new Error("No scan cache found. Please refresh your notes first.");
+          }
+
+          const commitments = cache.allCommitments ?? [];
+
+          if (commitments.length === 0) {
+            throw new Error("No commitments in cache. Please refresh your notes.");
+          }
+
+          const response: WorkerResponse = {
+            type: "get_commitments_result",
+            id: request.id,
+            commitments,
+          };
+          postMessage(response);
+        } catch (err) {
+          postMessage({
+            type: "error",
+            id: request.id,
+            error: err instanceof Error ? err.message : "Failed to get commitments",
+          } as WorkerResponse);
+        }
+        break;
+      }
+
+      case "clear_cache": {
+        await clearScanCache(request.userKey, request.poolId);
+        const response: WorkerResponse = {
+          type: "clear_cache_result",
+          id: request.id,
+          success: true,
+        };
+        postMessage(response);
+        break;
+      }
+
+      case "get_cache_info": {
+        const cache = await loadScanCache(request.userKey, request.poolId);
+        const response: WorkerResponse = {
+          type: "get_cache_info_result",
+          id: request.id,
+          cacheExists: !!cache,
+          lastScanned: cache?.lastScannedTimestamp,
+          noteCount: cache?.ownedNotes.length,
+          totalNotesInPool: cache?.totalNotesInPool,
         };
         postMessage(response);
         break;

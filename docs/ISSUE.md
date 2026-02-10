@@ -1,187 +1,570 @@
-# Unshield Fund Loss Issue Analysis
+# Optimization Plan: 2-Input Unshield Circuit
 
-**Status**: 🔴 CRITICAL - Fund loss vulnerability
-**Date**: 2026-02-05
-**Priority**: P0 - Immediate fix required
+## Context
 
----
+**Problem:** Currently, unshielding tokens that require 2 notes must execute 2 separate transactions, each with its own ~15-30s proof generation time and wallet confirmation. This creates poor UX compared to the transfer operation, which can handle 2 input notes in a single transaction.
 
-## Executive Summary
+**User Request:** Optimize unshield to match transfer's capabilities - support 2 input notes in 1 transaction.
 
-**Problem**: Users lose funds when unshielding amounts smaller than their note values.
-
-**Example**:
-
-- User has notes: 0.01 SUI and 0.02 SUI
-- User wants to unshield: 0.01 SUI
-- **Result**: 0.02 SUI note is destroyed, but only 0.01 SUI transferred
-- **Loss**: 0.01 SUI permanently lost ❌
-
-**Root Cause**: Architectural mismatch between circuit (proves note ownership), contract (accepts arbitrary amount), and frontend (selects largest note).
-
-**Fix**: Frontend smart note selection + warning modal (5-6 hours, no contract/circuit changes needed)
+**Root Cause:** The unshield circuit (`unshield.circom`) is designed with 1-input architecture, while the transfer circuit (`transfer.circom`) uses 2-input architecture with conditional logic for dummy note padding.
 
 ---
 
-## Problem Statement
+## Recommended Approach
 
-用户报告了严重的资金损失问题：
+**Modify the existing unshield.circom** to support 2 inputs (following the transfer circuit pattern) rather than creating a separate circuit.
 
-- 有 0.01 SUI 和 0.02 SUI 两个 notes
-- 想要 unshield 0.01 SUI
-- 结果：0.02 SUI 的 note 被选中并销毁
-- 实际转到用户地址的只有 0.01 SUI
-- **剩余的 0.01 SUI 永久丢失**
+**Why this approach:**
+
+- Single unified API (one `generateUnshieldProof` function)
+- Simpler maintenance (one circuit to compile)
+- Clear migration path (all existing notes remain valid)
+- Follows immutability principles (extend, don't duplicate)
+
+**Trade-offs:**
+
+- Proof generation time increases ~2x for single-note unshields (15-30s → 30-60s)
+- Circuit size increases ~2x (5.3MB → ~10MB zkey file)
+- Breaking change requires circuit recompilation and contract redeployment
+
+**Net benefit:** For 2-note unshields, users save 1 transaction (~45-90s total time + gas costs).
 
 ---
 
-## Root Cause Analysis
+## Implementation Plan
 
-### 1. Note Selection Logic Issue
+### Phase 1: Circuit Modifications
 
-**File**: [frontend/src/components/UnshieldForm.tsx:99-103](../frontend/src/components/UnshieldForm.tsx#L99-L103)
+**File:** `/Users/june/Projects/Octopus/circuits/unshield.circom`
+
+**Changes needed:**
+
+1. **Convert single inputs to arrays:**
+
+   ```circom
+   // OLD:
+   signal input random;
+   signal input value;
+   signal input leaf_index;
+   signal input path_elements[levels];
+
+   // NEW:
+   signal input input_randoms[2];
+   signal input input_values[2];
+   signal input input_leaf_indices[2];
+   signal input input_path_elements[2][levels];
+   ```
+
+2. **Add dummy note detection** (pattern from transfer.circom):
+
+   ```circom
+   signal isValueZero[2];
+   signal input_nullifiers[2];
+
+   for (var i = 0; i < 2; i++) {
+       // Detect dummy notes (value == 0)
+       isValueZero[i] <== IsZero()(input_values[i]);
+
+       // Compute commitment and NSK
+       input_nsks[i] <== Poseidon(2)([mpk, input_randoms[i]]);
+       input_commitments[i] <== Poseidon(3)([input_nsks[i], token, input_values[i]]);
+
+       // Verify Merkle proof (bypassed for dummy notes)
+       calculated_roots[i] <== MerkleProof(levels)(...);
+       (1 - isValueZero[i]) * (calculated_roots[i] - merkle_root) === 0;
+
+       // Generate nullifier (0 for dummy notes)
+       calculated_nullifiers[i] <== Poseidon(2)([nullifying_key, input_leaf_indices[i]]);
+       input_nullifiers[i] <== (1 - isValueZero[i]) * calculated_nullifiers[i];
+   }
+   ```
+
+3. **Update balance conservation:**
+
+   ```circom
+   signal input_sum <== input_values[0] + input_values[1];
+   signal change_value <== input_sum - unshield_amount;
+
+   // Range check: unshield_amount <= input_sum
+   signal rangeCheck <== LessEqThan(120)([unshield_amount, input_sum]);
+   rangeCheck === 1;
+   ```
+
+4. **Update public outputs:**
+
+   ```circom
+   signal output input_nullifiers[2];  // Was: signal output nullifier
+   signal output merkle_root;
+   signal output change_commitment;
+   ```
+
+5. **Update component declaration:**
+
+   ```circom
+   component main {public [token, unshield_amount]} = Unshield(16);
+   ```
+
+**Compile:**
+
+```bash
+cd circuits
+./scripts/compile.sh  # ~1 hour, generates ~10MB zkey file
+```
+
+---
+
+### Phase 2: Move Contract Updates
+
+**File:** `/Users/june/Projects/Octopus/contracts/sources/pool.move`
+
+**Changes needed:**
+
+1. **Update function signature** (line 274):
+
+   ```move
+   public fun unshield<T>(
+       pool: &mut PrivacyPool<T>,
+       proof_bytes: vector<u8>,          // 128 bytes (unchanged)
+       public_inputs_bytes: vector<u8>,  // 192 bytes (was 128)
+       recipient: address,
+       encrypted_change_note: vector<u8>,
+       ctx: &mut TxContext,
+   )
+   ```
+
+2. **Update public inputs parser** (line 633):
+
+   ```move
+   fun parse_unshield_public_inputs(bytes: &vector<u8>):
+       (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+
+       assert!(vector::length(bytes) == 192, E_INVALID_PUBLIC_INPUTS); // 6 fields
+
+       // Parse: [token, unshield_amount] (public inputs)
+       //        [input_nullifiers[2], merkle_root, change_commitment] (outputs)
+       // ...
+   }
+   ```
+
+3. **Update nullifier handling** (line 295):
+
+   ```move
+   // Mark both nullifiers as spent (skip if zero)
+   nullifier::mark_spent(&mut pool.nullifiers, nullifier1);
+   if (!is_zero_commitment(&nullifier2)) {
+       nullifier::mark_spent(&mut pool.nullifiers, nullifier2);
+   };
+   ```
+
+4. **Update UnshieldEvent struct:**
+
+   ```move
+   public struct UnshieldEvent has copy, drop {
+       pool_id: ID,
+       nullifiers: vector<vector<u8>>,  // Array instead of single nullifier
+       recipient: address,
+       amount: u64,
+       change_commitment: vector<u8>,
+       change_position: u64,
+   }
+   ```
+
+**Test:**
+
+```bash
+cd contracts
+sui move build
+sui move test  # Expect ~27 tests to pass
+```
+
+---
+
+### Phase 3: SDK Updates
+
+**Files:**
+
+- `/Users/june/Projects/Octopus/sdk/src/types.ts`
+- `/Users/june/Projects/Octopus/sdk/src/prover.ts`
+
+**Type definitions changes:**
 
 ```typescript
-// 按金额从大到小排序
-const sortedNotes = unspentNotes.sort((a, b) => Number(b.note.value - a.note.value));
-// 选择第一个满足条件的 note（即最大的）
-const noteToSpend = sortedNotes.find(n => n.note.value >= amountMist);
+// types.ts
+export interface UnshieldInput {
+  // OLD: note, leafIndex, pathElements (single)
+  // NEW: arrays
+  notes: Note[];              // 1 or 2 input notes
+  leafIndices: number[];      // Corresponding leaf indices
+  pathElements: bigint[][];   // Corresponding Merkle proofs
+
+  keypair: OctopusKeypair;
+  unshieldAmount: bigint;
+}
+
+export interface UnshieldCircuitInput {
+  spending_key: string;
+  nullifying_key: string;
+
+  // Arrays to match circuit
+  input_randoms: string[];          // [2]
+  input_values: string[];           // [2]
+  input_leaf_indices: string[];     // [2]
+  input_path_elements: string[][];  // [2][16]
+  token: string;
+
+  change_random: string;
+  unshield_amount: string;
+}
+
+export interface SuiUnshieldProof {
+  proofBytes: Uint8Array;           // 128 bytes (unchanged)
+  publicInputsBytes: Uint8Array;    // 192 bytes (was 128)
+}
 ```
 
-**问题**: 总是选择**最大的**满足条件的 note，而不考虑是否会造成资金损失。
+**Prover logic changes (prover.ts):**
 
-### 2. Amount Mismatch Architecture
+```typescript
+export function buildUnshieldInput(unshieldInput: UnshieldInput): {
+  circuitInput: UnshieldCircuitInput;
+  changeNote: Note | null;
+  changeRandom: bigint;
+} {
+  const { notes, leafIndices, pathElements, keypair, unshieldAmount } = unshieldInput;
 
-**核心设计缺陷** - 三层架构之间的金额处理不一致：
+  // Validate
+  if (notes.length < 1 || notes.length > 2) {
+    throw new Error("Unshield requires 1 or 2 input notes");
+  }
 
-| 层级 | 如何处理金额 | 问题 |
-|------|-------------|------|
-| **Circuit** ([circuits/unshield.circom:26](../circuits/unshield.circom#L26)) | `value` 是 private input，用于计算 commitment | ❌ 不在 public inputs 中 |
-| **Public Inputs** ([circuits/unshield.circom:60](../circuits/unshield.circom#L60)) | 只包含 `merkle_root` 和 `nullifier` (64 bytes) | ❌ 没有 commitment 或 value |
-| **Contract** ([contracts/sources/pool.move:588](../contracts/sources/pool.move#L588)) | 接受独立的 `amount: u64` 参数 | ❌ 不验证是否等于 note value |
-| **Transfer** ([contracts/sources/pool.move:619](../contracts/sources/pool.move#L619)) | 转账 `amount` 给 recipient | ⚠️ 任何金额都可以，只要 pool 余额足够 |
+  // Pad to 2 inputs if only 1 provided
+  const paddedNotes = [...notes];
+  const paddedIndices = [...leafIndices];
+  const paddedPaths = [...pathElements];
 
-**资金损失流程**:
+  if (paddedNotes.length === 1) {
+    // Create dummy note (value=0 triggers Merkle bypass)
+    const dummyNote: Note = {
+      nsk: 0n, token: notes[0].token, value: 0n,
+      random: 0n, commitment: 0n
+    };
+    paddedNotes.push(dummyNote);
+    paddedIndices.push(leafIndices[0] === 0 ? 1 : 0);
+    paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
+  }
 
+  // Validate balance
+  const inputSum = paddedNotes.reduce((sum, n) => sum + n.value, 0n);
+  if (unshieldAmount > inputSum) {
+    throw new Error(`Insufficient balance`);
+  }
+
+  // Calculate change
+  const changeValue = inputSum - unshieldAmount;
+  const changeRandom = randomFieldElement();
+
+  const mpk = poseidonHash([keypair.spendingKey, keypair.nullifyingKey]);
+  const changeNpk = poseidonHash([mpk, changeRandom]);
+  const changeCommitment = changeValue > 0n
+    ? poseidonHash([changeNpk, notes[0].token, changeValue])
+    : 0n;
+
+  return {
+    circuitInput: {
+      spending_key: keypair.spendingKey.toString(),
+      nullifying_key: keypair.nullifyingKey.toString(),
+      input_randoms: paddedNotes.map(n => n.random.toString()),
+      input_values: paddedNotes.map(n => n.value.toString()),
+      input_leaf_indices: paddedIndices.map(idx => idx.toString()),
+      input_path_elements: paddedPaths.map(path => path.map(e => e.toString())),
+      token: notes[0].token.toString(),
+      change_random: changeRandom.toString(),
+      unshield_amount: unshieldAmount.toString(),
+    },
+    changeNote: changeValue > 0n ? { nsk: changeNpk, token: notes[0].token, value: changeValue, random: changeRandom, commitment: changeCommitment } : null,
+    changeRandom
+  };
+}
+
+// Update convertUnshieldProofToSui
+export function convertUnshieldProofToSui(
+  proof: snarkjs.Groth16Proof,
+  publicSignals: string[],
+): SuiUnshieldProof {
+  // Expect 6 public signals (was 4)
+  if (publicSignals.length !== 6) {
+    throw new Error(`Expected 6 public signals, got ${publicSignals.length}`);
+  }
+
+  const proofBytes = serializeProof(proof);
+  const publicInputsBytes = serializePublicInputs(publicSignals);
+
+  return { proofBytes, publicInputsBytes };
+}
 ```
-1. ZK Circuit 证明:
-   - 用户拥有 0.02 SUI note
-   - commitment = Poseidon(NSK, token, 0.02 SUI)
-   - 电路验证通过 ✓
 
-2. Public Inputs (64 bytes):
-   - merkle_root (32 bytes)
-   - nullifier (32 bytes)
-   - ❌ commitment 是 PRIVATE，不在 public inputs 中
+**Test:**
 
-3. Contract Verification:
-   - 验证 merkle_root 有效 ✓
-   - 验证 nullifier 未使用 ✓
-   - 验证 ZK proof 正确 ✓
-   - 标记 nullifier 为已使用 (0.02 note 永久销毁)
-   - ❌ 不验证 amount 参数是否等于 note value
-
-4. Token Transfer:
-   - 转账 amount = 0.01 SUI (用户输入)
-   - ❌ 不是 note 的实际 value (0.02 SUI)
-
-5. Result:
-   - 0.02 SUI note 永久销毁 ✓
-   - 用户收到 0.01 SUI ✓
-   - 0.01 SUI 永久丢失 ❌❌❌
+```bash
+cd sdk
+npm run build
+npm test
 ```
 
-### 3. No Change Mechanism
+---
 
-- **Unshield 电路**: 1-input, 0-output 设计（不支持找零）
-- **Transfer 电路**: 2-input, 2-output（可以创建找零 note）
-- **结论**: Unshield 不支持部分 unshield + 找零
+### Phase 4: Frontend Integration
+
+**File:** `/Users/june/Projects/Octopus/frontend/src/components/UnshieldForm.tsx`
+
+**Changes needed:**
+
+1. **Replace sequential execution** with single-transaction flow:
+
+```typescript
+const handleSubmit = async (e: React.FormEvent) => {
+  // ... validation ...
+
+  try {
+    // Select notes (supports 1-2 notes)
+    const selected = selectNotes(selectableNotes, amountMist);
+
+    if (selected.length > 2) {
+      throw new Error("SDK optimization allows max 2 notes per unshield");
+    }
+
+    const selectedNotes = selected.map(s =>
+      unspentNotes.find(n => n.leafIndex === s.leafIndex)!
+    );
+
+    // Fetch Merkle proofs
+    setState("fetching-merkle-proofs");
+    const leafIndices = selectedNotes.map(n => n.leafIndex);
+    const merkleProofs = await fetchMerkleProofs(
+      keypair!.spendingKey,
+      tokenConfig.poolId,
+      leafIndices
+    );
+
+    const notesWithProofs = selectedNotes.map(n => ({
+      ...n,
+      pathElements: merkleProofs.get(n.leafIndex)
+    }));
+
+    // Generate single proof for all notes
+    setState("generating-proof");
+    const { proof, publicSignals, changeNote } = await generateUnshieldProof({
+      notes: notesWithProofs.map(n => n.note),
+      leafIndices: notesWithProofs.map(n => n.leafIndex),
+      pathElements: notesWithProofs.map(n => n.pathElements!),
+      keypair: keypair!,
+      unshieldAmount: amountMist,
+    });
+
+    // Submit single transaction
+    setState("submitting");
+    const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
+    const suiProof = convertUnshieldProofToSui(proof, publicSignals);
+    const encryptedChangeNote = changeNote
+      ? encryptNote(changeNote, viewingPk)
+      : new Uint8Array(0);
+
+    const tx = buildUnshieldTransaction(
+      packageId!,
+      tokenConfig.poolId,
+      tokenConfig.type,
+      suiProof,
+      recipient,
+      encryptedChangeNote
+    );
+
+    const result = await signAndExecute({ transaction: tx });
+
+    // Mark all notes spent
+    selectedNotes.forEach(n => markNoteSpent?.(n.nullifier));
+
+    setState("success");
+    setSuccess({
+      message: `Successfully unshielded ${formatTokenAmount(amountMist, tokenConfig.decimals)} ${tokenConfig.symbol}`,
+      txDigests: [result.digest]
+    });
+
+    await onSuccess?.();
+  } catch (err) {
+    // ... error handling ...
+  }
+};
+```
+
+1. **Remove obsolete code:**
+   - Delete `executeSequentialUnshields()` function
+   - Remove multi-transaction progress tracking state
+   - Simplify progress indicator UI
+
+2. **Update info text:**
+
+   ```tsx
+   <p className="text-[10px] text-gray-400 font-mono mt-0.5">
+     // Single transaction for 1-2 notes
+   </p>
+   ```
+
+**Test:**
+
+```bash
+cd frontend
+npm run dev
+# Manual testing: unshield 1 note, unshield 2 notes, verify change notes
+```
 
 ---
 
-## Recommended Solution: Phase 1 (Immediate Fix)
+## Verification Plan
 
-**Timeline**: 5-6 hours
-**Risk**: Low
-**Breaking Changes**: None
+### Circuit Tests
 
-**Strategy**: Smart note selection + mandatory warning modal
+```bash
+cd circuits
+# Test cases:
+# 1. 1-input unshield (with dummy padding)
+# 2. 2-input unshield (both real)
+# 3. 2-input partial unshield (with change)
+# 4. Balance validation failure
+# 5. Dummy note Merkle bypass
+```
 
-### Why This Approach?
+### Contract Tests
 
-✅ **No circuit recompilation** (saves 30-60 min)
-✅ **No contract redeployment** (reduces risk)
-✅ **Quick implementation** (5-6 hours)
-✅ **Eliminates accidental fund loss**
-✅ **Can iterate in future versions**
+```bash
+cd contracts
+sui move test
+# Test cases:
+# 1. test_unshield_single_note()
+# 2. test_unshield_two_notes()
+# 3. test_unshield_with_change()
+# 4. test_unshield_double_spend_protection()
+# 5. test_unshield_zero_nullifier_handling()
+```
 
-### Implementation Overview
+### SDK Tests
 
-1. **Smart Note Selection**:
-   - Priority 1: Select exact-match note (value === amount)
-   - Priority 2: Select smallest suitable note (minimize loss)
-   - Never select note > amount without explicit confirmation
+```bash
+cd sdk
+npm test
+# Test cases:
+# 1. buildUnshieldInput with single note (padded correctly)
+# 2. buildUnshieldInput with two notes
+# 3. Balance validation
+# 4. Public signals conversion (6 fields)
+```
 
-2. **Warning Modal**:
-   - Bright red UI with fund loss calculation
-   - Clear guidance to use Transfer instead
-   - Require explicit "I Understand" confirmation
+### Integration Tests (E2E)
 
-3. **UI Enhancements**:
-   - Show all available notes with amounts
-   - Mark exact matches with green checkmark
-   - Add helper tips about Transfer tab
-
----
-
-## Critical Files to Modify
-
-### Primary Changes
-
-1. **[frontend/src/components/UnshieldForm.tsx:99-160](../frontend/src/components/UnshieldForm.tsx#L99-L160)**
-   - Refactor note selection logic (lines 99-110)
-   - Split submission into prepare + execute phases
-   - Add warning state management
-   - Update form UI with helper text
-
-2. **[frontend/src/components/FundLossWarning.tsx](../frontend/src/components/FundLossWarning.tsx)** (new)
-   - Create reusable warning modal component
-   - Bright red design with clear fund loss calculation
-   - Alternative action guidance (use Transfer instead)
-
-### Supporting Changes
-
-1. **[frontend/src/lib/utils.ts](../frontend/src/lib/utils.ts)**
-   - Add utility functions for note selection
-
-### Testing
-
-1. **[frontend/src/components/**tests**/UnshieldForm.test.tsx](../frontend/src/components/__tests__/UnshieldForm.test.tsx)** (new)
-2. **[frontend/e2e/unshield-fund-loss.spec.ts](../frontend/e2e/unshield-fund-loss.spec.ts)** (new)
+1. Shield tokens → Unshield 1 note (full amount)
+2. Shield tokens → Unshield 1 note (partial, creates change)
+3. Shield tokens → Unshield 2 notes (exact amount)
+4. Shield tokens → Unshield 2 notes (partial, creates change)
+5. Verify change notes appear after rescan
+6. Verify nullifiers prevent double-spend
+7. Check transaction events on Sui explorer
 
 ---
 
-## Future Phases
+## Migration Considerations
 
-### Phase 2: Contract Hardening
+### Breaking Changes
 
-**Timeline**: 7-8 hours
+1. **Circuit artifacts**: Requires recompilation (`./scripts/compile.sh`)
+2. **Move contract**: Requires redeployment (new package ID)
+3. **SDK API**: Breaking change to `UnshieldInput` interface
 
-- Add `commitment` to circuit public inputs (96 bytes total)
-- Modify contract to verify `amount` matches commitment value
-- Requires circuit recompilation and contract redeployment
+### Data Migration
 
-### Phase 3: Circuit Redesign
+- **Good news**: All existing shielded notes remain valid
+- Old notes work with new circuit (will be padded with dummy)
+- No data migration required
+- Users simply update to new frontend version
 
-**Timeline**: 3-4 days
+### Deployment Strategy
 
-- Redesign unshield.circom as 1-input, 2-output
-- Support automatic change note creation
-- Perfect UX: unshield any amount with automatic change handling
+1. Deploy new contracts to testnet
+2. Update testnet frontend
+3. Community testing (1-2 weeks)
+4. Fix bugs if any
+5. Deploy to mainnet
+6. Update production frontend
+7. Announce breaking changes
 
 ---
 
-**Estimated Timeline**: 5-6 hours
-**Breaking Changes**: None
-**Deployment Required**: Frontend only (hot reload)
-**Risk Level**: Low
+## Performance Impact
+
+| Metric | Current (1-input) | Optimized (2-input) | Delta |
+|--------|-------------------|---------------------|-------|
+| Circuit size | 5.3MB | ~10MB | +88% |
+| Constraints | ~64K | ~128K | +100% |
+| Proof time (1 note) | 15-30s | 30-60s | +100% |
+| Proof time (2 notes) | 30-60s (2 txs) | 30-60s (1 tx) | **-50% txs** |
+| Total time (2 notes) | 30-60s + 2 confirmations | 30-60s + 1 confirmation | **-1 confirmation** |
+| Gas cost (2 notes) | 2× unshield tx | 1× unshield tx | **-50%** |
+
+**Net benefit:** For 2-note unshields, users save 1 transaction (~45-90s + gas).
+
+**Trade-off:** Single-note unshields are slower, but most users prefer unified UX.
+
+---
+
+## Critical Files
+
+Implementation sequence (5 most critical files):
+
+1. **`/Users/june/Projects/Octopus/circuits/unshield.circom`**
+   - Core circuit logic, convert to 2-input architecture
+   - Priority: CRITICAL PATH BLOCKER
+
+2. **`/Users/june/Projects/Octopus/contracts/sources/pool.move`**
+   - On-chain verification, parse 192-byte public inputs
+   - Priority: REQUIRED for proof verification
+
+3. **`/Users/june/Projects/Octopus/sdk/src/prover.ts`**
+   - Proof generation, implement note padding logic
+   - Priority: REQUIRED for frontend integration
+
+4. **`/Users/june/Projects/Octopus/sdk/src/types.ts`**
+   - Type definitions, update interfaces
+   - Priority: FOUNDATION for SDK changes
+
+5. **`/Users/june/Projects/Octopus/frontend/src/components/UnshieldForm.tsx`**
+   - User-facing component, single-transaction flow
+   - Priority: USER EXPERIENCE IMPROVEMENTS
+
+---
+
+## Security Checklist
+
+- [ ] Verify both nullifiers are marked spent in Move contract
+- [ ] Handle zero nullifier (dummy note) correctly
+- [ ] Validate Merkle root consistency for 2-note case
+- [ ] Test double-spend prevention
+- [ ] Audit balance conservation constraints
+- [ ] Review conditional Merkle bypass logic
+- [ ] Test gas costs don't exceed limits
+- [ ] Verify event emissions include all nullifiers
+
+---
+
+## Timeline Estimate
+
+- **Week 1-2**: Circuit implementation + compilation
+- **Week 2-3**: SDK updates + testing
+- **Week 3**: Frontend integration
+- **Week 4**: Testnet deployment + community testing
+- **Week 5**: Mainnet deployment
+
+**Total**: ~5 weeks for full production rollout
+
+---
+
+## Summary
+
+This optimization extends unshield to match transfer's 2-input capabilities, enabling single-transaction multi-note unshields. The implementation follows the proven transfer circuit pattern (dummy note padding, conditional Merkle verification) and maintains all existing security guarantees. While single-note unshields become slower (~2x proof time), the overall UX improves significantly for users unshielding multiple notes (1 transaction instead of 2).

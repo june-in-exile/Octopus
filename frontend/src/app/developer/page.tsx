@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import { Header } from "@/components/Header";
+import { Footer } from "@/components/Footer";
 
 export default function DeveloperPage() {
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
@@ -620,6 +621,8 @@ export default function DeveloperPage() {
           </div>
         </div>
       </main>
+
+      <Footer />
     </div>
   );
 }

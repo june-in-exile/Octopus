@@ -1,36 +1,38 @@
 "use client";
 
 import { useState } from "react";
-import {
-  useCurrentAccount,
-  useSignAndExecuteTransaction,
-} from "@mysten/dapp-kit";
-import { Transaction } from "@mysten/sui/transactions";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
 import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
+import { NumberInput } from "@/components/NumberInput";
 import {
+  selectNotes,
+  createUnshieldOutputs,
   generateUnshieldProof,
   convertUnshieldProofToSui,
   deriveViewingPublicKey,
-  buildUnshieldTransaction,
   encryptNote,
+  buildUnshieldTransaction,
+  type SelectableNote,
 } from "@june_zk/octopus-sdk";
-import { NumberInput } from "@/components/NumberInput";
 
 interface UnshieldFormProps {
   keypair: OctopusKeypair | null;
   tokenConfig: TokenConfig;
-  maxAmount: bigint;
+  maxAmount: bigint,
   notes: OwnedNote[];
+  loading: boolean;
   onSuccess?: () => void | Promise<void>;
   markNoteSpent?: (nullifier: bigint) => void;
 }
 
 type UnshieldState =
   | "idle"
+  | "fetching-merkle-proofs"
   | "generating-proof"
   | "submitting"
   | "success"
@@ -41,23 +43,17 @@ export function UnshieldForm({
   tokenConfig,
   maxAmount,
   notes,
+  loading: notesLoading,
   onSuccess,
   markNoteSpent,
 }: UnshieldFormProps) {
-  const [amount, setAmount] = useState("");
-  const [recipient, setRecipient] = useState("");
-  const [state, setState] = useState<UnshieldState>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<{ message: string; txDigests?: string[] } | null>(null);
-
-  // Progress tracking for multi-note unshields
-  const [currentProofIndex, setCurrentProofIndex] = useState(0);
-  const [totalProofs, setTotalProofs] = useState(0);
-  const [currentTxIndex, setCurrentTxIndex] = useState(0);
-  const [totalTxs, setTotalTxs] = useState(0);
-
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
+  const [state, setState] = useState<UnshieldState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   // Auto-fill recipient with connected wallet
@@ -65,107 +61,6 @@ export function UnshieldForm({
     if (account?.address) {
       setRecipient(account.address);
     }
-  };
-
-  // Select notes for unshield using greedy algorithm (largest first)
-  const selectNotesForUnshield = (targetAmount: bigint): OwnedNote[] => {
-    const unspent = notes.filter(n => !n.spent);
-
-    // Check total balance first
-    const totalBalance = unspent.reduce((sum, n) => sum + n.note.value, 0n);
-    if (targetAmount > totalBalance) {
-      throw new Error(
-        `Insufficient balance: need ${formatTokenAmount(targetAmount, tokenConfig.decimals)} ${tokenConfig.symbol}, have ${formatTokenAmount(totalBalance, tokenConfig.decimals)} ${tokenConfig.symbol}`
-      );
-    }
-
-    // Sort by value descending (largest first)
-    const sorted = [...unspent].sort((a, b) =>
-      a.note.value > b.note.value ? -1 : 1
-    );
-
-    // Greedy selection: pick largest notes until target is met
-    const selected: OwnedNote[] = [];
-    let accumulated = 0n;
-
-    for (const note of sorted) {
-      if (accumulated >= targetAmount) break;
-      selected.push(note);
-      accumulated += note.note.value;
-    }
-
-    return selected;
-  };
-
-  // Execute sequential unshields for multiple notes
-  const executeSequentialUnshields = async (
-    selectedNotes: OwnedNote[],
-    targetAmount: bigint,
-    recipientAddr: string
-  ): Promise<{ txDigests: string[], totalChange: bigint }> => {
-    const txDigests: string[] = [];
-    let remaining = targetAmount;
-
-    setTotalProofs(selectedNotes.length);
-    setTotalTxs(selectedNotes.length);
-
-    for (let i = 0; i < selectedNotes.length; i++) {
-      const note = selectedNotes[i];
-      const isLastNote = (i === selectedNotes.length - 1);
-
-      // For last note, unshield exactly the remaining amount
-      // For other notes, unshield the full note value
-      const unshieldAmount = isLastNote ? remaining : note.note.value;
-
-      // Validate that Merkle proof exists
-      if (!note.pathElements || note.pathElements.length === 0) {
-        throw new Error(
-          `Merkle proof not available for note ${i + 1}/${selectedNotes.length}. Please refresh and try again.`
-        );
-      }
-
-      // Generate proof (10-30s per proof)
-      setCurrentProofIndex(i + 1);
-      setState("generating-proof");
-
-      const { proof, publicSignals, changeNote } = await generateUnshieldProof({
-        note: note.note,
-        leafIndex: note.leafIndex,
-        pathElements: note.pathElements,
-        keypair: keypair!,
-        unshieldAmount: unshieldAmount,
-      });
-
-      // Convert and submit transaction
-      setCurrentTxIndex(i + 1);
-      setState("submitting");
-
-      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
-
-      // Encrypt change note if it exists
-      const encryptedChangeNote = changeNote
-        ? encryptNote(changeNote, viewingPk)
-        : new Uint8Array(0);
-      
-      const tx = buildUnshieldTransaction(packageId!, tokenConfig.poolId, tokenConfig.type, suiProof, recipientAddr, encryptedChangeNote);
-
-      const result = await signAndExecute({ transaction: tx });
-      txDigests.push(result.digest);
-
-      // Mark spent optimistically
-      markNoteSpent?.(note.nullifier);
-
-      remaining -= unshieldAmount;
-
-      if (remaining <= 0n) break;
-    }
-
-    const lastNoteValue = selectedNotes[selectedNotes.length - 1].note.value;
-    const finalUnshielded = remaining > 0n ? lastNoteValue - remaining : lastNoteValue;
-    const totalChange = lastNoteValue - finalUnshielded;
-
-    return { txDigests, totalChange };
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -183,62 +78,129 @@ export function UnshieldForm({
       return;
     }
 
-    if (!amount || parseFloat(amount) <= 0) {
-      setError("Please enter a valid amount");
-      return;
-    }
-
     if (!recipient || !recipient.startsWith("0x")) {
       setError("Please enter a valid recipient address");
       return;
     }
 
-    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
-    if (amountMist > maxAmount) {
-      setError("Insufficient shielded balance");
+    if (!amount || parseFloat(amount) <= 0) {
+      setError("Please enter a valid amount");
       return;
     }
+    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // Get unspent notes
+      // 1. Get unspent notes
       const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
       if (unspentNotes.length === 0) {
-        throw new Error("No unspent notes available");
+        setState("error");
+        setError("No unspent notes available. Shield some tokens first!");
+        return;
       }
 
-      // Select notes for unshield (greedy algorithm: largest first)
-      const selectedNotes = selectNotesForUnshield(amountMist);
+      // 2. Select notes to cover amount
+      const selectableNotes: SelectableNote[] = unspentNotes.map(n => ({
+        note: n.note,
+        leafIndex: n.leafIndex,
+        pathElements: n.pathElements
+      }));
 
-      // Execute sequential unshields
-      const { txDigests, totalChange } = await executeSequentialUnshields(
-        selectedNotes,
-        amountMist,
-        recipient
+      const selectedNotes = selectNotes(selectableNotes, amountMist);
+      if (!selectedNotes || selectedNotes.length === 0) {
+        setState("error");
+        setError("Insufficient balance or unable to select appropriate notes!");
+        return;
+      }
+
+      // Convert back to OwnedNote[]
+      const selectedOwnedNotes = selectedNotes.map((selectedNote: SelectableNote) => {
+        const ownedNote = unspentNotes.find((n) => n.leafIndex === selectedNote.leafIndex);
+        if (!ownedNote) {
+          throw new Error(`Could not find owned note for leafIndex ${selectedNote.leafIndex}`);
+        }
+        return ownedNote;
+      });
+
+      // 3. Fetch Merkle proofs for selected notes
+      setState("fetching-merkle-proofs");
+      const leafIndices = selectedOwnedNotes.map(n => n.leafIndex);
+
+      const merkleProofs = await fetchMerkleProofs(
+        keypair.spendingKey,
+        tokenConfig.poolId,
+        leafIndices
       );
 
+      // Attach Merkle proofs to selected notes
+      const notesWithProofs = selectedOwnedNotes.map(n => {
+        const pathElements = merkleProofs.get(n.leafIndex);
+        if (!pathElements || pathElements.length === 0) {
+          throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
+        }
+        return { ...n, pathElements };
+      });
+
+      // 4. Mark notes as spent before generating proof
+      selectedOwnedNotes.forEach((ownedNote) => {
+        markNoteSpent?.(ownedNote.nullifier);
+      });
+
+      // 5. Create output notes (change note)
+      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
+      const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
+      const outputNote = createUnshieldOutputs(
+        keypair.masterPublicKey,
+        amountMist,
+        inputTotal,
+        noteToken
+      );
+
+      // 6. Generate ZK proof
+      setState("generating-proof");
+      const { proof, publicSignals } = await generateUnshieldProof({
+        keypair,
+        inputNotes: notesWithProofs.map(n => n.note),
+        inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
+        inputPathElements: notesWithProofs.map(n => n.pathElements!),
+        unshieldValue: amountMist,
+        outputNote,
+        token: notesWithProofs[0].note.token,
+      });
+
+      // 7. Convert proof to Sui format
+      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
+
+      // 8. Encrypt output note using viewing public keys
+      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
+      const encryptedChangeNote = encryptNote(outputNote, viewingPk)
+
+      // 9. Build and submit transaction
+      setState("submitting");
+      const tx = buildUnshieldTransaction(
+        packageId!,
+        tokenConfig.poolId,
+        tokenConfig.type,
+        suiProof,
+        recipient,
+        encryptedChangeNote
+      );
+
+      const result = await signAndExecute({ transaction: tx });
+
+      // 10. Success!
       setState("success");
-
-      // Build success message
-      let successMessage = `Successfully unshielded ${formatTokenAmount(amountMist, tokenConfig.decimals)} ${tokenConfig.symbol}`;
-      if (selectedNotes.length > 1) {
-        successMessage += ` in ${txDigests.length} transaction(s)`;
+      let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
+      if (outputNote.value > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(outputNote.value, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
-      if (totalChange > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(totalChange, tokenConfig.decimals)} ${tokenConfig.symbol})`;
-      }
-
       setSuccess({
         message: successMessage,
-        txDigests: txDigests
+        txDigest: result.digest
       });
+
+      // Clear form inputs on success
       setAmount("");
       setRecipient("");
-
-      // Reset progress counters
-      setCurrentProofIndex(0);
-      setTotalProofs(0);
-      setCurrentTxIndex(0);
-      setTotalTxs(0);
 
       // Trigger note rescan to pick up the change note
       await onSuccess?.();
@@ -246,16 +208,10 @@ export function UnshieldForm({
       console.error("Unshield failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Unshield failed");
-
-      // Reset progress counters on error
-      setCurrentProofIndex(0);
-      setTotalProofs(0);
-      setCurrentTxIndex(0);
-      setTotalTxs(0);
     }
   };
 
-  const isProcessing = state === "generating-proof" || state === "submitting";
+  const isProcessing = state === "fetching-merkle-proofs" || state === "generating-proof" || state === "submitting";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
@@ -277,7 +233,9 @@ export function UnshieldForm({
             disabled={isProcessing}
           />
           <p className="mt-2 text-[10px] text-gray-500 font-mono">
-            {notes.length > 0 ? (
+            {notesLoading ? (
+              <>LOADING NOTES...</>
+            ) : notes.length > 0 ? (
               <>
                 TOTAL: {formatTokenAmount(maxAmount, tokenConfig.decimals)}
                 {notes.filter((n: OwnedNote) => !n.spent).length > 1 && (
@@ -287,7 +245,7 @@ export function UnshieldForm({
                 )}
               </>
             ) : (
-              <>MAX: {formatTokenAmount(maxAmount, tokenConfig.decimals)}</>
+              <>NO NOTES // Shield tokens first</>
             )}
           </p>
         </div>
@@ -346,20 +304,18 @@ export function UnshieldForm({
             </svg>
             <div>
               <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
-                {state === "generating-proof"
-                  ? totalProofs > 1
-                    ? `Generating Proof ${currentProofIndex}/${totalProofs}...`
-                    : "Generating ZK Proof..."
-                  : totalTxs > 1
-                  ? `Submitting Transaction ${currentTxIndex}/${totalTxs}...`
-                  : "Submitting Transaction..."}
+                {state === "fetching-merkle-proofs"
+                  ? "Building Merkle Tree..."
+                  : state === "generating-proof"
+                    ? "Generating ZK Proof..."
+                    : "Submitting Transaction..."}
               </p>
               <p className="text-[10px] text-gray-400 font-mono mt-0.5">
-                {state === "generating-proof"
-                  ? totalProofs > 1
-                    ? `// Proof ${currentProofIndex} of ${totalProofs} (10-30s each)`
-                    : "// Proof generation in progress (10-30s)"
-                  : "// Awaiting wallet confirmation"}
+                {state === "fetching-merkle-proofs"
+                  ? "// Fetching Merkle proofs"
+                  : state === "generating-proof"
+                    ? "// Single transaction for 1-2 notes (20-60s)"
+                    : "// Awaiting wallet confirmation"}
               </p>
             </div>
           </div>
@@ -381,39 +337,19 @@ export function UnshieldForm({
             <span className="text-green-500 text-sm">✓</span>
             <div className="text-xs text-green-400 font-mono leading-relaxed">
               <p>{success.message}</p>
-              {success.txDigests && success.txDigests.length > 0 && (
-                <p className="mt-1">
-                  {success.txDigests.length === 1 ? (
-                    <>
-                      TX:{' '}
-                      <a
-                        href={`https://${network}.suivision.xyz/txblock/${success.txDigests[0]}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-cyber-blue hover:text-cyber-blue/80 underline"
-                      >
-                        [{truncateAddress(success.txDigests[0], 6)}]
-                      </a>
-                    </>
-                  ) : (
-                    <>
-                      TXs:{' '}
-                      {success.txDigests.map((digest, i) => (
-                        <span key={digest}>
-                          {i > 0 && ', '}
-                          <a
-                            href={`https://${network}.suivision.xyz/txblock/${digest}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-cyber-blue hover:text-cyber-blue/80 underline"
-                          >
-                            [{i + 1}]
-                          </a>
-                        </span>
-                      ))}
-                    </>
-                  )}
-                </p>
+              {success.txDigest && (
+                <>
+                  {' '}
+                  <a
+                    href={`https://${network}.suivision.xyz/txblock/${success.txDigest}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cyber-blue hover:text-cyber-blue/80 underline"
+                    title={`View transaction: ${success.txDigest}`}
+                  >
+                    [{truncateAddress(success.txDigest, 6)}]
+                  </a>
+                </>
               )}
             </div>
           </div>
@@ -442,12 +378,12 @@ export function UnshieldForm({
           Unshield Process:
         </h4>
         <ol className="text-[10px] text-gray-400 space-y-1.5 list-decimal list-inside font-mono leading-relaxed">
-          <li>Select note(s) to spend (largest first)</li>
+          <li>Select note(s) to spend (1-2 notes)</li>
           <li>Generate Merkle proof for each note</li>
-          <li>Calculate nullifier (prevent double-spending)</li>
-          <li>Compute change note (if amount &lt; note value)</li>
-          <li>Generate ZK proof (10-30s per note)</li>
-          <li>Submit transaction(s) sequentially</li>
+          <li>Calculate nullifiers (prevent double-spending)</li>
+          <li>Compute change note (if amount &lt; total value)</li>
+          <li>Generate ZK proof (single transaction for 1-2 notes)</li>
+          <li>Submit transaction</li>
           <li>Tokens sent to recipient + change note created</li>
         </ol>
         <div className="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent" />

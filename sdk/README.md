@@ -128,7 +128,7 @@ const result = await suiClient.signAndExecuteTransaction({ transaction: tx });
 
 ```typescript
 import {
-  selectNotesForTransfer,
+  selectNotes,
   createTransferOutputs,
   generateTransferProof,
   convertTransferProofToSui,
@@ -141,7 +141,7 @@ import {
 const recipientViewingPublicKey = "a1b2c3d4..."; // 64-char hex string
 
 // Select input notes to cover the amount
-const inputNotes = selectNotesForTransfer(myNotes, 500n);
+const inputNotes = selectNotes(myNotes, 500n);
 
 // Create output notes (recipient + change)
 const [recipientNote, changeNote] = createTransferOutputs(
@@ -326,9 +326,9 @@ Build a private swap transaction.
 
 ### Wallet Utilities
 
-#### `selectNotesForTransfer(availableNotes: SelectableNote[], amount: bigint): SelectableNote[]`
+#### `selectNotes(availableNotes: SelectableNote[], amount: bigint): SelectableNote[]`
 
-Select notes to cover transfer amount (1 or 2 notes).
+Select notes to cover the required amount (1 or 2 notes). This function is used for transfers, unshields, and swaps.
 
 **Strategy:**
 
@@ -627,7 +627,7 @@ import {
   encryptNoteExplicit,
   exportViewingPublicKey,
   ClientMerkleTree,
-  selectNotesForTransfer,
+  selectNotes,
   createTransferOutputs,
   generateUnshieldProof,
   generateTransferProof,

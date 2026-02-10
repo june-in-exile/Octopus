@@ -18,7 +18,10 @@ export type WorkerRequest =
   | BatchDecryptRequest
   | ComputeNullifierRequest
   | BuildMerkleTreeRequest
-  | GetMerkleProofRequest;
+  | GetMerkleProofRequest
+  | GetCommitmentsRequest
+  | ClearCacheRequest
+  | GetCacheInfoRequest;
 
 /**
  * Initialize Poseidon hash function in worker
@@ -102,6 +105,36 @@ export interface GetMerkleProofRequest {
   leafIndex: number;
 }
 
+/**
+ * Clear scan cache
+ */
+export interface ClearCacheRequest {
+  type: "clear_cache";
+  id: string;
+  userKey?: string; // Optional: clear specific user's cache
+  poolId?: string; // Optional: clear specific pool's cache
+}
+
+/**
+ * Get commitments from cache (for lazy Merkle proof generation)
+ */
+export interface GetCommitmentsRequest {
+  type: "get_commitments";
+  id: string;
+  userKey: string;
+  poolId: string;
+}
+
+/**
+ * Get cache info for a specific user and pool
+ */
+export interface GetCacheInfoRequest {
+  type: "get_cache_info";
+  id: string;
+  userKey: string;
+  poolId: string;
+}
+
 // ============================================================================
 // Response Types (Worker → Main Thread)
 // ============================================================================
@@ -114,6 +147,9 @@ export type WorkerResponse =
   | ComputeNullifierResponse
   | BuildMerkleTreeResponse
   | GetMerkleProofResponse
+  | GetCommitmentsResponse
+  | ClearCacheResponse
+  | GetCacheInfoResponse
   | ErrorResponse
   | ProgressResponse;
 
@@ -126,7 +162,7 @@ export interface InitResponse {
 }
 
 /**
- * Scan notes result
+ * Scan notes result (pathElements now optional - generated lazily at transaction time)
  */
 export interface ScanNotesResponse {
   type: "scan_notes_result";
@@ -134,7 +170,7 @@ export interface ScanNotesResponse {
   notes: Array<{
     note: SerializedNote;
     leafIndex: number;
-    pathElements: string[]; // BigInt[] as string[]
+    pathElements?: string[]; // OPTIONAL: BigInt[] as string[] - computed lazily when needed
     nullifier: string; // BigInt as string
     txDigest: string;
   }>;
@@ -190,6 +226,39 @@ export interface GetMerkleProofResponse {
   type: "get_merkle_proof_result";
   id: string;
   pathElements: string[]; // BigInt[] as string[]
+}
+
+/**
+ * Get commitments result (for lazy Merkle proof generation)
+ */
+export interface GetCommitmentsResponse {
+  type: "get_commitments_result";
+  id: string;
+  commitments: Array<{
+    commitment: string; // BigInt as string
+    leafIndex: number;
+  }>;
+}
+
+/**
+ * Clear cache result
+ */
+export interface ClearCacheResponse {
+  type: "clear_cache_result";
+  id: string;
+  success: boolean;
+}
+
+/**
+ * Get cache info result
+ */
+export interface GetCacheInfoResponse {
+  type: "get_cache_info_result";
+  id: string;
+  cacheExists: boolean;
+  lastScanned?: number; // Timestamp
+  noteCount?: number;
+  totalNotesInPool?: number;
 }
 
 /**

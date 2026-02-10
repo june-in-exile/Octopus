@@ -45,26 +45,7 @@ fi
 
 mkdir -p "$BUILD_DIR"
 
-# Determine which PTAU files are needed
-NEED_POT14=false
-NEED_POT15=false
-for c in "${CIRCUITS[@]}"; do
-    if [ "$c" = "unshield" ]; then
-        NEED_POT14=true
-    else
-        NEED_POT15=true
-    fi
-done
-
-if [ "$NEED_POT14" = "true" ] && [ ! -f "$BUILD_DIR/pot14_final.ptau" ]; then
-    echo "Downloading pot14_final.ptau (~200MB)..."
-    curl -L https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_14.ptau \
-        -o "$BUILD_DIR/pot14_final.ptau" --progress-bar
-    echo "✓ pot14 downloaded"
-    echo ""
-fi
-
-if [ "$NEED_POT15" = "true" ] && [ ! -f "$BUILD_DIR/pot15_final.ptau" ]; then
+if [ ! -f "$BUILD_DIR/pot15_final.ptau" ]; then
     echo "Downloading pot15_final.ptau (~400MB)..."
     curl -L https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_15.ptau \
         -o "$BUILD_DIR/pot15_final.ptau" --progress-bar
@@ -74,7 +55,7 @@ fi
 
 # Map circuit name to PTAU file
 ptau_for() {
-    [ "$1" = "unshield" ] && echo "pot14_final.ptau" || echo "pot15_final.ptau"
+    echo "pot15_final.ptau"
 }
 
 # Compile a single circuit

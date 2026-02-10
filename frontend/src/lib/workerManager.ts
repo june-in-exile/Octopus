@@ -15,7 +15,11 @@ import type {
   ComputeNullifierResponse,
   BuildMerkleTreeResponse,
   GetMerkleProofResponse,
+  GetCommitmentsResponse,
+  ClearCacheResponse,
+  GetCacheInfoResponse,
 } from "@/workers/types";
+import { generateCacheKey } from "./notesCache";
 
 type PendingRequest = {
   resolve: (value: any) => void;
@@ -89,7 +93,10 @@ class NoteScanWorkerManager {
       case "batch_decrypt_result":
       case "compute_nullifier_result":
       case "build_merkle_tree_result":
-      case "get_merkle_proof_result": {
+      case "get_merkle_proof_result":
+      case "get_commitments_result":
+      case "clear_cache_result":
+      case "get_cache_info_result": {
         const request = this.pendingRequests.get(response.id);
         if (request) {
           request.resolve(response);
@@ -184,7 +191,7 @@ class NoteScanWorkerManager {
     notes: Array<{
       note: SerializedNote;
       leafIndex: number;
-      pathElements: bigint[];
+      pathElements?: bigint[]; // OPTIONAL: generated lazily at transaction time
       nullifier: bigint;
       txDigest: string;
     }>;
@@ -210,7 +217,7 @@ class NoteScanWorkerManager {
     const processedNotes = response.notes.map((n) => ({
       note: n.note,
       leafIndex: n.leafIndex,
-      pathElements: n.pathElements.map((p) => BigInt(p)),
+      pathElements: n.pathElements?.map((p) => BigInt(p)),
       nullifier: BigInt(n.nullifier),
       txDigest: n.txDigest,
     }));
@@ -321,6 +328,106 @@ class NoteScanWorkerManager {
     });
 
     return response.pathElements.map((p) => BigInt(p));
+  }
+
+  /**
+   * Public API: Clear scan cache
+   * @param userKey - Optional user key (hash of spending key)
+   * @param poolId - Optional pool ID
+   */
+  async clearCache(userKey?: string, poolId?: string): Promise<boolean> {
+    await this.initialize();
+
+    const response = await this.sendRequest<ClearCacheResponse>({
+      type: "clear_cache",
+      id: this.generateId(),
+      userKey,
+      poolId,
+    });
+
+    return response.success;
+  }
+
+  /**
+   * Public API: Get cache info
+   * @param userKey - User key (hash of spending key)
+   * @param poolId - Pool ID
+   */
+  async getCacheInfo(
+    userKey: string,
+    poolId: string
+  ): Promise<{
+    cacheExists: boolean;
+    lastScanned?: number;
+    noteCount?: number;
+    totalNotesInPool?: number;
+  }> {
+    await this.initialize();
+
+    const response = await this.sendRequest<GetCacheInfoResponse>({
+      type: "get_cache_info",
+      id: this.generateId(),
+      userKey,
+      poolId,
+    });
+
+    return {
+      cacheExists: response.cacheExists,
+      lastScanned: response.lastScanned,
+      noteCount: response.noteCount,
+      totalNotesInPool: response.totalNotesInPool,
+    };
+  }
+
+  /**
+   * Public API: Get cached commitments (for lazy Merkle proof generation)
+   * @param userKey - User key (hash of spending key)
+   * @param poolId - Pool ID
+   */
+  async getCommitmentsFromCache(
+    userKey: string,
+    poolId: string
+  ): Promise<Array<{ commitment: bigint; leafIndex: number }>> {
+    await this.initialize();
+
+    const requestId = this.generateId();
+
+    const response = await this.sendRequest<GetCommitmentsResponse>({
+      type: "get_commitments",
+      id: requestId,
+      userKey,
+      poolId,
+    });
+
+    return response.commitments.map((c) => ({
+      commitment: BigInt(c.commitment),
+      leafIndex: c.leafIndex,
+    }));
+  }
+
+  /**
+   * Public API: Generate Merkle proofs on-demand for specific notes
+   * Called at transaction time, not during scanning
+   * @param leafIndices - Leaf indices of notes to generate proofs for
+   * @param commitments - All commitments for tree building
+   */
+  async generateMerkleProofs(
+    leafIndices: number[],
+    commitments: Array<{ commitment: bigint; leafIndex: number }>
+  ): Promise<Map<number, bigint[]>> {
+    await this.initialize();
+
+    // Build tree
+    const treeId = await this.buildMerkleTree(commitments);
+
+    // Get proofs for requested leaves
+    const proofMap = new Map<number, bigint[]>();
+    for (const leafIndex of leafIndices) {
+      const pathElements = await this.getMerkleProof(treeId, leafIndex);
+      proofMap.set(leafIndex, pathElements);
+    }
+
+    return proofMap;
   }
 
   /**

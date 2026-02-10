@@ -57,47 +57,54 @@ export interface SuiVerificationKey {
 // ============ Unshield Types ============
 
 /**
- * Input for unshielding a note with automatic change handling
+ * Input for unshielding notes with automatic change handling (2-input support)
  */
 export interface UnshieldInput {
-  /** The note being unshielded */
-  note: Note;
-  /** Position in the Merkle tree */
-  leafIndex: number;
-  /** Merkle proof path elements */
-  pathElements: bigint[];
-  /** The keypair that owns this note */
+  /** The keypair that owns these notes */
   keypair: OctopusKeypair;
-  /** Amount to unshield (must be <= note.value) */
-  unshieldAmount: bigint;
+  /** Input notes to unshield (1 or 2, will be padded to 2 with dummy if needed) */
+  inputNotes: Note[];
+  /** Positions in the Merkle tree */
+  inputLeafIndices: number[];
+  /** Merkle proof path elements for each note */
+  inputPathElements: bigint[][];
+  /** Amount to unshield */
+  unshieldValue: bigint;
+  /** Change note */
+  outputNote: Note;
+  /** Token type */
+  token: bigint;
 }
 
 /**
- * Circuit input for unshield proof generation (with change support)
- * Matches the new circuit design with updated field names
+ * Circuit input for unshield proof generation
  */
 export interface UnshieldCircuitInput {
-  // Private inputs (matching new circuit)
+  // Private inputs
   spending_key: string;
   nullifying_key: string;
-  random: string;               // Changed from input_random
-  value: string;                // Changed from input_value
-  token: string;
-  leaf_index: string;           // Changed from input_leaf_index
-  path_elements: string[];      // Changed from input_path_elements
-  change_random: string;
-  // Public input
-  unshield_amount: string;
-  // Note: merkle_root, nullifier, change_commitment are outputs, not inputs
+
+  input_randoms: string[];          // [2] - Random blinding factors for inputs
+  input_values: string[];           // [2] - Values for inputs (can be 0 for dummy)
+  input_leaf_indices: string[];     // [2] - Leaf positions in tree
+  input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
+
+  change_value: string;             // Change amount (private input)
+  change_random: string;            // Random for change note (private input)
+
+  // Public inputs
+  unshield_value: string;           // Amount to unshield
+  token: string;                    // Token type to unshield
+  merkle_root: string;              // Merkle root to verify against
 }
 
 /**
- * ZK proof data in Sui-compatible format (with change support)
+ * Unshield proof in Sui-compatible format
  */
 export interface SuiUnshieldProof {
   /** Proof points (128 bytes: A || B || C) */
   proofBytes: Uint8Array;
-  /** Public inputs (128 bytes: root || nullifier || unshield_amount || change_commitment) */
+  /** Public inputs */
   publicInputsBytes: Uint8Array;
 }
 
@@ -117,44 +124,35 @@ export interface TransferInput {
   inputPathElements: bigint[][];
   /** Recipient's master public key (for transfer output) */
   recipientMpk: bigint;
-  /** Amount to transfer to recipient */
-  transferValue: bigint;
-  /** Random blinding factor for transfer note */
-  transferRandom: bigint;
-  /** Change amount (back to sender) */
-  changeValue: bigint;
-  /** Random blinding factor for change note */
-  changeRandom: bigint;
+  /** Output notes (recipient and change) */
+  outputNotes: Note[];
   /** Token type */
   token: bigint;
 }
 
 /**
- * Circuit input for transfer proof generation (NEW INTERFACE)
- * Matches updated transfer.circom with separate transfer/change outputs
+ * Circuit input for transfer proof generation
  */
 export interface TransferCircuitInput {
   // Private inputs
   spending_key: string;
   nullifying_key: string;
+
   input_randoms: string[];          // [2] - Random blinding factors for inputs
   input_values: string[];           // [2] - Values for inputs (can be 0 for dummy)
   input_leaf_indices: string[];     // [2] - Leaf positions in tree
   input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
 
-  // NEW: Separate transfer and change outputs
   recipient_mpk: string;            // Recipient's master public key
   transfer_value: string;           // Amount to transfer to recipient
   transfer_random: string;          // Random for transfer commitment
+
   change_value: string;             // Change amount back to sender
   change_random: string;            // Random for change commitment
 
   // Public inputs
-  token: string;
-  merkle_root: string;
-
-  // Note: Public outputs (input_nullifiers[2], transfer_commitment, change_commitment)
-  // are computed by the circuit and don't need to be provided as inputs
+  token: string;                    // Token type to transfer
+  merkle_root: string;              // Merkle root to verify against
 }
 
 /**
@@ -163,7 +161,7 @@ export interface TransferCircuitInput {
 export interface SuiTransferProof {
   /** Proof points (128 bytes: A || B || C) */
   proofBytes: Uint8Array;
-  /** Public inputs (192 bytes: token || root || null1 || null2 || transfer_comm || change_comm) */
+  /** Public inputs */
   publicInputsBytes: Uint8Array;
 }
 

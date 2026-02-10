@@ -47,13 +47,17 @@ template Transfer(levels) {
     signal input merkle_root;            // Expected Merkle root
 
     // ============ Public Outputs ============
-    signal output input_nullifiers[2];         // Nullifiers for input notes
-    signal output transfer_commitment;         // Commitments for transferred amount
-    signal output change_commitment;           // Commitments for change
+    signal output input_nullifiers[2];   // Nullifiers for input notes
+    signal output transfer_commitment;   // Commitments for transferred amount
+    signal output change_commitment;     // Commitments for change
 
     // ============ Step 1: Range Check ============
-    signal positiveTransfer <== GreaterThan(120)([transfer_value, 0]);
-    positiveTransfer === 1;
+    // Transfer amount > 0
+    signal valid_transfer <== GreaterThan(120)([transfer_value, 0]);
+    valid_transfer === 1;
+    // Change amount >= 0
+    signal valid_change <== GreaterEqThan(120)([change_value, 0]);
+    valid_change === 1;
 
     // ============ Step 2: Balance Conservation ============
     // Verify sum(input_values) = sum(output_values)
@@ -74,10 +78,10 @@ template Transfer(levels) {
     // 4. Verify commitment exists in Merkle tree (skip for dummy notes with value=0)
 
     signal input_nsks[2];             // Note secret keys
-    signal input_commitments[2];
+    signal input_commitments[2];      // Input note commitments
     signal isValueZero[2];            // Detect dummy notes (value == 0)
-    signal calculated_nullifiers[2];
-    signal calculated_roots[2];
+    signal calculated_nullifiers[2];  // Temporary nullifiers
+    signal calculated_roots[2];       // Temporary merkle roots
 
     for (var i = 0; i < 2; i++) {
         // Verify note ownership: NSK = Poseidon(MPK, random)
