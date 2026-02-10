@@ -1,43 +1,3 @@
-// Byte conversion utilities
-export {
-  bigIntToBE32,
-  bytesToBigIntBE,
-  bigIntToLE32,
-  bytesToBigIntLE,
-  hexToBytes,
-  bytesToHex,
-  bytesToBigIntLE_BN254,
-  bytesToHex0x,
-} from "./utils/bytes.js";
-
-// Math utilities
-export {
-  calculateMinOutput,
-  calculatePercentageChange,
-  calculatePriceImpact,
-} from "./utils/math.js";
-
-// Cryptographic utilities
-export {
-  initPoseidon,
-  poseidonHash,
-  randomFieldElement,
-  deriveKeypair,
-  generateKeypair,
-  createNote,
-  computeNullifier,
-  computeZeroHashes,
-  computeMerkleRoot,
-  deriveViewingPublicKey,
-  exportViewingPublicKey,
-  importViewingPublicKey,
-  isValidViewingPublicKey,
-  encryptNoteExplicit,
-  encryptNote,
-  decryptNote,
-  quickCheckNote,
-} from "./crypto.js";
-
 // DEX Integration (DeepBook price fetching - legacy Cetus exports deprecated)
 // Note: Cetus integration has been replaced with DeepBook
 // export {
@@ -63,10 +23,40 @@ export {
   type DexAdapter,
 } from "./dex/adapter.js";
 
+// Byte conversion, math, and proof compression utilities
+export * from "./utils/index.js";
+
+// Cryptographic utilities
+export {
+  initPoseidon,
+  poseidonHash,
+  randomFieldElement,
+  deriveKeypair,
+  generateKeypair,
+  createNote,
+  computeNullifier,
+  computeZeroHashes,
+  computeMerkleRoot,
+  deriveViewingPublicKey,
+  exportViewingPublicKey,
+  importViewingPublicKey,
+  isValidViewingPublicKey,
+  encryptNoteExplicit,
+  encryptNote,
+  decryptNote,
+  quickCheckNote,
+} from "./crypto.js";
+
 // Merkle tree utilities
 export {
   ClientMerkleTree,
 } from "./merkle.js";
+
+// Note utilities (Note selection)
+export {
+  selectNotes,
+  type SelectableNote,
+} from "./note.js";
 
 // Proof generation
 export {
@@ -89,11 +79,9 @@ export {
   type SuiConfig,
 } from "./transaction.js";
 
-// Wallet utilities (Note selection for transfers, unshields, and swaps)
+// Transfer utilities
 export {
-  selectNotes,
   createTransferOutputs,
-  type SelectableNote,
 } from "./transfer.js";
 
 // Types

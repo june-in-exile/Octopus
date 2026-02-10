@@ -19,35 +19,59 @@ async function main() {
     // In production, these would be securely generated
     const spending_key = "12345678901234567890123456789012345678901234567890";
     const nullifying_key = "98765432109876543210987654321098765432109876543210";
-    const input_random = "11111111111111111111111111111111111111111111111111";
-    const input_value = "1000000000"; // 1 SUI (9 decimals)
+
+    // Two input notes: one real note + one dummy note (value=0)
+    const input_randoms = [
+        "11111111111111111111111111111111111111111111111111", // Input 0: real note
+        "33333333333333333333333333333333333333333333333333"  // Input 1: dummy note
+    ];
+    const input_values = [
+        "1000000000", // Input 0: 1 SUI (9 decimals)
+        "0"           // Input 1: dummy note (value=0)
+    ];
+    const input_leaf_indices = [
+        "0", // Input 0: first leaf position
+        "1"  // Input 1: second leaf position (dummy)
+    ];
+
     const unshield_amount = "600000000"; // 0.6 SUI to unshield
     const token = "123456789"; // Token identifier (hash of type in production)
-    const input_leaf_index = "0"; // First leaf position
 
     // Change note parameters
     const change_random = "22222222222222222222222222222222222222222222222222";
 
-    // ============ Compute Derived Values for Input Note ============
+    // ============ Compute Derived Values for Input Notes ============
 
     // MPK = Poseidon(spending_key, nullifying_key)
     const mpk = hash([spending_key, nullifying_key]);
     console.log("MPK:", mpk);
 
-    // Input NSK = Poseidon(MPK, input_random)
-    const nsk = hash([mpk, input_random]);
-    console.log("NSK:", nsk);
+    // Compute NSK, Commitment, and Nullifier for both input notes
+    const input_nsks = [];
+    const input_commitments = [];
+    const input_nullifiers = [];
 
-    // Input Commitment = Poseidon(nsk, token, input_value)
-    const commitment = hash([nsk, token, input_value]);
-    console.log("Commitment:", commitment);
+    for (let i = 0; i < 2; i++) {
+        // Input NSK = Poseidon(MPK, input_random)
+        const nsk = hash([mpk, input_randoms[i]]);
+        input_nsks.push(nsk);
+        console.log(`Input ${i} NSK:`, nsk);
 
-    // Nullifier = Poseidon(nullifying_key, input_leaf_index)
-    const nullifier = hash([nullifying_key, input_leaf_index]);
-    console.log("Nullifier:", nullifier);
+        // Input Commitment = Poseidon(nsk, token, input_value)
+        const commitment = hash([nsk, token, input_values[i]]);
+        input_commitments.push(commitment);
+        console.log(`Input ${i} Commitment:`, commitment);
+
+        // Nullifier = Poseidon(nullifying_key, input_leaf_index)
+        const nullifier = hash([nullifying_key, input_leaf_indices[i]]);
+        input_nullifiers.push(nullifier);
+        console.log(`Input ${i} Nullifier:`, nullifier);
+    }
 
     // ============ Compute Change Note ============
-    const change_value = BigInt(input_value) - BigInt(unshield_amount);
+    const total_input_value = BigInt(input_values[0]) + BigInt(input_values[1]);
+    const change_value = total_input_value - BigInt(unshield_amount);
+    console.log("Total Input Value:", total_input_value.toString());
     console.log("Change Value:", change_value.toString());
 
     // Change NSK = Poseidon(MPK, change_random)
@@ -62,8 +86,8 @@ async function main() {
     console.log("Change Commitment:", change_commitment);
 
     // ============ Compute Merkle Root ============
-    // For testing, we compute the root with a single leaf (input_commitment at index 0)
-    // All siblings are "zero hashes" (hash of empty subtree at each level)
+    // For testing, we compute the root with the first real note at index 0
+    // The dummy note (input 1) has value=0, so its merkle proof won't be verified by the circuit
 
     const LEVELS = 16;
 
@@ -77,14 +101,23 @@ async function main() {
     }
     console.log("Zero hashes computed");
 
-    // Path elements are all zeros (since tree has only one leaf at index 0)
-    const path_elements = zeros.slice(0, LEVELS);
+    // Compute path elements for both inputs
+    const input_path_elements = [];
 
-    // Compute merkle root
+    // Input 0: real note at index 0, all siblings are zero hashes
+    const path_elements_0 = zeros.slice(0, LEVELS);
+    input_path_elements.push(path_elements_0);
+
+    // Input 1: dummy note (value=0), merkle proof won't be verified
+    // Use zero hashes for simplicity
+    const path_elements_1 = zeros.slice(0, LEVELS);
+    input_path_elements.push(path_elements_1);
+
+    // Compute merkle root using the first real note
     // At each level, our value is on the left (index bit = 0), sibling is zero hash
-    let current = commitment;
+    let current = input_commitments[0];
     for (let i = 0; i < LEVELS; i++) {
-        current = hash([current, path_elements[i]]);
+        current = hash([current, path_elements_0[i]]);
     }
     const merkle_root = current;
     console.log("Merkle Root:", merkle_root);
@@ -94,15 +127,17 @@ async function main() {
         // Private inputs
         spending_key,
         nullifying_key,
-        random: input_random,
-        value: input_value,
-        token,
-        leaf_index: input_leaf_index,
-        path_elements,
+        input_randoms,
+        input_values,
+        input_leaf_indices,
+        input_path_elements,
+        change_value: change_value.toString(),
         change_random,
 
-        // Public input
-        unshield_amount
+        // Public inputs
+        unshield_value: unshield_amount,
+        token,
+        merkle_root
     };
 
     // Save to file
@@ -110,16 +145,20 @@ async function main() {
     console.log("\nInput saved to build/unshield_input.json");
 
     // Print expected public signals for verification
-    console.log("\n=== Expected Public Signals (4 elements) ===");
-    console.log("Expected order: [nullifier, merkle_root, change_commitment, unshield_amount]");
-    console.log("1. nullifier:", nullifier);
-    console.log("2. merkle_root:", merkle_root);
+    console.log("\n=== Expected Public Signals (5 elements) ===");
+    console.log("Expected order: [input_nullifiers[0], input_nullifiers[1], change_commitment, unshield_value, token, merkle_root]");
+    console.log("1. input_nullifiers[0]:", input_nullifiers[0]);
+    console.log("2. input_nullifiers[1]:", input_nullifiers[1], "(should be 0 for dummy note)");
     console.log("3. change_commitment:", change_commitment);
-    console.log("4. unshield_amount:", unshield_amount);
+    console.log("4. unshield_value:", unshield_amount);
+    console.log("5. token:", token);
+    console.log("6. merkle_root:", merkle_root);
 
     // Print values for verification
     console.log("\n=== Test Scenario ===");
-    console.log("Input note value:", input_value, "(" + (BigInt(input_value) / 1000000000n).toString() + " SUI)");
+    console.log("Input 0 value:", input_values[0], "(" + (BigInt(input_values[0]) / 1000000000n).toString() + " SUI) - Real note");
+    console.log("Input 1 value:", input_values[1], "(" + (BigInt(input_values[1]) / 1000000000n).toString() + " SUI) - Dummy note");
+    console.log("Total input:", total_input_value.toString(), "(" + (total_input_value / 1000000000n).toString() + " SUI)");
     console.log("Unshield amount:", unshield_amount, "(" + (BigInt(unshield_amount) / 1000000000n).toString() + " SUI)");
     console.log("Change value:", change_value.toString(), "(" + (change_value / 1000000000n).toString() + " SUI)");
     console.log("Has change:", change_value > 0n);

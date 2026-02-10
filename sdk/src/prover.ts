@@ -28,7 +28,7 @@ import {
 import {
   serializeProof,
   serializePublicInputs,
-} from "./utils/proof-compression.js";
+} from "./utils/index.js";
 
 // Lazy-loaded Node.js modules (only used in Node.js environment)
 let fs: any;
@@ -112,25 +112,63 @@ function getUnshieldCircuitPaths() {
 }
 
 /**
- * Build circuit input for unshield proof with change support
+ * Build circuit input for unshield proof (2-input support with change)
  */
 export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput: UnshieldCircuitInput; changeNote: Note | null; changeRandom: bigint } {
-  const { note, leafIndex, pathElements, keypair, unshieldAmount } = unshieldInput;
+  const { keypair, inputNotes, leafIndices, inputPathElements, unshieldValue } = unshieldInput;
 
-  // Verify path elements length
-  if (pathElements.length !== MERKLE_TREE_DEPTH) {
-    throw new Error(
-      `Invalid path elements length: ${pathElements.length}, expected ${MERKLE_TREE_DEPTH}`
-    );
+  // Validate inputs
+  if (inputNotes.length < 1 || inputNotes.length > 2) {
+    throw new Error("Unshield requires 1 or 2 input notes");
+  }
+  if (leafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
+    throw new Error("Leaf indices and path elements must match notes count");
   }
 
-  // Verify unshield amount is valid
-  if (unshieldAmount <= 0n) {
-    throw new Error(`Unshield amount must be positive, got: ${unshieldAmount}`);
+  // Verify all notes have same token
+  const token = inputNotes[0].token;
+  if (inputNotes.some(n => n.token !== token)) {
+    throw new Error("All input notes must be same token type");
   }
-  if (unshieldAmount > note.value) {
+
+  // Verify all path elements have correct length
+  for (const paths of inputPathElements) {
+    if (paths.length !== MERKLE_TREE_DEPTH) {
+      throw new Error(
+        `Invalid path elements length: ${paths.length}, expected ${MERKLE_TREE_DEPTH}`
+      );
+    }
+  }
+
+  // Pad to 2 inputs if only 1 provided (dummy note with value=0)
+  const paddedNotes = [...inputNotes];
+  const paddedIndices = [...leafIndices];
+  const paddedPaths = [...inputPathElements];
+
+  if (paddedNotes.length === 1) {
+    // Create dummy note (value=0 triggers Merkle bypass in circuit)
+    const dummyNote: Note = {
+      nsk: 0n,
+      token: token,
+      value: 0n,               // Triggers Merkle bypass
+      random: 0n,
+      commitment: 0n
+    };
+    paddedNotes.push(dummyNote);
+    // Use a unique leaf index for dummy note (avoid collision)
+    paddedIndices.push(leafIndices[0] === 0 ? 1 : 0);
+    // For dummy input, path elements should all be zero
+    paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
+  }
+
+  // Validate balance
+  const inputSum = paddedNotes.reduce((sum, n) => sum + n.value, 0n);
+  if (unshieldValue <= 0n) {
+    throw new Error(`Unshield amount must be positive, got: ${unshieldValue}`);
+  }
+  if (unshieldValue > inputSum) {
     throw new Error(
-      `Unshield amount (${unshieldAmount}) exceeds note value (${note.value})`
+      `Unshield amount (${unshieldValue}) exceeds total input value (${inputSum})`
     );
   }
 
@@ -138,7 +176,7 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
   const mpk = poseidonHash([keypair.spendingKey, keypair.nullifyingKey]);
 
   // Calculate change amount
-  const changeValue = note.value - unshieldAmount;
+  const changeValue = inputSum - unshieldValue;
 
   // Generate random for change note
   const changeRandom = randomFieldElement();
@@ -146,31 +184,59 @@ export function buildUnshieldInput(unshieldInput: UnshieldInput): { circuitInput
   // Compute change NSK and commitment
   const changeNpk = poseidonHash([mpk, changeRandom]);
   const changeCommitment = changeValue > 0n
-    ? poseidonHash([changeNpk, note.token, changeValue])
+    ? poseidonHash([changeNpk, token, changeValue])
     : 0n;
 
   // Create change note object (if any)
   const changeNote = changeValue > 0n ? {
     nsk: changeNpk,
-    token: note.token,
+    token: token,
     value: changeValue,
     random: changeRandom,
     commitment: changeCommitment,
   } : null;
 
+  // Compute merkle root from first real note
+  const merkleRoot = computeMerkleRoot(
+    paddedNotes[0].commitment,
+    paddedPaths[0],
+    paddedIndices[0]
+  );
+
+  // CRITICAL VALIDATION: Verify second input (if non-dummy) has same root
+  if (paddedNotes[1].value > 0n) {
+    const root2 = computeMerkleRoot(
+      paddedNotes[1].commitment,
+      paddedPaths[1],
+      paddedIndices[1]
+    );
+
+    if (root2 !== merkleRoot) {
+      throw new Error(
+        `Merkle root mismatch! This will cause circuit failure.\n` +
+        `Input 0: leafIndex=${paddedIndices[0]}, root=${merkleRoot.toString()}\n` +
+        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n` +
+        `Reason: Notes were created at different tree states.\n` +
+        `Solution: Refresh your notes to get the latest Merkle proofs and try again.`
+      );
+    }
+  }
+
   const circuitInput: UnshieldCircuitInput = {
-    // Private inputs (matching new circuit field names)
+    // Private inputs (matching new 2-input circuit)
     spending_key: keypair.spendingKey.toString(),
     nullifying_key: keypair.nullifyingKey.toString(),
-    random: note.random.toString(),              // Changed from input_random
-    value: note.value.toString(),                // Changed from input_value
-    token: note.token.toString(),
-    leaf_index: leafIndex.toString(),            // Changed from input_leaf_index
-    path_elements: pathElements.map((e) => e.toString()), // Changed from input_path_elements
+    input_randoms: paddedNotes.map(n => n.random.toString()),
+    input_values: paddedNotes.map(n => n.value.toString()),
+    input_leaf_indices: paddedIndices.map(idx => idx.toString()),
+    input_path_elements: paddedPaths.map(path => path.map(e => e.toString())),
+    change_value: changeValue.toString(),
     change_random: changeRandom.toString(),
-    // Public input
-    unshield_amount: unshieldAmount.toString(),
-    // Note: merkle_root, nullifier, change_commitment are computed by the circuit
+    // Public inputs
+    unshield_value: unshieldValue.toString(),
+    token: token.toString(),
+    merkle_root: merkleRoot.toString(),
+    // Note: input_nullifiers[2], change_commitment are outputs, not inputs
   };
 
   return { circuitInput, changeNote, changeRandom };
@@ -204,7 +270,7 @@ export async function generateUnshieldProof(
 }
 
 /**
- * Convert snarkjs proof to Sui-compatible format (Arkworks compressed) with change note support
+ * Convert snarkjs proof to Sui-compatible format (Arkworks compressed) with 2-input support
  *
  * Uses shared compression utilities for consistent serialization.
  */
@@ -212,9 +278,10 @@ export function convertUnshieldProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[],
 ): SuiUnshieldProof {
-  // Validate public signals count for unshield circuit
-  if (publicSignals.length !== 4) {
-    throw new Error(`Expected 4 public signals for unshield, got ${publicSignals.length}`);
+  // Validate public signals count for 2-input unshield circuit
+  // Expected: [unshield_value, token, merkle_root] (public inputs) + [nullifiers[2], change_commitment] (outputs) = 6 total
+  if (publicSignals.length !== 6) {
+    throw new Error(`Expected 6 public signals for 2-input unshield, got ${publicSignals.length}`);
   }
 
   const proofBytes = serializeProof(proof as any);

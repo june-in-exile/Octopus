@@ -57,47 +57,49 @@ export interface SuiVerificationKey {
 // ============ Unshield Types ============
 
 /**
- * Input for unshielding a note with automatic change handling
+ * Input for unshielding notes with automatic change handling (2-input support)
  */
 export interface UnshieldInput {
-  /** The note being unshielded */
-  note: Note;
-  /** Position in the Merkle tree */
-  leafIndex: number;
-  /** Merkle proof path elements */
-  pathElements: bigint[];
-  /** The keypair that owns this note */
+  /** The keypair that owns these notes */
   keypair: OctopusKeypair;
-  /** Amount to unshield (must be <= note.value) */
-  unshieldAmount: bigint;
+  /** Input notes to unshield (1 or 2, will be padded to 2 with dummy if needed) */
+  inputNotes: Note[];
+  /** Positions in the Merkle tree */
+  leafIndices: number[];
+  /** Merkle proof path elements for each note */
+  inputPathElements: bigint[][];
+  /** Amount to unshield (must be <= sum of note values) */
+  unshieldValue: bigint;
 }
 
 /**
- * Circuit input for unshield proof generation (with change support)
- * Matches the new circuit design with updated field names
+ * Circuit input for unshield proof generation (2-input support with change)
+ * Matches the new 2-input circuit design
  */
 export interface UnshieldCircuitInput {
-  // Private inputs (matching new circuit)
+  // Private inputs (matching new 2-input circuit)
   spending_key: string;
   nullifying_key: string;
-  random: string;               // Changed from input_random
-  value: string;                // Changed from input_value
+  input_randoms: string[];          // [2] - Random blinding factors for inputs
+  input_values: string[];           // [2] - Values for inputs (can be 0 for dummy)
+  input_leaf_indices: string[];     // [2] - Leaf positions in tree
+  input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
+  change_value: string;             // Change amount (private input)
+  change_random: string;            // Random for change note (private input)
+  // Public inputs
+  unshield_value: string;           // Amount to unshield
   token: string;
-  leaf_index: string;           // Changed from input_leaf_index
-  path_elements: string[];      // Changed from input_path_elements
-  change_random: string;
-  // Public input
-  unshield_amount: string;
-  // Note: merkle_root, nullifier, change_commitment are outputs, not inputs
+  merkle_root: string;              // Merkle root to verify against
+  // Note: input_nullifiers[2], change_commitment are outputs, not inputs
 }
 
 /**
- * ZK proof data in Sui-compatible format (with change support)
+ * ZK proof data in Sui-compatible format (2-input with change support)
  */
 export interface SuiUnshieldProof {
   /** Proof points (128 bytes: A || B || C) */
   proofBytes: Uint8Array;
-  /** Public inputs (128 bytes: root || nullifier || unshield_amount || change_commitment) */
+  /** Public inputs (192 bytes: token || unshield_amount || nullifiers[2] || root || change_commitment) */
   publicInputsBytes: Uint8Array;
 }
 

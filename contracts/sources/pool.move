@@ -81,8 +81,8 @@ module octopus::pool {
     public struct UnshieldEvent has copy, drop {
         /// Pool ID where the unshield occurred
         pool_id: ID,
-        /// Nullifier that was spent
-        nullifier: vector<u8>,
+        /// Nullifiers that were spent (up to 2)
+        input_nullifiers: vector<vector<u8>>,
         /// Recipient address
         recipient: address,
         /// Amount withdrawn
@@ -261,16 +261,20 @@ module octopus::pool {
     ///
     /// The ZK proof proves:
     /// 1. Knowledge of spending_key and nullifying_key (ownership)
-    /// 2. Input note commitment exists in Merkle tree
+    /// 2. Input notes (up to 2) exist in Merkle tree
     /// 3. Correct nullifier computation: nullifier = Poseidon(nullifying_key, leaf_index)
-    /// 4. Balance conservation: input_value = unshield_amount + change_value
+    /// 4. Balance conservation: sum(input_values) = unshield_value + change_value
     /// 5. Correct change commitment computation (if change exists)
     ///
-    /// Public inputs format (128 bytes total):
-    /// - nullifier (32 bytes): Unique identifier preventing double-spend
-    /// - merkle_root (32 bytes): Merkle tree root
+    /// Public signals format (192 bytes total):
+    /// Public outputs (computed by circuit):
+    /// - input_nullifiers[0] (32 bytes): First nullifier
+    /// - input_nullifiers[1] (32 bytes): Second nullifier (0 if dummy note)
     /// - change_commitment (32 bytes): Commitment for change note (0 if no change)
-    /// - unshield_amount (32 bytes): Amount to withdraw (as field element)
+    /// Public inputs (provided by user):
+    /// - unshield_value (32 bytes): Amount to withdraw (as field element)
+    /// - token (32 bytes): Token type identifier
+    /// - merkle_root (32 bytes): Merkle tree root
     public fun unshield<T>(
         pool: &mut PrivacyPool<T>,
         proof_bytes: vector<u8>,
@@ -279,21 +283,24 @@ module octopus::pool {
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
     ) {
-        // Validate public inputs length (4 field elements × 32 bytes = 128 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 128, E_INVALID_PUBLIC_INPUTS);
+        // Validate public inputs length (6 field elements × 32 bytes = 192 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 192, E_INVALID_PUBLIC_INPUTS);
 
-        // 1. Parse public inputs [nullifier, merkle_root, change_commitment, unshield_amount]
-        let (merkle_root, nullifier_bytes, unshield_amount_bytes, change_commitment) =
+        // 1. Parse public inputs [input_nullifiers[2], change_commitment, unshield_value, token, merkle_root]
+        let (nullifier1, nullifier2, change_commitment, unshield_value_bytes, _token, merkle_root) =
             parse_unshield_public_inputs(&public_inputs_bytes);
 
-        // 2. Convert unshield_amount from field element to u64
-        let amount = field_element_to_u64(&unshield_amount_bytes);
+        // 2. Convert unshield_value from field element to u64
+        let amount = field_element_to_u64(&unshield_value_bytes);
 
         // 3. Verify merkle root is valid (current or in history)
         assert!(is_valid_root(pool, &merkle_root), E_INVALID_ROOT);
 
-        // 4. Check nullifier has not been spent (prevent double-spend)
-        assert!(!nullifier::is_spent(&pool.nullifiers, nullifier_bytes), E_DOUBLE_SPEND);
+        // 4. Check both nullifiers have not been spent (prevent double-spend)
+        assert!(!nullifier::is_spent(&pool.nullifiers, nullifier1), E_DOUBLE_SPEND);
+        if (!is_zero_commitment(&nullifier2)) {
+            assert!(!nullifier::is_spent(&pool.nullifiers, nullifier2), E_DOUBLE_SPEND);
+        };
 
         // 5. Verify Groth16 ZK proof
         let pvk = groth16::prepare_verifying_key(&groth16::bn254(), &pool.vk_bytes);
@@ -305,8 +312,11 @@ module octopus::pool {
             E_INVALID_PROOF
         );
 
-        // 6. Mark nullifier as spent
-        nullifier::mark_spent(&mut pool.nullifiers, nullifier_bytes);
+        // 6. Mark nullifiers as spent
+        nullifier::mark_spent(&mut pool.nullifiers, nullifier1);
+        if (!is_zero_commitment(&nullifier2)) {
+            nullifier::mark_spent(&mut pool.nullifiers, nullifier2);
+        };
 
         // 7. Transfer tokens to recipient
         assert!(balance::value(&pool.balance) >= amount, E_INSUFFICIENT_BALANCE);
@@ -335,9 +345,15 @@ module octopus::pool {
         };
 
         // 9. Emit event
+        let mut used_nullifiers = vector::empty<vector<u8>>();
+        vector::push_back(&mut used_nullifiers, nullifier1);
+        if (!is_zero_commitment(&nullifier2)) {
+            vector::push_back(&mut used_nullifiers, nullifier2);
+        };
+
         event::emit(UnshieldEvent {
             pool_id: object::id(pool),
-            nullifier: nullifier_bytes,
+            input_nullifiers: used_nullifiers,
             recipient,
             amount,
             change_commitment,
@@ -622,30 +638,36 @@ module octopus::pool {
         false
     }
 
-    /// Parse unshield public inputs from concatenated bytes (for unshield with change).
-    /// Returns (merkle_root, nullifier, unshield_amount, change_commitment) each as 32-byte vectors.
+    /// Parse unshield public inputs from concatenated bytes (for unshield with 2-input support).
+    /// Returns (nullifier1, nullifier2, change_commitment, unshield_value, token, merkle_root) each as 32-byte vectors.
     ///
-    /// Public signals from circuit (128 bytes total):
-    /// - nullifier (32 bytes): Output signal - Unique identifier preventing double-spend
-    /// - merkle_root (32 bytes): Output signal - Merkle tree root
-    /// - change_commitment (32 bytes): Output signal - Commitment for change note (0 if no change)
-    /// - unshield_amount (32 bytes): Public input - Amount to unshield (as field element)
-    fun parse_unshield_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
-        let mut nullifier = vector::empty<u8>();
-        let mut merkle_root = vector::empty<u8>();
+    /// Public signals from circuit (192 bytes total):
+    /// Public outputs (computed by circuit):
+    /// - input_nullifiers[0] (32 bytes): First nullifier
+    /// - input_nullifiers[1] (32 bytes): Second nullifier (0 if dummy note)
+    /// - change_commitment (32 bytes): Commitment for change note (0 if no change)
+    /// Public inputs (provided by user):
+    /// - unshield_value (32 bytes): Amount to unshield (as field element)
+    /// - token (32 bytes): Token type identifier
+    /// - merkle_root (32 bytes): Merkle tree root
+    fun parse_unshield_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+        let mut nullifier1 = vector::empty<u8>();
+        let mut nullifier2 = vector::empty<u8>();
         let mut change_commitment = vector::empty<u8>();
-        let mut unshield_amount_bytes = vector::empty<u8>();
+        let mut unshield_value_bytes = vector::empty<u8>();
+        let mut token = vector::empty<u8>();
+        let mut merkle_root = vector::empty<u8>();
 
-        // Extract nullifier (bytes 0-31)
+        // Extract nullifier1 (bytes 0-31)
         let mut i = 0;
         while (i < 32) {
-            vector::push_back(&mut nullifier, *vector::borrow(bytes, i));
+            vector::push_back(&mut nullifier1, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract merkle_root (bytes 32-63)
+        // Extract nullifier2 (bytes 32-63)
         while (i < 64) {
-            vector::push_back(&mut merkle_root, *vector::borrow(bytes, i));
+            vector::push_back(&mut nullifier2, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
@@ -655,13 +677,25 @@ module octopus::pool {
             i = i + 1;
         };
 
-        // Extract unshield_amount (bytes 96-127)
+        // Extract unshield_value (bytes 96-127)
         while (i < 128) {
-            vector::push_back(&mut unshield_amount_bytes, *vector::borrow(bytes, i));
+            vector::push_back(&mut unshield_value_bytes, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        (merkle_root, nullifier, unshield_amount_bytes, change_commitment)
+        // Extract token (bytes 128-159)
+        while (i < 160) {
+            vector::push_back(&mut token, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract merkle_root (bytes 160-191)
+        while (i < 192) {
+            vector::push_back(&mut merkle_root, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        (nullifier1, nullifier2, change_commitment, unshield_value_bytes, token, merkle_root)
     }
 
     /// Convert 32-byte field element to u64

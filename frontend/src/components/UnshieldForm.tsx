@@ -54,12 +54,6 @@ export function UnshieldForm({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigests?: string[] } | null>(null);
 
-  // Progress tracking for multi-note unshields
-  const [currentProofIndex, setCurrentProofIndex] = useState(0);
-  const [totalProofs, setTotalProofs] = useState(0);
-  const [currentTxIndex, setCurrentTxIndex] = useState(0);
-  const [totalTxs, setTotalTxs] = useState(0);
-
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
@@ -71,112 +65,6 @@ export function UnshieldForm({
     }
   };
 
-  // Execute sequential unshields for multiple notes
-  const executeSequentialUnshields = async (
-    selectedNotes: OwnedNote[],
-    targetAmount: bigint,
-    recipientAddr: string
-  ): Promise<{ txDigests: string[], totalChange: bigint }> => {
-    const txDigests: string[] = [];
-    let remaining = targetAmount;
-
-    setTotalProofs(selectedNotes.length);
-    setTotalTxs(selectedNotes.length);
-
-    for (let i = 0; i < selectedNotes.length; i++) {
-      const note = selectedNotes[i];
-      const isLastNote = (i === selectedNotes.length - 1);
-
-      // For last note, unshield exactly the remaining amount
-      // For other notes, unshield the full note value
-      const unshieldAmount = isLastNote ? remaining : note.note.value;
-
-      // Fetch Merkle proof lazily if not already present
-      let noteWithProof = note;
-      if (!note.pathElements || note.pathElements.length === 0) {
-        console.log(`[UnshieldForm] Fetching Merkle proof for note ${i + 1}/${selectedNotes.length} at leaf index ${note.leafIndex}...`);
-        setState("fetching-merkle-proofs");
-        const startFetch = Date.now();
-
-        let merkleProofs: Map<number, bigint[]>;
-        try {
-          merkleProofs = await fetchMerkleProofs(
-            keypair!.spendingKey,
-            tokenConfig.poolId,
-            [note.leafIndex]
-          );
-        } catch (err) {
-          // If stale cache detected, automatically trigger rescan
-          if (err instanceof Error && err.message.includes("Stale cache detected")) {
-            console.log("[UnshieldForm] Stale cache detected. Triggering automatic rescan...");
-
-            // Trigger rescan in background
-            const rescanPromise = onSuccess?.();
-            if (rescanPromise) {
-              rescanPromise.catch(console.error);
-            }
-
-            // Throw clear error to user
-            throw new Error(
-              "Your notes are outdated. Refreshing your notes... Please wait for the refresh to complete and try again."
-            );
-          }
-          throw err;
-        }
-
-        console.log(`[UnshieldForm] Merkle proof fetched in ${Date.now() - startFetch}ms`);
-        noteWithProof = { ...note, pathElements: merkleProofs.get(note.leafIndex) };
-
-        if (!noteWithProof.pathElements || noteWithProof.pathElements.length === 0) {
-          throw new Error(
-            `Failed to generate Merkle proof for note ${i + 1}/${selectedNotes.length}`
-          );
-        }
-      }
-
-      // Generate proof (10-30s per proof)
-      setCurrentProofIndex(i + 1);
-      setState("generating-proof");
-
-      const { proof, publicSignals, changeNote } = await generateUnshieldProof({
-        note: noteWithProof.note,
-        leafIndex: noteWithProof.leafIndex,
-        pathElements: noteWithProof.pathElements!,
-        keypair: keypair!,
-        unshieldAmount: unshieldAmount,
-      });
-
-      // Convert and submit transaction
-      setCurrentTxIndex(i + 1);
-      setState("submitting");
-
-      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
-
-      // Encrypt change note if it exists
-      const encryptedChangeNote = changeNote
-        ? encryptNote(changeNote, viewingPk)
-        : new Uint8Array(0);
-      
-      const tx = buildUnshieldTransaction(packageId!, tokenConfig.poolId, tokenConfig.type, suiProof, recipientAddr, encryptedChangeNote);
-
-      const result = await signAndExecute({ transaction: tx });
-      txDigests.push(result.digest);
-
-      // Mark spent optimistically
-      markNoteSpent?.(note.nullifier);
-
-      remaining -= unshieldAmount;
-
-      if (remaining <= 0n) break;
-    }
-
-    const lastNoteValue = selectedNotes[selectedNotes.length - 1].note.value;
-    const finalUnshielded = remaining > 0n ? lastNoteValue - remaining : lastNoteValue;
-    const totalChange = lastNoteValue - finalUnshielded;
-
-    return { txDigests, totalChange };
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -223,44 +111,104 @@ export function UnshieldForm({
         pathElements: n.pathElements
       }));
 
-      // Select notes using SDK's optimized strategy (single note or smallest pair)
+      // Select notes using SDK's optimized strategy (supports 1-2 notes)
       const selected = selectNotes(selectableNotes, amountMist);
+
+      if (selected.length > 2) {
+        throw new Error("SDK optimization allows max 2 notes per unshield. Please use a smaller amount.");
+      }
 
       // Convert back to OwnedNote[]
       const selectedNotes = selected.map((s: SelectableNote) =>
         unspentNotes.find(n => n.leafIndex === s.leafIndex)!
       );
 
-      // Execute sequential unshields
-      const { txDigests, totalChange } = await executeSequentialUnshields(
-        selectedNotes,
-        amountMist,
-        recipient
+      // Fetch Merkle proofs for all selected notes
+      setState("fetching-merkle-proofs");
+      const leafIndices = selectedNotes.map(n => n.leafIndex);
+
+      let merkleProofs: Map<number, bigint[]>;
+      try {
+        merkleProofs = await fetchMerkleProofs(
+          keypair!.spendingKey,
+          tokenConfig.poolId,
+          leafIndices
+        );
+      } catch (err) {
+        // If stale cache detected, automatically trigger rescan
+        if (err instanceof Error && err.message.includes("Stale cache detected")) {
+          console.log("[UnshieldForm] Stale cache detected. Triggering automatic rescan...");
+
+          // Trigger rescan in background
+          const rescanPromise = onSuccess?.();
+          if (rescanPromise) {
+            rescanPromise.catch(console.error);
+          }
+
+          // Throw clear error to user
+          throw new Error(
+            "Your notes are outdated. Refreshing your notes... Please wait for the refresh to complete and try again."
+          );
+        }
+        throw err;
+      }
+
+      // Build note array with proofs
+      const notesWithProofs = selectedNotes.map(n => {
+        const pathElements = merkleProofs.get(n.leafIndex);
+        if (!pathElements || pathElements.length === 0) {
+          throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
+        }
+        return { ...n, pathElements };
+      });
+
+      // Generate single proof for all notes (1 or 2)
+      setState("generating-proof");
+      const { proof, publicSignals, changeNote } = await generateUnshieldProof({
+        inputNotes: notesWithProofs.map(n => n.note),
+        leafIndices: notesWithProofs.map(n => n.leafIndex),
+        inputPathElements: notesWithProofs.map(n => n.pathElements!),
+        keypair: keypair!,
+        unshieldValue: amountMist,
+      });
+
+      // Submit single transaction
+      setState("submitting");
+      const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
+      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
+      const encryptedChangeNote = changeNote
+        ? encryptNote(changeNote, viewingPk)
+        : new Uint8Array(0);
+
+      const tx = buildUnshieldTransaction(
+        packageId!,
+        tokenConfig.poolId,
+        tokenConfig.type,
+        suiProof,
+        recipient,
+        encryptedChangeNote
       );
+
+      const result = await signAndExecute({ transaction: tx });
+
+      // Mark all notes spent optimistically
+      selectedNotes.forEach(n => markNoteSpent?.(n.nullifier));
 
       setState("success");
 
       // Build success message
+      const changeValue = changeNote ? changeNote.value : 0n;
       let successMessage = `Successfully unshielded ${formatTokenAmount(amountMist, tokenConfig.decimals)} ${tokenConfig.symbol}`;
-      if (selectedNotes.length > 1) {
-        successMessage += ` in ${txDigests.length} transaction(s)`;
-      }
-      if (totalChange > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(totalChange, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      if (changeValue > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeValue, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
 
       setSuccess({
         message: successMessage,
-        txDigests: txDigests
+        txDigests: [result.digest]
       });
       setAmount("");
       setRecipient("");
-
-      // Reset progress counters
-      setCurrentProofIndex(0);
-      setTotalProofs(0);
-      setCurrentTxIndex(0);
-      setTotalTxs(0);
 
       // Trigger note rescan to pick up the change note
       await onSuccess?.();
@@ -268,12 +216,6 @@ export function UnshieldForm({
       console.error("Unshield failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Unshield failed");
-
-      // Reset progress counters on error
-      setCurrentProofIndex(0);
-      setTotalProofs(0);
-      setCurrentTxIndex(0);
-      setTotalTxs(0);
     }
   };
 
@@ -371,21 +313,15 @@ export function UnshieldForm({
                 {state === "fetching-merkle-proofs"
                   ? "Building Merkle Tree..."
                   : state === "generating-proof"
-                  ? totalProofs > 1
-                    ? `Generating Proof ${currentProofIndex}/${totalProofs}...`
-                    : "Generating ZK Proof..."
-                  : totalTxs > 1
-                  ? `Submitting Transaction ${currentTxIndex}/${totalTxs}...`
-                  : "Submitting Transaction..."}
+                    ? "Generating ZK Proof..."
+                    : "Submitting Transaction..."}
               </p>
               <p className="text-[10px] text-gray-400 font-mono mt-0.5">
                 {state === "fetching-merkle-proofs"
-                  ? "// Fetching Merkle proof for note"
+                  ? "// Fetching Merkle proofs"
                   : state === "generating-proof"
-                  ? totalProofs > 1
-                    ? `// Proof ${currentProofIndex} of ${totalProofs} (10-30s each)`
-                    : "// Proof generation in progress (10-30s)"
-                  : "// Awaiting wallet confirmation"}
+                    ? "// Single transaction for 1-2 notes (20-60s)"
+                    : "// Awaiting wallet confirmation"}
               </p>
             </div>
           </div>
@@ -468,12 +404,12 @@ export function UnshieldForm({
           Unshield Process:
         </h4>
         <ol className="text-[10px] text-gray-400 space-y-1.5 list-decimal list-inside font-mono leading-relaxed">
-          <li>Select note(s) to spend (largest first)</li>
+          <li>Select note(s) to spend (1-2 notes)</li>
           <li>Generate Merkle proof for each note</li>
-          <li>Calculate nullifier (prevent double-spending)</li>
-          <li>Compute change note (if amount &lt; note value)</li>
-          <li>Generate ZK proof (10-30s per note)</li>
-          <li>Submit transaction(s) sequentially</li>
+          <li>Calculate nullifiers (prevent double-spending)</li>
+          <li>Compute change note (if amount &lt; total value)</li>
+          <li>Generate ZK proof (single transaction for 1-2 notes)</li>
+          <li>Submit transaction</li>
           <li>Tokens sent to recipient + change note created</li>
         </ol>
         <div className="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent" />

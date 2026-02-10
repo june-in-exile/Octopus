@@ -18,9 +18,16 @@ module octopus::pool_tests {
     // Test proof (valid proof for the test input)
     const TEST_PROOF: vector<u8> = x"aca940a9ad7c4beb620beb1b67cd111a2ff32b2f33945bd12cc017c721ec1b91083135faffb3ff4b3cfdcdd0a075154e80b245fa42d14655880096b4ef29fe13f274371b7b8b1d8382f61ba9b61d2901b3557944195ee34771eaee3f0019571cba7b3a4b43ffdd48945edd122d141734a262be4b49e6baf28abeea0c1484050a";
 
-    // Test public inputs [merkle_root, nullifier]
-    // New 128-byte format: [nullifier, merkle_root, change_commitment, unshield_amount]
-    const TEST_PUBLIC_INPUTS: vector<u8> = x"50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da9262fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a0046c32300000000000000000000000000000000000000000000000000000000";
+    // Test public inputs (192-byte format with 2-input support)
+    // Format: [input_nullifiers[0], input_nullifiers[1], change_commitment, unshield_value, token, merkle_root]
+    // Old format was: [nullifier, merkle_root, change_commitment, unshield_amount]
+    // input_nullifiers[0]: 50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926 (real nullifier, 32 bytes)
+    // input_nullifiers[1]: 0000000000000000000000000000000000000000000000000000000000000000 (dummy note, 32 bytes)
+    // change_commitment: 054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a (32 bytes)
+    // unshield_value: 0046c32300000000000000000000000000000000000000000000000000000000 (32 bytes)
+    // token: 075bcd1500000000000000000000000000000000000000000000000000000000 (32 bytes)
+    // merkle_root: 2fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023 (32 bytes)
+    const TEST_PUBLIC_INPUTS: vector<u8> = x"50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da9260000000000000000000000000000000000000000000000000000000000000000054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a0046c32300000000000000000000000000000000000000000000000000000000075bcd15000000000000000000000000000000000000000000000000000000002fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023";
 
     // Test commitment (from test input generation)
     // commitment = Poseidon(NSK, token, value)
@@ -197,7 +204,7 @@ module octopus::pool_tests {
             pool::unshield(
                 &mut pool,
                 TEST_PROOF,
-                x"0102030405", // Invalid length (5 bytes, should be 128)
+                x"0102030405", // Invalid length (5 bytes, should be 192)
                 BOB,
                 vector::empty<u8>(),
                 ctx
