@@ -314,21 +314,21 @@ export function useNotes(
           try {
             // Validate note data before deserialization
             if (!scanned.note ||
-                scanned.note.nsk === undefined ||
-                scanned.note.token === undefined ||
-                scanned.note.value === undefined ||
-                scanned.note.random === undefined ||
-                scanned.note.commitment === undefined) {
+              scanned.note.nsk === undefined ||
+              scanned.note.token === undefined ||
+              scanned.note.amount === undefined ||
+              scanned.note.random === undefined ||
+              scanned.note.commitment === undefined) {
               console.error("Invalid note data (undefined):", scanned);
               continue;
             }
 
             // Check for invalid string values ("NaN", "undefined", empty strings)
             if (scanned.note.nsk === "NaN" || scanned.note.nsk === "undefined" || scanned.note.nsk === "" ||
-                scanned.note.token === "NaN" || scanned.note.token === "undefined" || scanned.note.token === "" ||
-                scanned.note.value === "NaN" || scanned.note.value === "undefined" || scanned.note.value === "" ||
-                scanned.note.random === "NaN" || scanned.note.random === "undefined" || scanned.note.random === "" ||
-                scanned.note.commitment === "NaN" || scanned.note.commitment === "undefined" || scanned.note.commitment === "") {
+              scanned.note.token === "NaN" || scanned.note.token === "undefined" || scanned.note.token === "" ||
+              scanned.note.amount === "NaN" || scanned.note.amount === "undefined" || scanned.note.amount === "" ||
+              scanned.note.random === "NaN" || scanned.note.random === "undefined" || scanned.note.random === "" ||
+              scanned.note.commitment === "NaN" || scanned.note.commitment === "undefined" || scanned.note.commitment === "") {
               console.error("Invalid note data (NaN or empty string):", scanned);
               continue;
             }
@@ -337,7 +337,7 @@ export function useNotes(
             const note: Note = {
               nsk: BigInt(scanned.note.nsk),
               token: BigInt(scanned.note.token),
-              value: BigInt(scanned.note.value),
+              amount: BigInt(scanned.note.amount),
               random: BigInt(scanned.note.random),
               commitment: BigInt(scanned.note.commitment),
             };

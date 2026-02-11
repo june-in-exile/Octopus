@@ -20,7 +20,7 @@ export interface SelectableNote {
  *
  * Strategy:
  * 1. Try to find a single note >= amount (minimize inputs)
- * 2. If not found, try two notes (minimize total value to reduce change)
+ * 2. If not found, try two notes (minimize total amount to reduce change)
  * 3. If still not enough, throw error
  *
  * This function is used for transfers, unshields, and swaps.
@@ -33,8 +33,8 @@ export function selectNotes(
     availableNotes: SelectableNote[],
     amount: bigint
 ): SelectableNote[] {
-    // Filter notes with non-zero value
-    const validNotes = availableNotes.filter((n) => n.note.value > 0n);
+    // Filter notes with non-zero amount
+    const validNotes = availableNotes.filter((n) => n.note.amount > 0n);
 
     if (validNotes.length === 0) {
         throw new Error("No notes available");
@@ -45,23 +45,23 @@ export function selectNotes(
     }
 
     // Strategy 1: Try single note (most efficient)
-    const singleNote = validNotes.find((n) => n.note.value >= amount);
+    const singleNote = validNotes.find((n) => n.note.amount >= amount);
     if (singleNote) {
         return [singleNote];
     }
 
-    // Strategy 2: Try two notes (minimize total value to reduce change)
-    // Sort by value ascending
+    // Strategy 2: Try two notes (minimize total amount to reduce change)
+    // Sort by amount ascending
     const sorted = [...validNotes].sort((a, b) => {
-        if (a.note.value < b.note.value) return -1;
-        if (a.note.value > b.note.value) return 1;
+        if (a.note.amount < b.note.amount) return -1;
+        if (a.note.amount > b.note.amount) return 1;
         return 0;
     });
 
     // Find the smallest pair that covers the amount
     for (let i = 0; i < sorted.length; i++) {
         for (let j = i + 1; j < sorted.length; j++) {
-            const total = sorted[i].note.value + sorted[j].note.value;
+            const total = sorted[i].note.amount + sorted[j].note.amount;
             if (total >= amount) {
                 return [sorted[i], sorted[j]];
             }
@@ -69,7 +69,7 @@ export function selectNotes(
     }
 
     // Calculate total available balance
-    const totalBalance = validNotes.reduce((sum, n) => sum + n.note.value, 0n);
+    const totalBalance = validNotes.reduce((sum, n) => sum + n.note.amount, 0n);
 
     // Check if the issue is circuit limitation or actual insufficient balance
     if (totalBalance >= amount) {

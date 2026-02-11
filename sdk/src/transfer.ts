@@ -13,7 +13,7 @@ import { createNote } from "./crypto.js";
  * @param recipientMpk - Recipient's master public key
  * @param senderMpk - Sender's master public key (for change note)
  * @param amount - Amount to send to recipient
- * @param inputTotal - Total value of input notes
+ * @param inputTotal - Sum of input note anounts
  * @param token - Token type identifier
  * @returns Array of 2 output notes [recipient, change]
  */

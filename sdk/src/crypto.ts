@@ -107,7 +107,7 @@ export function createNote(
   return {
     nsk,
     token,
-    value,
+    amount: value,
     random: r,
     commitment,
   };
@@ -354,7 +354,7 @@ export function encryptNote(
   const noteData = new Uint8Array(128);
   noteData.set(bigIntToBE32(note.nsk), 0);
   noteData.set(bigIntToBE32(note.token), 32);
-  noteData.set(bigIntToBE32(note.value), 64);
+  noteData.set(bigIntToBE32(note.amount), 64);
   noteData.set(bigIntToBE32(note.random), 96);
 
   // 6. Generate nonce (12 bytes for ChaCha20-Poly1305)
@@ -470,7 +470,7 @@ export function decryptNote(
     return {
       nsk,
       token,
-      value,
+      amount: value,
       random,
       commitment,
     };

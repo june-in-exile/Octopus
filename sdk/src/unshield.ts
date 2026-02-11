@@ -12,7 +12,7 @@ import { createNote } from "./crypto.js";
  *
  * @param mpk - Master public key (for change note)
  * @param amount - Amount to unshield
- * @param inputTotal - Total value of input notes
+ * @param inputTotal - Sum of input note anounts
  * @param token - Token type identifier
  * @returns change note
  */

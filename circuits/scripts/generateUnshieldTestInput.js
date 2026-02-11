@@ -20,14 +20,14 @@ async function main() {
     const spending_key = "12345678901234567890123456789012345678901234567890";
     const nullifying_key = "98765432109876543210987654321098765432109876543210";
 
-    // Two input notes: one real note + one dummy note (value=0)
+    // Two input notes: one real note + one dummy note (amount=0)
     const input_randoms = [
         "11111111111111111111111111111111111111111111111111", // Input 0: real note
         "33333333333333333333333333333333333333333333333333"  // Input 1: dummy note
     ];
-    const input_values = [
+    const input_amounts = [
         "1000000000", // Input 0: 1 SUI (9 decimals)
-        "0"           // Input 1: dummy note (value=0)
+        "0"           // Input 1: dummy note (amount=0)
     ];
     const input_leaf_indices = [
         "0", // Input 0: first leaf position
@@ -57,8 +57,8 @@ async function main() {
         input_nsks.push(nsk);
         console.log(`Input ${i} NSK:`, nsk);
 
-        // Input Commitment = Poseidon(nsk, token, input_value)
-        const commitment = hash([nsk, token, input_values[i]]);
+        // Input Commitment = Poseidon(nsk, token, input_amount)
+        const commitment = hash([nsk, token, input_amounts[i]]);
         input_commitments.push(commitment);
         console.log(`Input ${i} Commitment:`, commitment);
 
@@ -69,25 +69,25 @@ async function main() {
     }
 
     // ============ Compute Change Note ============
-    const total_input_value = BigInt(input_values[0]) + BigInt(input_values[1]);
-    const change_value = total_input_value - BigInt(unshield_amount);
-    console.log("Total Input Value:", total_input_value.toString());
-    console.log("Change Value:", change_value.toString());
+    const total_input_amount = BigInt(input_amounts[0]) + BigInt(input_amounts[1]);
+    const change_amount = total_input_amount - BigInt(unshield_amount);
+    console.log("Total Input Amount:", total_input_amount.toString());
+    console.log("Change Amount:", change_amount.toString());
 
     // Change NSK = Poseidon(MPK, change_random)
     // (User sends change to themselves)
     const change_nsk = hash([mpk, change_random]);
     console.log("Change NSK:", change_nsk);
 
-    // Change Commitment = Poseidon(change_nsk, token, change_value)
-    const change_commitment = change_value > 0n
-        ? hash([change_nsk, token, change_value.toString()])
+    // Change Commitment = Poseidon(change_nsk, token, change_amount)
+    const change_commitment = change_amount > 0n
+        ? hash([change_nsk, token, change_amount.toString()])
         : "0";
     console.log("Change Commitment:", change_commitment);
 
     // ============ Compute Merkle Root ============
     // For testing, we compute the root with the first real note at index 0
-    // The dummy note (input 1) has value=0, so its merkle proof won't be verified by the circuit
+    // The dummy note (input 1) has amount=0, so its merkle proof won't be verified by the circuit
 
     const LEVELS = 16;
 
@@ -108,13 +108,13 @@ async function main() {
     const path_elements_0 = zeros.slice(0, LEVELS);
     input_path_elements.push(path_elements_0);
 
-    // Input 1: dummy note (value=0), merkle proof won't be verified
+    // Input 1: dummy note (amount=0), merkle proof won't be verified
     // Use zero hashes for simplicity
     const path_elements_1 = zeros.slice(0, LEVELS);
     input_path_elements.push(path_elements_1);
 
     // Compute merkle root using the first real note
-    // At each level, our value is on the left (index bit = 0), sibling is zero hash
+    // At each level, our amount is on the left (index bit = 0), sibling is zero hash
     let current = input_commitments[0];
     for (let i = 0; i < LEVELS; i++) {
         current = hash([current, path_elements_0[i]]);
@@ -128,14 +128,14 @@ async function main() {
         spending_key,
         nullifying_key,
         input_randoms,
-        input_values,
+        input_amounts,
         input_leaf_indices,
         input_path_elements,
-        change_value: change_value.toString(),
+        change_amount: change_amount.toString(),
         change_random,
 
         // Public inputs
-        unshield_value: unshield_amount,
+        unshield_amount,
         token,
         merkle_root
     };
@@ -146,22 +146,22 @@ async function main() {
 
     // Print expected public signals for verification
     console.log("\n=== Expected Public Signals (5 elements) ===");
-    console.log("Expected order: [input_nullifiers[0], input_nullifiers[1], change_commitment, unshield_value, token, merkle_root]");
+    console.log("Expected order: [input_nullifiers[0], input_nullifiers[1], change_commitment, unshield_amount, token, merkle_root]");
     console.log("1. input_nullifiers[0]:", input_nullifiers[0]);
     console.log("2. input_nullifiers[1]:", input_nullifiers[1], "(should be 0 for dummy note)");
     console.log("3. change_commitment:", change_commitment);
-    console.log("4. unshield_value:", unshield_amount);
+    console.log("4. unshield_amount:", unshield_amount);
     console.log("5. token:", token);
     console.log("6. merkle_root:", merkle_root);
 
-    // Print values for verification
+    // Print amounts for verification
     console.log("\n=== Test Scenario ===");
-    console.log("Input 0 value:", input_values[0], "(" + (BigInt(input_values[0]) / 1000000000n).toString() + " SUI) - Real note");
-    console.log("Input 1 value:", input_values[1], "(" + (BigInt(input_values[1]) / 1000000000n).toString() + " SUI) - Dummy note");
-    console.log("Total input:", total_input_value.toString(), "(" + (total_input_value / 1000000000n).toString() + " SUI)");
+    console.log("Input 0 amount:", input_amounts[0], "(" + (BigInt(input_amounts[0]) / 1000000000n).toString() + " SUI) - Real note");
+    console.log("Input 1 amount:", input_amounts[1], "(" + (BigInt(input_amounts[1]) / 1000000000n).toString() + " SUI) - Dummy note");
+    console.log("Total input:", total_input_amount.toString(), "(" + (total_input_amount / 1000000000n).toString() + " SUI)");
     console.log("Unshield amount:", unshield_amount, "(" + (BigInt(unshield_amount) / 1000000000n).toString() + " SUI)");
-    console.log("Change value:", change_value.toString(), "(" + (change_value / 1000000000n).toString() + " SUI)");
-    console.log("Has change:", change_value > 0n);
+    console.log("Change amount:", change_amount.toString(), "(" + (change_amount / 1000000000n).toString() + " SUI)");
+    console.log("Has change:", change_amount > 0n);
 }
 
 main().catch(console.error);

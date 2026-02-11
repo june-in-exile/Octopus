@@ -27,67 +27,67 @@ async function main() {
 
     // ============ Input Note 1 ============
     const input1_random = "11111111111111111111111111111111111111111111111111";
-    const input1_value = "5000000000"; // 5 SUI (9 decimals)
+    const input1_amount = "5000000000"; // 5 SUI (9 decimals)
     const input1_leaf_index = "0"; // First leaf position
     const token = "123456789"; // Token identifier (same for all notes)
 
     const input1_nsk = hash([mpk, input1_random]);
-    const input1_commitment = hash([input1_nsk, token, input1_value]);
+    const input1_commitment = hash([input1_nsk, token, input1_amount]);
     const input1_nullifier = hash([nullifying_key, input1_leaf_index]);
 
     console.log("\nInput Note 1:");
     console.log("  NSK:", input1_nsk);
-    console.log("  Value:", input1_value, "(5 SUI)");
+    console.log("  Amount:", input1_amount, "(5 SUI)");
     console.log("  Commitment:", input1_commitment);
     console.log("  Nullifier:", input1_nullifier);
 
     // ============ Input Note 2 ============
     const input2_random = "22222222222222222222222222222222222222222222222222";
-    const input2_value = "3000000000"; // 3 SUI (9 decimals)
+    const input2_amount = "3000000000"; // 3 SUI (9 decimals)
     const input2_leaf_index = "1"; // Second leaf position
 
     const input2_nsk = hash([mpk, input2_random]);
-    const input2_commitment = hash([input2_nsk, token, input2_value]);
+    const input2_commitment = hash([input2_nsk, token, input2_amount]);
     const input2_nullifier = hash([nullifying_key, input2_leaf_index]);
 
     console.log("\nInput Note 2:");
     console.log("  NSK:", input2_nsk);
-    console.log("  Value:", input2_value, "(3 SUI)");
+    console.log("  Amount:", input2_amount, "(3 SUI)");
     console.log("  Commitment:", input2_commitment);
     console.log("  Nullifier:", input2_nullifier);
 
-    console.log("\nTotal Input Value:", (BigInt(input1_value) + BigInt(input2_value)).toString(), "(8 SUI)");
+    console.log("\nTotal Input Amount:", (BigInt(input1_amount) + BigInt(input2_amount)).toString(), "(8 SUI)");
 
     // ============ Output Note 1 (Recipient) ============
     const recipient_mpk = "99999999999999999999999999999999999999999999999999"; // Recipient's MPK
     const output1_random = "33333333333333333333333333333333333333333333333333";
-    const output1_value = "6000000000"; // 6 SUI to recipient
+    const output1_amount = "6000000000"; // 6 SUI to recipient
 
     const output1_nsk = hash([recipient_mpk, output1_random]);
-    const output1_commitment = hash([output1_nsk, token, output1_value]);
+    const output1_commitment = hash([output1_nsk, token, output1_amount]);
 
     console.log("\nOutput Note 1 (Recipient):");
     console.log("  NSK:", output1_nsk);
-    console.log("  Value:", output1_value, "(6 SUI)");
+    console.log("  Amount:", output1_amount, "(6 SUI)");
     console.log("  Commitment:", output1_commitment);
 
     // ============ Output Note 2 (Change) ============
     const output2_random = "44444444444444444444444444444444444444444444444444";
-    const output2_value = "2000000000"; // 2 SUI change back to sender
+    const output2_amount = "2000000000"; // 2 SUI change back to sender
 
     const output2_nsk = hash([mpk, output2_random]); // Change note uses sender's MPK
-    const output2_commitment = hash([output2_nsk, token, output2_value]);
+    const output2_commitment = hash([output2_nsk, token, output2_amount]);
 
     console.log("\nOutput Note 2 (Change):");
     console.log("  NSK:", output2_nsk);
-    console.log("  Value:", output2_value, "(2 SUI)");
+    console.log("  Amount:", output2_amount, "(2 SUI)");
     console.log("  Commitment:", output2_commitment);
 
-    console.log("\nTotal Output Value:", (BigInt(output1_value) + BigInt(output2_value)).toString(), "(8 SUI)");
+    console.log("\nTotal Output Amount:", (BigInt(output1_amount) + BigInt(output2_amount)).toString(), "(8 SUI)");
 
     // Verify balance conservation
-    const inputTotal = BigInt(input1_value) + BigInt(input2_value);
-    const outputTotal = BigInt(output1_value) + BigInt(output2_value);
+    const inputTotal = BigInt(input1_amount) + BigInt(input2_amount);
+    const outputTotal = BigInt(output1_amount) + BigInt(output2_amount);
     console.log("\nBalance Check:", inputTotal === outputTotal ? "✓ PASS" : "✗ FAIL");
 
     // ============ Compute Merkle Root ============
@@ -146,15 +146,15 @@ async function main() {
 
         // Input notes (circuit computes NSKs internally from MPK + randoms)
         input_randoms: [input1_random, input2_random],
-        input_values: [input1_value, input2_value],
+        input_amounts: [input1_amount, input2_amount],
         input_leaf_indices: [input1_leaf_index, input2_leaf_index],
         input_path_elements: [input1_path_elements, input2_path_elements],
 
         // NEW: Separate transfer and change outputs
         recipient_mpk,
-        transfer_value: output1_value,
+        transfer_amount: output1_amount,
         transfer_random: output1_random,
-        change_value: output2_value,
+        change_amount: output2_amount,
         change_random: output2_random,
 
         // Public inputs

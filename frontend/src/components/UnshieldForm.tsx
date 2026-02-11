@@ -146,7 +146,7 @@ export function UnshieldForm({
       });
 
       // 5. Create output notes (change note)
-      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
+      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const outputNote = createUnshieldOutputs(
         keypair.masterPublicKey,
@@ -162,7 +162,7 @@ export function UnshieldForm({
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
         inputPathElements: notesWithProofs.map(n => n.pathElements!),
-        unshieldValue: amountMist,
+        unshieldAmount: amountMist,
         outputNote,
         token: notesWithProofs[0].note.token,
       });
@@ -190,8 +190,8 @@ export function UnshieldForm({
       // 10. Success!
       setState("success");
       let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
-      if (outputNote.value > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(outputNote.value, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      if (outputNote.amount > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(outputNote.amount, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
       setSuccess({
         message: successMessage,

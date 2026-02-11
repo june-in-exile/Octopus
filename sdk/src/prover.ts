@@ -101,7 +101,7 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     inputNotes,
     inputLeafIndices,
     inputPathElements,
-    unshieldValue,
+    unshieldAmount,
     outputNote,
     token
   } = unshieldInput;
@@ -128,18 +128,18 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     throw new Error("All input notes must be same token type");
   }
 
-  // Pad to 2 inputs if only 1 provided (dummy note with value=0)
+  // Pad to 2 inputs if only 1 provided (dummy note with anount=0)
   const paddedInputs = [...inputNotes];
   const paddedIndices = [...inputLeafIndices];
   const paddedPaths = [...inputPathElements];
 
   if (paddedInputs.length === 1) {
-    // Create dummy note (value=0 triggers Merkle bypass in circuit)
+    // Create dummy note (anount=0 triggers Merkle bypass in circuit)
     const dummyRandom = 0n;
     const dummyNote: Note = {
       nsk: 0n,
       token: token,
-      value: 0n,               // Triggers Merkle bypass
+      amount: 0n,               // Triggers Merkle bypass
       random: dummyRandom,
       commitment: 0n
     };
@@ -152,21 +152,21 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
   }
 
   // Validate balance
-  const inputSum = paddedInputs.reduce((sum, n) => sum + n.value, 0n);
+  const inputSum = paddedInputs.reduce((sum, n) => sum + n.amount, 0n);
   const changeNote = outputNote;
-  if (unshieldValue <= 0n) {
-    throw new Error(`Unshield amount must be positive, got: ${unshieldValue}`);
+  if (unshieldAmount <= 0n) {
+    throw new Error(`Unshield amount must be positive, got: ${unshieldAmount}`);
   }
-  if (unshieldValue > inputSum) {
+  if (unshieldAmount > inputSum) {
     throw new Error(
-      `Unshield amount (${unshieldValue}) exceeds total input value (${inputSum})`
+      `Unshield amount (${unshieldAmount}) exceeds total input anount (${inputSum})`
     );
   }
-  const outputSum = unshieldValue + changeNote.value;
+  const outputSum = unshieldAmount + changeNote.amount;
   if (inputSum !== outputSum) {
     throw new Error(
       `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
-      `Unshield requires input_sum === unshield_value + change_value`
+      `Unshield requires input_sum === unshield_anount + change_anount`
     );
   }
 
@@ -178,7 +178,7 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
   );
 
   // Verify second input (if non-dummy) has same root
-  if (paddedInputs.length === 2 && paddedInputs[1].value > 0n) {
+  if (paddedInputs.length === 2 && paddedInputs[1].amount > 0n) {
     const root2 = computeMerkleRoot(
       paddedInputs[1].commitment,
       paddedPaths[1],
@@ -200,15 +200,15 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     nullifying_key: keypair.nullifyingKey.toString(),
 
     input_randoms: paddedInputs.map(n => n.random.toString()),
-    input_values: paddedInputs.map(n => n.value.toString()),
+    input_amounts: paddedInputs.map(n => n.amount.toString()),
     input_leaf_indices: paddedIndices.map(idx => idx.toString()),
     input_path_elements: paddedPaths.map(path => path.map(e => e.toString())),
 
-    change_value: changeNote.value.toString(),
+    change_amount: changeNote.amount.toString(),
     change_random: changeNote.random.toString(),
 
     // Public inputs
-    unshield_value: unshieldValue.toString(),
+    unshield_amount: unshieldAmount.toString(),
     token: token.toString(),
     merkle_root: merkleRoot.toString(),
   };
@@ -308,18 +308,18 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
     throw new Error("All input notes must be same token type");
   }
 
-  // Pad to 2 inputs if only 1 provided (use dummy note with value=0)
+  // Pad to 2 inputs if only 1 provided (use dummy note with anount=0)
   const paddedInputs = [...inputNotes];
   const paddedIndices = [...inputLeafIndices];
   const paddedPaths = [...inputPathElements];
 
   if (paddedInputs.length === 1) {
-    // Create dummy note (value=0 triggers Merkle bypass in circuit)
+    // Create dummy note (anount=0 triggers Merkle bypass in circuit)
     const dummyRandom = 0n;
     const dummyNote: Note = {
       nsk: 0n,
       token: token,
-      value: 0n,               // Triggers Merkle bypass
+      amount: 0n,               // Triggers Merkle bypass
       random: dummyRandom,
       commitment: 0n
     };
@@ -332,22 +332,22 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
   }
 
   // Validate balance
-  const inputSum = inputNotes.reduce((sum, note) => sum + note.value, 0n);
+  const inputSum = inputNotes.reduce((sum, note) => sum + note.amount, 0n);
   const transferNote = outputNotes[0];
   const changeNote = outputNotes[1];
-  if (transferNote.value <= 0n) {
-    throw new Error(`Transfer amount must be positive, got: ${transferNote.value}`);
+  if (transferNote.amount <= 0n) {
+    throw new Error(`Transfer amount must be positive, got: ${transferNote.amount}`);
   }
-  if (transferNote.value > inputSum) {
+  if (transferNote.amount > inputSum) {
     throw new Error(
-      `Transfer amount (${transferNote.value}) exceeds total input value (${inputSum})`
+      `Transfer amount (${transferNote.amount}) exceeds total input anount (${inputSum})`
     );
   }
-  const outputSum = transferNote.value + changeNote.value;
+  const outputSum = transferNote.amount + changeNote.amount;
   if (inputSum !== outputSum) {
     throw new Error(
       `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
-      `Transfer requires input_sum === transfer_value + change_value`
+      `Transfer requires input_sum === transfer_anount + change_anount`
     );
   }
 
@@ -359,7 +359,7 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
   );
 
   // Verify second input (if non-dummy) has same root
-  if (paddedInputs.length === 2 && paddedInputs[1].value > 0n) {
+  if (paddedInputs.length === 2 && paddedInputs[1].amount > 0n) {
     const root2 = computeMerkleRoot(
       paddedInputs[1].commitment,
       paddedPaths[1],
@@ -381,15 +381,15 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
     nullifying_key: keypair.nullifyingKey.toString(),
 
     input_randoms: paddedInputs.map((n) => n.random.toString()),
-    input_values: paddedInputs.map((n) => n.value.toString()),
+    input_amounts: paddedInputs.map((n) => n.amount.toString()),
     input_leaf_indices: paddedIndices.map((idx) => idx.toString()),
     input_path_elements: paddedPaths.map((path) => path.map((e) => e.toString())),
 
     recipient_mpk: recipientMpk.toString(),
-    transfer_value: transferNote.value.toString(),
+    transfer_amount: transferNote.amount.toString(),
     transfer_random: transferNote.random.toString(),
 
-    change_value: changeNote.value.toString(),
+    change_amount: changeNote.amount.toString(),
     change_random: changeNote.random.toString(),
 
     // Public inputs
@@ -469,10 +469,10 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
     swapParams,
     outputNSK,
     outputRandom,
-    outputValue,
+    outputAmount,
     changeNSK,
     changeRandom,
-    changeValue,
+    changeAmount,
   } = swapInput;
 
   // Ensure we have exactly 2 input notes (pad with dummy if needed)
@@ -481,7 +481,7 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
   const pathElements = [...inputPathElements];
 
   while (notes.length < 2) {
-    // Create dummy note with zero value
+    // Create dummy note with zero amount
     // IMPORTANT: NSK must satisfy circuit constraint: NSK = Poseidon(MPK, random)
     // We use random=0 for simplicity, so NSK = Poseidon(MPK, 0)
     const dummyRandom = 0n;
@@ -489,7 +489,7 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
     const dummyNote: Note = {
       nsk: dummyNSK,  // Correctly derived NSK
       token: swapParams.tokenIn,
-      value: 0n,
+      amount: 0n,
       random: dummyRandom,
       commitment: poseidonHash([dummyNSK, swapParams.tokenIn, 0n]),
     };
@@ -509,11 +509,11 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
   const nullifier1 = poseidonHash([keypair.nullifyingKey, BigInt(leafIndices[0])]);
   const nullifier2 = poseidonHash([keypair.nullifyingKey, BigInt(leafIndices[1])]);
 
-  // Compute output commitment = Poseidon(NSK, token_out, output_value)
-  const outputCommitment = poseidonHash([outputNSK, swapParams.tokenOut, outputValue]);
+  // Compute output commitment = Poseidon(NSK, token_out, output_anount)
+  const outputCommitment = poseidonHash([outputNSK, swapParams.tokenOut, outputAmount]);
 
-  // Compute change commitment = Poseidon(NSK, token_in, change_value)
-  const changeCommitment = poseidonHash([changeNSK, swapParams.tokenIn, changeValue]);
+  // Compute change commitment = Poseidon(NSK, token_in, change_anount)
+  const changeCommitment = poseidonHash([changeNSK, swapParams.tokenIn, changeAmount]);
 
   // Compute swap data hash = Poseidon(token_in, token_out, amount_in, min_amount_out, dex_pool_id)
   const swapDataHash = poseidonHash([
@@ -564,7 +564,7 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 
     // Private inputs - Input notes
     input_nsks: notes.map(n => n.nsk.toString()),
-    input_values: notes.map(n => n.value.toString()),
+    input_amounts: notes.map(n => n.amount.toString()),
     input_randoms: notes.map(n => n.random.toString()),
     input_leaf_indices: leafIndices.map(i => i.toString()),
     input_path_elements: pathElements.map(path =>
@@ -580,12 +580,12 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 
     // Private inputs - Output note
     output_nsk: outputNSK.toString(),
-    output_value: outputValue.toString(),
+    output_amount: outputAmount.toString(),
     output_random: outputRandom.toString(),
 
     // Private inputs - Change note
     change_nsk: changeNSK.toString(),
-    change_value: changeValue.toString(),
+    change_amount: changeAmount.toString(),
     change_random: changeRandom.toString(),
 
     // Public inputs

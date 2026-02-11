@@ -92,9 +92,9 @@ export default function Home() {
   // Fetch pool information for refresh only
   const { refresh: refreshPoolInfo } = usePoolInfo(tokenConfig?.poolId ?? "");
 
-  // Calculate balance and note count from loaded notes
+  // Calculate balance and note count from loaded notesamount
   const unspentNotes = notes.filter((n) => !n.spent);
-  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.value, 0n);
+  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
   const noteCount = unspentNotes.length;
 
   const handleOperationSuccess = async () => {

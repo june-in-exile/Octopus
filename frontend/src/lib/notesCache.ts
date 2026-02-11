@@ -19,7 +19,7 @@ export interface CachedScanData {
     note: {
       nsk: string;
       token: string;
-      value: string;
+      amount: string;
       random: string;
       commitment: string;
     };

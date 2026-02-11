@@ -292,7 +292,7 @@ export interface ProgressResponse {
 export interface SerializedNote {
   nsk: string; // BigInt as string
   token: string; // BigInt as string
-  value: string; // BigInt as string
+  amount: string; // BigInt as string
   random: string; // BigInt as string
   commitment: string; // BigInt as string
 }

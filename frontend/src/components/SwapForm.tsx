@@ -342,10 +342,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         }
 
         console.log("✓ Merkle proof validation passed!");
-      }
+      } amount
 
       console.log("MPK:", keypair.masterPublicKey.toString());
-      console.log("Token In:", inputTokenId.toString());
+      console.log("Token In:", iamountokenId.toString());
       console.log("Token Out:", outputTokenId.toString());
       console.log("Merkle Root (verified):", computedRoots[0]?.toString());
 
@@ -357,10 +357,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         swapParams,
         outputNSK: outputNote.nsk,
         outputRandom: outputNote.random,
-        outputValue: outputNote.value,
+        outputAmount: outputNote.value,
         changeNSK: changeNote.nsk,
         changeRandom: changeNote.random,
-        changeValue: changeNote.value,
+        changeAmount: changeNote.value,
       };
 
       // 9. Generate ZK proof (30-60 seconds)

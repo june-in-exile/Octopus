@@ -39,10 +39,10 @@ export interface Note {
   /** Token type identifier */
   token: bigint;
   /** Value/amount */
-  value: bigint;
+  amount: bigint;
   /** Random blinding factor */
   random: bigint;
-  /** Computed commitment = Poseidon(nsk, token, value) */
+  /** Computed commitment = Poseidon(nsk, token, amount) */
   commitment: bigint;
 }
 
@@ -69,7 +69,7 @@ export interface UnshieldInput {
   /** Merkle proof path elements for each note */
   inputPathElements: bigint[][];
   /** Amount to unshield */
-  unshieldValue: bigint;
+  unshieldAmount: bigint;
   /** Change note */
   outputNote: Note;
   /** Token type */
@@ -85,15 +85,15 @@ export interface UnshieldCircuitInput {
   nullifying_key: string;
 
   input_randoms: string[];          // [2] - Random blinding factors for inputs
-  input_values: string[];           // [2] - Values for inputs (can be 0 for dummy)
+  input_amounts: string[];          // [2] - Amounts for inputs (can be 0 for dummy)
   input_leaf_indices: string[];     // [2] - Leaf positions in tree
   input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
 
-  change_value: string;             // Change amount (private input)
+  change_amount: string;            // Change amount (private input)
   change_random: string;            // Random for change note (private input)
 
   // Public inputs
-  unshield_value: string;           // Amount to unshield
+  unshield_amount: string;          // Amount to unshield
   token: string;                    // Token type to unshield
   merkle_root: string;              // Merkle root to verify against
 }
@@ -139,15 +139,15 @@ export interface TransferCircuitInput {
   nullifying_key: string;
 
   input_randoms: string[];          // [2] - Random blinding factors for inputs
-  input_values: string[];           // [2] - Values for inputs (can be 0 for dummy)
+  input_amounts: string[];          // [2] - Amounts for inputs (can be 0 for dummy)
   input_leaf_indices: string[];     // [2] - Leaf positions in tree
   input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
 
   recipient_mpk: string;            // Recipient's master public key
-  transfer_value: string;           // Amount to transfer to recipient
+  transfer_amount: string;          // Amount to transfer to recipient
   transfer_random: string;          // Random for transfer commitment
 
-  change_value: string;             // Change amount back to sender
+  change_amount: string;            // Change amount back to sender
   change_random: string;            // Random for change commitment
 
   // Public inputs
@@ -204,13 +204,13 @@ export interface SwapInput {
   /** Random blinding factor for output note */
   outputRandom: bigint;
   /** Expected output amount from DEX */
-  outputValue: bigint;
+  outputAmount: bigint;
   /** Change note recipient's NSK (usually sender's own NSK) */
   changeNSK: bigint;
   /** Random blinding factor for change note */
   changeRandom: bigint;
   /** Change amount (excess input) */
-  changeValue: bigint;
+  changeAmount: bigint;
 }
 
 /**
@@ -223,7 +223,7 @@ export interface SwapCircuitInput {
 
   // Private inputs - Input notes
   input_nsks: string[];
-  input_values: string[];
+  input_amounts: string[];
   input_randoms: string[];
   input_leaf_indices: string[];
   input_path_elements: string[][];
@@ -237,12 +237,12 @@ export interface SwapCircuitInput {
 
   // Private inputs - Output note
   output_nsk: string;
-  output_value: string;
+  output_amount: string;
   output_random: string;
 
   // Private inputs - Change note
   change_nsk: string;
-  change_value: string;
+  change_amount: string;
   change_random: string;
 
   // Public inputs

@@ -17,14 +17,33 @@ CIRCUITS=()
 if [ $# -eq 0 ]; then
     CIRCUITS=("unshield" "transfer" "swap")
 else
-    for arg in "$@"; do
-        case "$arg" in
-            unshield|transfer|swap)
-                [[ " ${CIRCUITS[*]} " != *" $arg "* ]] && CIRCUITS+=("$arg")
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --circuit)
+                if [ -z "$2" ] || [[ "$2" == --* ]]; then
+                    echo "Error: --circuit requires a circuit name"
+                    echo "Usage: $0 [--circuit <name>]..."
+                    echo "Available circuits: unshield, transfer, swap"
+                    echo "Default: compile all three"
+                    exit 1
+                fi
+                case "$2" in
+                    unshield|transfer|swap)
+                        [[ " ${CIRCUITS[*]} " != *" $2 "* ]] && CIRCUITS+=("$2")
+                        shift 2
+                        ;;
+                    *)
+                        echo "Error: Unknown circuit '$2'"
+                        echo "Available circuits: unshield, transfer, swap"
+                        exit 1
+                        ;;
+                esac
                 ;;
             *)
-                echo "Error: Unknown circuit '$arg'"
-                echo "Usage: $0 [unshield] [transfer] [swap]"
+                echo "Error: Unknown option '$1'"
+                echo "Usage: $0 [--circuit <name>]..."
+                echo "Available circuits: unshield, transfer, swap"
+                echo "Example: $0 --circuit unshield --circuit transfer"
                 echo "Default: compile all three"
                 exit 1
                 ;;
@@ -110,7 +129,7 @@ compile_circuit() {
         ${BUILD_DIR}/${name}_proof.json
 
     echo "[10/10] Converting VK to Sui format and copying to frontend..."
-    node scripts/arkworksConverter${cap}.js
+    node scripts/arkworksConverter.js ${name}
     mkdir -p ${FRONTEND}/${name}_js
     cp ${BUILD_DIR}/${name}_js/${name}.wasm ${FRONTEND}/${name}_js/
     cp ${BUILD_DIR}/${name}_final.zkey ${FRONTEND}

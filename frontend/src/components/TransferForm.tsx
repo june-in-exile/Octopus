@@ -142,7 +142,7 @@ export function TransferForm({
       });
 
       // 5. Create output notes (recipient + change)
-      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { value: bigint } }) => sum + n.note.value, 0n);
+      const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const [recipientNote, changeNote] = createTransferOutputs(
         recipientProfile.mpk,
@@ -191,8 +191,8 @@ export function TransferForm({
       // 10. Success!
       setState("success");
       let successMessage = `Transferred ${amount} ${tokenConfig.symbol}!`;
-      if (changeNote.value > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(changeNote.value, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      if (changeNote.amount > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
       setSuccess({
         message: successMessage,

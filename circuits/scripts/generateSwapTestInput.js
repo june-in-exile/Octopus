@@ -33,36 +33,36 @@ async function main() {
 
     // ============ Input Note 1 (SUI) ============
     const input1_random = "11111111111111111111111111111111111111111111111111";
-    const input1_value = "5000000000"; // 5 SUI (9 decimals)
+    const input1_amount = "5000000000"; // 5 SUI (9 decimals)
     const input1_leaf_index = "0"; // First leaf position
 
     const input1_nsk = hash([mpk, input1_random]);
-    const input1_commitment = hash([input1_nsk, token_in, input1_value]);
+    const input1_commitment = hash([input1_nsk, token_in, input1_amount]);
     const input1_nullifier = hash([nullifying_key, input1_leaf_index]);
 
     console.log("\nInput Note 1 (SUI):");
     console.log("  NSK:", input1_nsk);
-    console.log("  Value:", input1_value, "(5 SUI)");
+    console.log("  Amount:", input1_amount, "(5 SUI)");
     console.log("  Commitment:", input1_commitment);
     console.log("  Nullifier:", input1_nullifier);
 
     // ============ Input Note 2 (SUI) ============
     const input2_random = "22222222222222222222222222222222222222222222222222";
-    const input2_value = "3000000000"; // 3 SUI (9 decimals)
+    const input2_amount = "3000000000"; // 3 SUI (9 decimals)
     const input2_leaf_index = "1"; // Second leaf position
 
     const input2_nsk = hash([mpk, input2_random]);
-    const input2_commitment = hash([input2_nsk, token_in, input2_value]);
+    const input2_commitment = hash([input2_nsk, token_in, input2_amount]);
     const input2_nullifier = hash([nullifying_key, input2_leaf_index]);
 
     console.log("\nInput Note 2 (SUI):");
     console.log("  NSK:", input2_nsk);
-    console.log("  Value:", input2_value, "(3 SUI)");
+    console.log("  Amount:", input2_amount, "(3 SUI)");
     console.log("  Commitment:", input2_commitment);
     console.log("  Nullifier:", input2_nullifier);
 
-    const total_input = BigInt(input1_value) + BigInt(input2_value);
-    console.log("\nTotal Input Value:", total_input.toString(), "(8 SUI)");
+    const total_input = BigInt(input1_amount) + BigInt(input2_amount);
+    console.log("\nTotal Input Amount:", total_input.toString(), "(8 SUI)");
 
     // ============ Swap Parameters ============
     const amount_in = "6000000000";        // Swap 6 SUI
@@ -80,30 +80,30 @@ async function main() {
 
     // ============ Output Note (USDC from swap) ============
     const output_random = "33333333333333333333333333333333333333333333333333";
-    const output_value = "6000000";        // Actual swap result: 6 USDC (6 decimals)
+    const output_amount = "6000000";        // Actual swap result: 6 USDC (6 decimals)
 
     const output_nsk = hash([mpk, output_random]); // Send to self (or recipient's MPK)
-    const output_commitment = hash([output_nsk, token_out, output_value]);
+    const output_commitment = hash([output_nsk, token_out, output_amount]);
 
     console.log("\nOutput Note (USDC):");
     console.log("  NSK:", output_nsk);
-    console.log("  Value:", output_value, "(6 USDC)");
+    console.log("  Amount:", output_amount, "(6 USDC)");
     console.log("  Commitment:", output_commitment);
 
     // ============ Change Note (Remaining SUI) ============
-    const change_value = (total_input - BigInt(amount_in)).toString(); // 8 - 6 = 2 SUI
+    const change_amount = (total_input - BigInt(amount_in)).toString(); // 8 - 6 = 2 SUI
     const change_random = "44444444444444444444444444444444444444444444444444";
 
     const change_nsk = hash([mpk, change_random]);
-    const change_commitment = hash([change_nsk, token_in, change_value]);
+    const change_commitment = hash([change_nsk, token_in, change_amount]);
 
     console.log("\nChange Note (SUI):");
     console.log("  NSK:", change_nsk);
-    console.log("  Value:", change_value, "(2 SUI)");
+    console.log("  Amount:", change_amount, "(2 SUI)");
     console.log("  Commitment:", change_commitment);
 
     // Verify balance
-    const required_sum = BigInt(amount_in) + BigInt(change_value);
+    const required_sum = BigInt(amount_in) + BigInt(change_amount);
     console.log("\nBalance Check:");
     console.log("  Input Sum:", total_input.toString(), "SUI");
     console.log("  Required (amount_in + change):", required_sum.toString(), "SUI");
@@ -153,7 +153,7 @@ async function main() {
         nullifying_key,
 
         // Input notes (private)
-        input_values: [input1_value, input2_value],
+        input_amounts: [input1_amount, input2_amount],
         input_randoms: [input1_random, input2_random],
         input_leaf_indices: [input1_leaf_index, input2_leaf_index],
         input_path_elements: [input1_path_elements, input2_path_elements],
@@ -164,11 +164,11 @@ async function main() {
         dex_pool_id,
 
         // Output note (private)
-        output_value,
+        output_amount,
         output_random,
 
         // Change note (private)
-        change_value,
+        change_amount,
         change_random,
 
         // Public inputs

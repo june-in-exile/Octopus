@@ -55,9 +55,9 @@ function hash(inputs: bigint[]): bigint {
   return BigInt(poseidon.F.toString(h));
 }
 
-function isValidNoteField(value: unknown): boolean {
-  if (value === undefined) return false;
-  if (typeof value === 'number' && isNaN(value)) return false;
+function isValidNoteField(amount: unknown): boolean {
+  if (amount === undefined) return false;
+  if (typeof amount === 'number' && isNaN(amount)) return false;
   return true;
 }
 
@@ -71,7 +71,7 @@ function decryptNote(
     if (!note) return null;
 
     // Validate all required fields
-    const fields = ['nsk', 'token', 'value', 'random', 'commitment'] as const;
+    const fields = ['nsk', 'token', 'amount', 'random', 'commitment'] as const;
     if (!fields.every(field => isValidNoteField(note[field]))) {
       return null;
     }
@@ -80,7 +80,7 @@ function decryptNote(
     const serialized = {
       nsk: note.nsk.toString(),
       token: note.token.toString(),
-      value: note.value.toString(),
+      amount: note.amount.toString(),
       random: note.random.toString(),
       commitment: note.commitment.toString(),
     };
