@@ -51,28 +51,61 @@ echo "Step 2: Building Move package..."
 sui move build
 
 echo ""
-echo "Step 3: Publishing package to $NETWORK..."
+echo "Step 3: Checking deployment status..."
 
-RAW_OUTPUT=$(sui client publish --json --no-lint)
-PUBLISH_OUTPUT=$(echo "$RAW_OUTPUT" | sed -n '/{/,$p')
+# Check if package is already published on this network
+UPGRADE_CAP=$(awk '/\[published\.'"$NETWORK"'\]/{found=1} found && /upgrade-capability =/{match($0, /0x[a-f0-9]+/); print substr($0, RSTART, RLENGTH); exit}' Published.toml)
 
-# Extract package ID from publish output
-NEXT_PUBLIC_PACKAGE_ID=$(echo "$PUBLISH_OUTPUT" | jq -r '.objectChanges[]? | select(.type == "published") | .packageId' 2>/dev/null)
+if [ -n "$UPGRADE_CAP" ]; then
+    echo "Found existing deployment on $NETWORK"
+    echo "Upgrade capability: $UPGRADE_CAP"
+    echo "Upgrading package..."
 
-# Fallback: read from Published.toml if jq extraction failed
-if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
-    NEXT_PUBLIC_PACKAGE_ID=$(awk '/\[published\.'"$NETWORK"'\]/{found=1} found && /published-at =/{match($0, /0x[a-f0-9]+/); print substr($0, RSTART, RLENGTH); exit}' Published.toml)
+    RAW_OUTPUT=$(sui client upgrade --upgrade-capability "$UPGRADE_CAP" --json --no-lint)
+    UPGRADE_OUTPUT=$(echo "$RAW_OUTPUT" | sed -n '/{/,$p')
+
+    # Extract package ID from upgrade output
+    NEXT_PUBLIC_PACKAGE_ID=$(echo "$UPGRADE_OUTPUT" | jq -r '.objectChanges[]? | select(.type == "published") | .packageId' 2>/dev/null)
+
+    # Fallback: read from Published.toml if jq extraction failed
+    if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
+        NEXT_PUBLIC_PACKAGE_ID=$(awk '/\[published\.'"$NETWORK"'\]/{found=1} found && /published-at =/{match($0, /0x[a-f0-9]+/); print substr($0, RSTART, RLENGTH); exit}' Published.toml)
+    fi
+
+    if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
+        echo "Error: Failed to extract package ID from upgrade output"
+        echo "$UPGRADE_OUTPUT"
+        exit 1
+    fi
+
+    echo "✅ Package upgraded successfully!"
+    echo "Package ID: $NEXT_PUBLIC_PACKAGE_ID"
+    echo ""
+else
+    echo "No existing deployment found on $NETWORK"
+    echo "Publishing new package..."
+
+    RAW_OUTPUT=$(sui client publish --json --no-lint)
+    PUBLISH_OUTPUT=$(echo "$RAW_OUTPUT" | sed -n '/{/,$p')
+
+    # Extract package ID from publish output
+    NEXT_PUBLIC_PACKAGE_ID=$(echo "$PUBLISH_OUTPUT" | jq -r '.objectChanges[]? | select(.type == "published") | .packageId' 2>/dev/null)
+
+    # Fallback: read from Published.toml if jq extraction failed
+    if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
+        NEXT_PUBLIC_PACKAGE_ID=$(awk '/\[published\.'"$NETWORK"'\]/{found=1} found && /published-at =/{match($0, /0x[a-f0-9]+/); print substr($0, RSTART, RLENGTH); exit}' Published.toml)
+    fi
+
+    if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
+        echo "Error: Failed to extract package ID from publish output"
+        echo "$PUBLISH_OUTPUT"
+        exit 1
+    fi
+
+    echo "✅ Package published successfully!"
+    echo "Package ID: $NEXT_PUBLIC_PACKAGE_ID"
+    echo ""
 fi
-
-if [ -z "$NEXT_PUBLIC_PACKAGE_ID" ]; then
-    echo "Error: Failed to extract package ID from publish output"
-    echo "$PUBLISH_OUTPUT"
-    exit 1
-fi
-
-echo "✅ Package published successfully!"
-echo "Package ID: $NEXT_PUBLIC_PACKAGE_ID"
-echo ""
 
 # Update .env file if it exists
 if [ -n "$ENV_FILE" ]; then
