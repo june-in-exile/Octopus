@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useSuiClient } from "@mysten/dapp-kit";
 import type { OctopusKeypair } from "./useLocalKeypair";
 import type { Note } from "@june_zk/octopus-sdk";
@@ -8,6 +8,7 @@ import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { bigIntToLE32 } from "@june_zk/octopus-sdk";
 import { getWorkerManager } from "@/lib/workerManager";
 import { generateCacheKey } from "@/lib/notesCache";
+import { getTokenIdFromCoinType } from "@/lib/utils";
 
 /**
  * Owned note with metadata for selection and spending
@@ -72,7 +73,8 @@ function saveSpentNullifiers(mpk: bigint, nullifiers: Set<string>): void {
 export function useNotes(
   keypair: OctopusKeypair | null,
   isInitializing = false,
-  poolId: string = ""
+  poolId: string = "",
+  tokenType: string = ""
 ) {
   const client = useSuiClient();
   const { packageId, graphqlUrl } = useNetworkConfig();
@@ -508,9 +510,32 @@ export function useNotes(
     spent: note.spent || (!note.spent && localSpentSet.has(note.nullifier.toString())),
   }));
 
-  // Only return notes if they match the current poolId
-  const filteredNotes = notesPoolId === poolId ? notesWithLocalSpent : [];
+  // Compute expected token ID for this token type
+  const expectedTokenId = useMemo(() => {
+    if (!tokenType) return null;
+    try {
+      return getTokenIdFromCoinType(tokenType);
+    } catch (err) {
+      return null;
+    }
+  }, [tokenType]);
 
+  // Filter by pool ID AND token type
+  const filteredNotes = useMemo(() => {
+    // Must match pool ID
+    if (notesPoolId !== poolId) {
+      return [];
+    }
+
+    // If token type specified, also filter by token field
+    if (expectedTokenId !== null) {
+      return notesWithLocalSpent.filter(n => n.note.token === expectedTokenId);
+    }
+
+    // No token filter specified, return all notes from this pool
+    return notesWithLocalSpent;
+  }, [notesPoolId, poolId, notesWithLocalSpent, expectedTokenId]);
+  
   return {
     notes: filteredNotes,
     loading,

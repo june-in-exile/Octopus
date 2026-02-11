@@ -61,7 +61,7 @@ export default function Home() {
     forceFullRefresh: forceFullRefreshNotes,
     markNoteSpent,
     lastScanStats,
-  } = useNotes(keypair, isLoading, tokenConfig?.poolId ?? "");
+  } = useNotes(keypair, isLoading, tokenConfig?.poolId ?? "", tokenConfig?.type ?? "");
 
   // Pool note counts — scanned once at startup for all pools, updated after operations
   const [workerNoteCounts, setWorkerNoteCounts] = useState<Record<string, number>>({});
@@ -96,7 +96,7 @@ export default function Home() {
   const unspentNotes = notes.filter((n) => !n.spent);
   const shieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
   const noteCount = unspentNotes.length;
-
+  
   const handleOperationSuccess = async () => {
     // Refresh notes and pool info from blockchain after successful operation
     // Add delay to allow blockchain events to be indexed

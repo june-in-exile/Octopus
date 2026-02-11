@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { poseidonHash } from "@june_zk/octopus-sdk";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -86,4 +87,21 @@ export function bigIntToHex(n: bigint): string {
 export function hexToBigInt(hex: string): bigint {
   const cleanHex = hex.startsWith("0x") ? hex.slice(2) : hex;
   return BigInt("0x" + cleanHex);
+}
+
+
+/**
+ * Compute token ID from coin type string
+ * Token ID = Poseidon(package_address)
+ *
+ * Examples:
+ * - "0x2::sui::SUI" → Poseidon([0x2])
+ * - "0xcde7::usdc::USDC" → Poseidon([0xcde7])
+ *
+ * @param coinType - Full coin type (e.g., "0x2::sui::SUI")
+ * @returns Token ID as bigint
+ */
+export function getTokenIdFromCoinType(coinType: string): bigint {
+  const packageAddr = coinType.split("::")[0];
+  return poseidonHash([BigInt(packageAddr)]);
 }
