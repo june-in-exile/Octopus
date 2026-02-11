@@ -4,7 +4,9 @@ module octopus::swap_tests {
     use sui::test_scenario::{Self as ts, Scenario};
     use sui::coin::{Self, Coin};
     use sui::sui::SUI;
+    use sui::clock::{Self, Clock};
     use octopus::pool::{Self, PrivacyPool};
+    use token::deep::DEEP;
 
     // Test token for USDC simulation
     public struct USDC has drop {}
@@ -161,6 +163,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT,
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -168,10 +171,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000_000, // amount_in
                 95_000_000_000,  // min_amount_out (5% slippage)
-                vector::empty(), // encrypted_output_note
-                vector::empty(), // encrypted_change_note
+                coin::mint_for_testing<DEEP>(0, ctx), // deep_in (zero for testing)
+                &clock, // clock
+                vector::empty<u8>(), // encrypted_output_note
+                vector::empty<u8>(), // encrypted_change_note
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             // Verify nullifiers are spent
             assert!(pool::is_nullifier_spent(&pool_sui, TEST_NULLIFIER_1), 0);
@@ -226,6 +232,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT,
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -233,10 +240,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000_000,
                 95_000_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);
@@ -263,6 +273,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT,
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -270,10 +281,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000_000,
                 95_000_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);
@@ -313,6 +327,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT,
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -320,10 +335,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000_000, // More than pool balance
                 95_000_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);
@@ -350,6 +368,7 @@ module octopus::swap_tests {
 
             let invalid_public_inputs = x"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -357,10 +376,13 @@ module octopus::swap_tests {
                 invalid_public_inputs,
                 100_000_000_000,
                 95_000_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);
@@ -401,6 +423,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT, // Change commitment for zero value
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<SUI, USDC>(
                 &mut pool_sui,
                 &mut pool_usdc,
@@ -408,10 +431,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000_000,
                 95_000_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             // Verify change commitment added (even if zero value)
             assert!(pool::get_note_count(&pool_sui) == 2, 0); // Original 1 + change
@@ -461,6 +487,7 @@ module octopus::swap_tests {
                 TEST_CHANGE_COMMITMENT,
             );
 
+            let clock = clock::create_for_testing(ctx);
             pool::swap_for_testing<USDC, SUI>(
                 &mut pool_usdc,
                 &mut pool_sui,
@@ -468,10 +495,13 @@ module octopus::swap_tests {
                 public_inputs,
                 100_000_000,
                 95_000_000,
-                vector::empty(),
-                vector::empty(),
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
                 ctx
             );
+            clock::destroy_for_testing(clock);
 
             // Verify swap succeeded
             assert!(pool::is_nullifier_spent(&pool_usdc, TEST_NULLIFIER_1), 0);

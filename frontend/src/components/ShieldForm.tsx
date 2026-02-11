@@ -7,7 +7,7 @@ import {
   useSuiClient,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
-import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import { cn, parseTokenAmount, formatTokenAmount, truncateAddress, getTokenIdFromCoinType } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
@@ -15,7 +15,6 @@ import {
   createNote,
   encryptNote,
   bigIntToLE32,
-  poseidonHash,
   deriveViewingPublicKey
 } from "@june_zk/octopus-sdk";
 import { initPoseidon } from "@/lib/poseidon";
@@ -66,11 +65,6 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
     fetchBalance();
   }, [account?.address, client, tokenConfig.type]);
 
-  // Derive token ID from coin type package address
-  function getTokenId(coinType: string): bigint {
-    const packageAddr = coinType.split("::")[0];
-    return poseidonHash([BigInt(packageAddr)]);
-  }
 
   // Build coin argument for the shield transaction
   async function buildCoinArg(tx: Transaction, amountBase: bigint) {
@@ -152,7 +146,7 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
     try {
       await initPoseidon();
 
-      const tokenId = getTokenId(tokenConfig.type);
+      const tokenId = getTokenIdFromCoinType(tokenConfig.type);
 
       const note = createNote(keypair.masterPublicKey, tokenId, amountBase);
 

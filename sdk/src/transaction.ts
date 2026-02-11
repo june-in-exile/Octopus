@@ -117,7 +117,7 @@ export function buildTransferTransaction<T extends string>(
 }
 
 /**
- * Build a swap transaction (for manual signing)
+ * Build a swap transaction for production (DeepBook V3 integration)
  *
  * @param packageId - Octopus package ID
  * @param poolInId - Input token pool ID
@@ -128,6 +128,7 @@ export function buildTransferTransaction<T extends string>(
  * @param proof - Swap ZK proof
  * @param amountIn - Amount to swap in
  * @param minAmountOut - Minimum amount out (slippage protection)
+ * @param deepCoinId - DEEP token coin object ID for DeepBook fees
  * @param encryptedOutputNote - Encrypted note for output token
  * @param encryptedChangeNote - Encrypted note for change token
  */
@@ -141,6 +142,7 @@ export function buildSwapTransaction<TokenIn extends string, TokenOut extends st
   proof: SuiSwapProof,
   amountIn: bigint,
   minAmountOut: bigint,
+  deepCoinId: string,
   encryptedOutputNote: Uint8Array,
   encryptedChangeNote: Uint8Array
 ): Transaction {
@@ -157,6 +159,62 @@ export function buildSwapTransaction<TokenIn extends string, TokenOut extends st
       tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
       tx.pure.u64(amountIn),
       tx.pure.u64(minAmountOut),
+      tx.object(deepCoinId),
+      tx.object('0x6'), // Clock shared object
+      tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+      tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+    ],
+  });
+
+  return tx;
+}
+
+/**
+ * Build a swap transaction for testing (mock 1:1 swap, no DeepBook integration)
+ *
+ * Uses swap_for_testing contract function which skips ZK proof verification
+ * and performs a 1:1 mock swap. Useful for testing without DEEP tokens.
+ *
+ * @param packageId - Octopus package ID
+ * @param poolInId - Input token pool ID
+ * @param poolOutId - Output token pool ID
+ * @param coinTypeIn - Input token type (e.g., "0x2::sui::SUI")
+ * @param coinTypeOut - Output token type (e.g., "0x...::usdc::USDC")
+ * @param proof - Swap ZK proof (for compatibility, but not verified in test mode)
+ * @param amountIn - Amount to swap in
+ * @param minAmountOut - Minimum amount out (slippage protection)
+ * @param encryptedOutputNote - Encrypted note for output token
+ * @param encryptedChangeNote - Encrypted note for change token
+ */
+export function buildSwapTransactionForTesting<TokenIn extends string, TokenOut extends string>(
+  packageId: string,
+  poolInId: string,
+  poolOutId: string,
+  coinTypeIn: TokenIn,
+  coinTypeOut: TokenOut,
+  proof: SuiSwapProof,
+  amountIn: bigint,
+  minAmountOut: bigint,
+  encryptedOutputNote: Uint8Array,
+  encryptedChangeNote: Uint8Array
+): Transaction {
+  const tx = new Transaction();
+
+  // Create a mock DEEP coin (will be returned unused by the contract)
+  const [mockDeepCoin] = tx.splitCoins(tx.gas, [1]);
+
+  tx.moveCall({
+    target: `${packageId}::pool::swap_for_testing`,
+    typeArguments: [coinTypeIn, coinTypeOut],
+    arguments: [
+      tx.object(poolInId),
+      tx.object(poolOutId),
+      tx.pure.vector("u8", Array.from(proof.proofBytes)),
+      tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+      tx.pure.u64(amountIn),
+      tx.pure.u64(minAmountOut),
+      mockDeepCoin,
+      tx.object('0x6'), // Clock shared object
       tx.pure.vector("u8", Array.from(encryptedOutputNote)),
       tx.pure.vector("u8", Array.from(encryptedChangeNote)),
     ],

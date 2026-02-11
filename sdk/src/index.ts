@@ -78,6 +78,7 @@ export {
   buildUnshieldTransaction,
   buildTransferTransaction,
   buildSwapTransaction,
+  buildSwapTransactionForTesting,
   TESTNET_CONFIG,
   type SuiConfig,
 } from "./transaction.js";

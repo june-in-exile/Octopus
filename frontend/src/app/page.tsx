@@ -306,16 +306,14 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setActiveTab("swap")}
-                      className={`tab-button flex-1 ${activeTab === "swap"
+                      className={`tab-button flex-1 flex flex-col items-center gap-0.5 ${activeTab === "swap"
                         ? "text-cyber-blue active"
-                        : isMainnet
-                          ? "text-gray-500 hover:text-gray-300"
-                          : "text-gray-600 opacity-60"
+                        : "text-gray-500 hover:text-gray-300"
                         }`}
                     >
-                      ⇌ SWAP
+                      <span>⇌ SWAP</span>
                       {!isMainnet && (
-                        <span className="ml-1 text-[8px] text-amber-500/70 font-mono">MAINNET</span>
+                        <span className="text-[8px] text-green-500/70 font-mono">TEST MODE</span>
                       )}
                     </button>
                     <button

@@ -5,13 +5,14 @@ module octopus::pool {
     use sui::coin::{Self, Coin};
     use sui::groth16;
     use sui::event;
+    use sui::clock::Clock;
     use octopus::merkle_tree::{Self, MerkleTree};
     use octopus::nullifier::{Self, NullifierRegistry};
+    use octopus::swap;
 
-    // DeepBook V3 integration (scaffolded for future implementation)
-    // Note: DeepBook V3 API requires BalanceManager setup, which needs additional research
-    // For now, we maintain the function signature but use a simplified mock
+    // DeepBook V3 integration
     use deepbook::pool::{Pool as DeepBookPool};
+    use token::deep::DEEP;
 
     // ============ Errors ============
 
@@ -158,7 +159,6 @@ module octopus::pool {
     /// Create and share a privacy pool as a shared object.
     /// This is the typical way to deploy a pool for public use.
     /// Returns an AdminCap to the caller for managing verification keys.
-    #[allow(lint(self_transfer))]
     public fun create_shared_pool<T>(
         vk_bytes: vector<u8>,
         transfer_vk_bytes: vector<u8>,
@@ -465,20 +465,16 @@ module octopus::pool {
     /// 4. Shield output tokens into pool_out
     /// 5. Return change to pool_in if applicable
     ///
-    /// NOTE: This is a production-ready scaffold. To complete integration:
-    /// 1. DeepBook modules are already imported (line 14)
-    /// 2. deepbook_pool parameter is already added
-    /// 3. Replace TODO comments with actual DeepBook V3 API calls
-    ///
-    /// For detailed implementation guide, see: docs/PRODUCTION_SWAP_IMPLEMENTATION.md
-    ///
     /// # Arguments
     /// * `pool_in` - Privacy pool for input token
     /// * `pool_out` - Privacy pool for output token
+    /// * `deepbook_pool` - DeepBook pool for swapping
     /// * `proof_bytes` - Groth16 proof (128 bytes)
-    /// * `public_inputs_bytes` - Public inputs (192 bytes)
+    /// * `public_inputs_bytes` - Public inputs (256 bytes)
     /// * `amount_in` - Exact amount to swap
     /// * `min_amount_out` - Minimum output (slippage protection)
+    /// * `deep_in` - DEEP tokens for DeepBook fees
+    /// * `clock` - Clock object for timing
     /// * `encrypted_output_note` - Encrypted note for recipient
     /// * `encrypted_change_note` - Encrypted change note
     /// * `ctx` - Transaction context
@@ -490,6 +486,8 @@ module octopus::pool {
         public_inputs_bytes: vector<u8>,
         amount_in: u64,
         min_amount_out: u64,
+        deep_in: Coin<DEEP>,
+        clock: &Clock,
         encrypted_output_note: vector<u8>,
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
@@ -521,32 +519,33 @@ module octopus::pool {
             E_INVALID_PROOF
         );
 
-        // 5. Execute swap
-        // TODO: Implement actual DeepBook V3 integration
-        // Note: DeepBook V3 requires:
-        //   - BalanceManager creation and management
-        //   - Different API: place_market_order returns OrderInfo, not coins directly
-        //   - Additional parameters: client_order_id, self_matching_option, etc.
-        // For reference: https://docs.sui.io/standards/deepbookv3
-        //
-        // For now, using simplified mock (1:1 ratio) until DeepBook API is fully researched
-        let _ = deepbook_pool; // Suppress unused parameter warning
-
+        // 5. Execute swap through DeepBook V3
         assert!(balance::value(&pool_in.balance) >= amount_in, E_INSUFFICIENT_BALANCE);
         let coin_in = coin::take(&mut pool_in.balance, amount_in, ctx);
 
-        // Mock 1:1 swap (will be replaced with real DeepBook integration)
-        let amount_out = amount_in;
+        // Call DeepBook swap (TokenIn -> TokenOut)
+        // This assumes TokenIn is the base token and TokenOut is the quote token
+        let (base_out, quote_out, deep_out) = swap::execute_swap_base_for_quote(
+            deepbook_pool,
+            coin_in,
+            deep_in,
+            min_amount_out,
+            clock,
+            ctx
+        );
 
-        // Destroy input coin (simulating DEX consumption)
-        balance::join(&mut pool_in.balance, coin::into_balance(coin_in));
+        // base_out should be empty (all input swapped)
+        // quote_out is the received output token
+        let amount_out = coin::value(&quote_out);
 
-        // Take output from pool_out (simulating DEX providing tokens)
-        assert!(balance::value(&pool_out.balance) >= amount_out, E_INSUFFICIENT_BALANCE);
-        let coin_out = coin::take(&mut pool_out.balance, amount_out, ctx);
+        // Return any remaining base tokens to pool_in
+        balance::join(&mut pool_in.balance, coin::into_balance(base_out));
 
-        // Shield output back into pool_out
-        balance::join(&mut pool_out.balance, coin::into_balance(coin_out));
+        // Shield output tokens into pool_out
+        balance::join(&mut pool_out.balance, coin::into_balance(quote_out));
+
+        // Return unused DEEP tokens to sender
+        transfer::public_transfer(deep_out, tx_context::sender(ctx));
 
         // 7. Verify slippage protection
         assert!(amount_out >= min_amount_out, E_PRICE_TOO_LOW);
@@ -905,6 +904,8 @@ module octopus::pool {
         public_inputs_bytes: vector<u8>,
         amount_in: u64,
         min_amount_out: u64,
+        deep_in: Coin<DEEP>,
+        _clock: &Clock,
         encrypted_output_note: vector<u8>,
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
@@ -912,6 +913,9 @@ module octopus::pool {
         // Validate public inputs length (8 field elements × 32 bytes = 256 bytes)
         assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
         assert!(amount_in > 0, E_ZERO_AMOUNT);
+
+        // Return DEEP tokens to sender (not needed for mock swap)
+        transfer::public_transfer(deep_in, tx_context::sender(ctx));
 
         let (_token_in, _token_out, merkle_root, nullifier1, nullifier2, _swap_data_hash, output_commitment, change_commitment) =
             parse_swap_public_inputs(&public_inputs_bytes);

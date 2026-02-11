@@ -55,3 +55,29 @@ export const DEEPBOOK_POOLS: Record<string, string> = {
   SUI_USDC: getDeepBookPoolId(),
   USDC_SUI: getDeepBookPoolId(), // Same pool, reverse direction
 };
+
+// DEEP token configuration for DeepBook fees
+export const DEEP_TOKEN_CONFIG = {
+  testnet: {
+    type: process.env.NEXT_PUBLIC_TESTNET_DEEP_TYPE || "0x36dbef866a1d62bf7328989a10fb2f07d769f4ee587c0de4a0a256e57e0a58a8::deep::DEEP",
+    decimals: 6,
+  },
+  mainnet: {
+    type: process.env.NEXT_PUBLIC_MAINNET_DEEP_TYPE || "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP",
+    decimals: 6,
+  },
+} as const;
+
+// Get DEEP token type for current network
+export const DEEP_TOKEN_TYPE = NETWORK === "mainnet"
+  ? DEEP_TOKEN_CONFIG.mainnet.type
+  : DEEP_TOKEN_CONFIG.testnet.type;
+
+// Estimated DEEP fee for swap operations (~0.01 DEEP)
+export const ESTIMATED_DEEP_FEE = 10_000_000n; // In smallest units (6 decimals)
+
+// Sui Clock shared object (same across all networks)
+export const CLOCK_OBJECT_ID = "0x6";
+
+// Default swap mode (test mode for testnet, can be overridden by user)
+export const DEFAULT_SWAP_MODE: "test" | "production" = NETWORK === "mainnet" ? "production" : "test";

@@ -259,7 +259,7 @@ export interface SwapCircuitInput {
 export interface SuiSwapProof {
   /** Proof points (128 bytes: A || B || C) */
   proofBytes: Uint8Array;
-  /** Public inputs (192 bytes: root || nullifiers[2] || output_commitment || change_commitment || swap_data_hash) */
+  /** Public inputs */
   publicInputsBytes: Uint8Array;
 }
 

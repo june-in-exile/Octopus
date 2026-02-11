@@ -63,9 +63,9 @@ export function convertSwapProofToSui(
   publicSignals: string[]
 ): SuiSwapProof {
   // Validate public signals count for swap circuit
-  // Expected: merkle_root, nullifier1, nullifier2, output_commitment, change_commitment, swap_data_hash
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for swap, got ${publicSignals.length}`);
+  // Expected: nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment, token_in, token_out, merkle_root
+  if (publicSignals.length !== 8) {
+    throw new Error(`Expected 8 public signals for swap, got ${publicSignals.length}`);
   }
 
   const proofBytes = serializeProof(proof as any);

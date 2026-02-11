@@ -9,8 +9,9 @@ import {
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { cn, parseSui, formatSui } from "@/lib/utils";
-import { SUI_COIN_TYPE, DEEPBOOK_POOLS } from "@/lib/constants";
+import { SUI_COIN_TYPE, DEEPBOOK_POOLS, DEEP_TOKEN_TYPE, ESTIMATED_DEEP_FEE, DEFAULT_SWAP_MODE } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { useSuiClientQuery } from "@mysten/dapp-kit";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import {
@@ -19,6 +20,7 @@ import {
   calculateMinOutput,
   estimateDeepBookSwap,
   buildSwapTransaction,
+  buildSwapTransactionForTesting,
   selectNotes,
   createNote,
   randomFieldElement,
@@ -54,6 +56,8 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [priceImpact, setPriceImpact] = useState<number>(0);
+  const [swapMode, setSwapMode] = useState<"test" | "production">(DEFAULT_SWAP_MODE);
+  const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
 
   const { packageId, suiPoolId, tokens } = useNetworkConfig();
   const account = useCurrentAccount();
@@ -61,6 +65,30 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
   const isMainnet = network === "mainnet";
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+
+  // Query DEEP tokens (only in production mode)
+  const { data: deepBalance } = useSuiClientQuery(
+    "getCoins",
+    {
+      owner: account?.address ?? "",
+      coinType: DEEP_TOKEN_TYPE,
+    },
+    {
+      enabled: swapMode === "production" && !!account?.address,
+    }
+  );
+
+  // Auto-select DEEP coin with sufficient balance
+  useEffect(() => {
+    if (swapMode === "production" && deepBalance?.data) {
+      const adequateCoin = deepBalance.data.find(
+        (coin) => BigInt(coin.balance) >= ESTIMATED_DEEP_FEE
+      );
+      setSelectedDeepCoin(adequateCoin?.coinObjectId || null);
+    } else {
+      setSelectedDeepCoin(null);
+    }
+  }, [swapMode, deepBalance]);
 
   // Switch token pair
   const handleSwitchTokens = () => {
@@ -91,7 +119,15 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           return;
         }
 
-        // Get pool configuration
+        // Test mode uses 1:1 mock swap (matches contract behavior)
+        if (swapMode === "test") {
+          setAmountOut(amountIn);
+          setPriceImpact(0);
+          setIsEstimating(false);
+          return;
+        }
+
+        // Production mode: Get real price from DeepBook
         const poolKey = `${tokenIn}_${tokenOut}`;
         const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
 
@@ -130,7 +166,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenIn, tokenOut, client]);
+  }, [amountIn, tokenIn, tokenOut, client, swapMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,6 +190,19 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
     if (!amountOut || parseFloat(amountOut) <= 0) {
       setError("Cannot estimate output amount");
+      return;
+    }
+
+    // Validate sufficient shielded balance early (before expensive proof generation)
+    const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
+    const totalShieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
+    const amountInBigInt = parseSui(amountIn);
+
+    if (totalShieldedBalance < amountInBigInt) {
+      setError(
+        `Insufficient shielded balance. You need ${amountIn} ${tokenIn} but only have ` +
+        `${formatSui(totalShieldedBalance)} ${tokenIn} available. Please shield more tokens first.`
+      );
       return;
     }
 
@@ -212,12 +261,25 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
       // 4. Get token IDs from selected notes
       const inputTokenId = notesWithProofs[0].note.token;
-      // For output token, we use a simple hash for now (TODO: proper token registry)
-      // For SUI->USDC swap, output should be USDC token ID
-      // For now, we'll use a placeholder that matches the mock implementation
-      const outputTokenId = tokenIn === "SUI"
-        ? poseidonHash([BigInt(0x3)]) // Mock USDC token ID
-        : poseidonHash([BigInt(0x2)]); // SUI token ID
+
+      // Derive output token ID from coin type (same as shield operation)
+      const outputCoinType = tokens![tokenOut].type;
+      const outputPackageAddr = outputCoinType.split("::")[0];
+      const outputTokenId = poseidonHash([BigInt(outputPackageAddr)]);
+
+      // Get DeepBook pool ID (only required for production mode)
+      const poolKey = `${tokenIn}_${tokenOut}`;
+      const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
+
+      // In production mode, validate pool configuration
+      if (swapMode === "production" && (!deepbookPoolId || deepbookPoolId === "0x...")) {
+        throw new Error(`DeepBook pool not configured for ${poolKey}. Please set the pool ID in your environment variables or switch to test mode.`);
+      }
+
+      // Convert pool ID to BigInt (use placeholder 0x0 in test mode)
+      const poolIdToUse = swapMode === "test" ? "0x0" : deepbookPoolId;
+      const poolIdBytes = poolIdToUse.replace("0x", "");
+      const poolIdBigInt = poolIdBytes === "" ? 0n : BigInt("0x" + poolIdBytes);
 
       // 5. Build swap parameters
       const swapParams: SwapParams = {
@@ -225,7 +287,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         tokenOut: outputTokenId,
         amountIn: amountInBigInt,
         minAmountOut,
-        dexPoolId: 1n, // Mock DEX pool ID for testing
+        dexPoolId: poolIdBigInt,
         slippageBps: slippage,
       };
 
@@ -374,28 +436,45 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 12. Get DeepBook pool ID
-      const poolKey = `${tokenIn}_${tokenOut}`;
-      const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
-
-      if (!deepbookPoolId || deepbookPoolId === "0x...") {
-        throw new Error(`DeepBook pool not found for ${poolKey}`);
+      // 12. Validate production mode requirements
+      if (swapMode === "production") {
+        if (!selectedDeepCoin) {
+          throw new Error("DEEP tokens required for production swap. Please acquire DEEP tokens or switch to test mode.");
+        }
+        const deepCoinBalance = deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin);
+        if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
+          throw new Error("Insufficient DEEP balance for swap fees");
+        }
       }
 
-      // 13. Build and execute transaction
-      const tx = buildSwapTransaction(
-        packageId!,
-        tokens![tokenIn].poolId,
-        tokens![tokenOut].poolId,
-        deepbookPoolId,
-        tokens![tokenIn].type,
-        tokens![tokenOut].type,
-        suiProof,
-        amountInBigInt,
-        minAmountOut,
-        encryptedOutputNote,
-        encryptedChangeNote
-      );
+      // 13. Build and execute transaction (mode-specific)
+      const tx = swapMode === "production"
+        ? buildSwapTransaction(
+            packageId!,
+            tokens![tokenIn].poolId,
+            tokens![tokenOut].poolId,
+            deepbookPoolId,
+            tokens![tokenIn].type,
+            tokens![tokenOut].type,
+            suiProof,
+            amountInBigInt,
+            minAmountOut,
+            selectedDeepCoin!,
+            encryptedOutputNote,
+            encryptedChangeNote
+          )
+        : buildSwapTransactionForTesting(
+            packageId!,
+            tokens![tokenIn].poolId,
+            tokens![tokenOut].poolId,
+            tokens![tokenIn].type,
+            tokens![tokenOut].type,
+            suiProof,
+            amountInBigInt,
+            minAmountOut,
+            encryptedOutputNote,
+            encryptedChangeNote
+          );
 
       const result = await signAndExecute({ transaction: tx });
 
@@ -418,7 +497,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
   const unspentNotes = notes.filter((n) => !n.spent);
   const isFormValid =
-    isMainnet &&
+    (isMainnet || swapMode === "test") &&
     !!account &&
     !!keypair &&
     !!amountIn &&
@@ -429,21 +508,77 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {!isMainnet ? (
+      {/* Mode Toggle */}
+      <div className="flex items-center justify-between p-3 border border-cyber-blue/30 bg-black/40 clip-corner">
+        <div>
+          <p className="text-xs font-mono text-gray-300 mb-1">Swap Mode</p>
+          <p className="text-[10px] text-gray-500 font-mono">
+            {swapMode === "test" ? "Mock 1:1 swap (no DEEP required)" : "Real DeepBook swap (requires DEEP)"}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setSwapMode("test")}
+            className={cn(
+              "px-3 py-1 text-xs font-mono clip-corner border transition",
+              swapMode === "test"
+                ? "bg-cyber-blue/20 border-cyber-blue text-cyber-blue"
+                : "border-gray-600 text-gray-400 hover:border-gray-500"
+            )}
+          >
+            Test
+          </button>
+          <button
+            type="button"
+            onClick={() => setSwapMode("production")}
+            disabled={!isMainnet}
+            className={cn(
+              "px-3 py-1 text-xs font-mono clip-corner border transition",
+              swapMode === "production"
+                ? "bg-cyber-blue/20 border-cyber-blue text-cyber-blue"
+                : "border-gray-600 text-gray-400 hover:border-gray-500",
+              !isMainnet && "opacity-50 cursor-not-allowed"
+            )}
+          >
+            Production
+          </button>
+        </div>
+      </div>
+
+      {/* DEEP Token Warning (Production Mode) */}
+      {swapMode === "production" && (
+        <div className={cn(
+          "p-3 border clip-corner",
+          selectedDeepCoin
+            ? "border-green-600/40 bg-green-900/20"
+            : "border-yellow-600/40 bg-yellow-900/20"
+        )}>
+          <div className="flex items-start gap-2">
+            <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
+              {selectedDeepCoin ? "✓" : "!"}
+            </span>
+            <div className="flex-1">
+              <p className={cn(
+                "text-xs font-mono leading-relaxed",
+                selectedDeepCoin ? "text-green-400" : "text-yellow-400"
+              )}>
+                {selectedDeepCoin
+                  ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
+                  : "DEEP tokens required for swap fees. Please acquire DEEP tokens or switch to test mode."
+                }
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isMainnet && swapMode === "production" && (
         <div className="p-3 border border-red-600/40 bg-red-900/20 clip-corner">
           <div className="flex items-start gap-2">
             <span className="text-red-400 text-sm">✕</span>
             <p className="text-xs text-red-400 font-mono leading-relaxed">
-              Swap requires <span className="text-amber-400 font-bold">Mainnet</span>. Switch network in your wallet or click the network badge in the header.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="p-3 border border-yellow-600/30 bg-yellow-900/20 clip-corner">
-          <div className="flex items-start gap-2">
-            <span className="text-yellow-500 text-sm">!</span>
-            <p className="text-xs text-yellow-400 font-mono leading-relaxed">
-              Swap uses simulated prices (1 SUI = 3 USDC). Real DeepBook V3 integration in progress.
+              Production swap requires <span className="text-amber-400 font-bold">Mainnet</span>. Switch to test mode or connect to mainnet in your wallet.
             </p>
           </div>
         </div>
