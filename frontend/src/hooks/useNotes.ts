@@ -77,6 +77,7 @@ export function useNotes(
   const client = useSuiClient();
   const { packageId, graphqlUrl } = useNetworkConfig();
   const [notes, setNotes] = useState<OwnedNote[]>([]);
+  const [notesPoolId, setNotesPoolId] = useState<string>(""); // Track which pool the current notes are from
   const [loading, setLoading] = useState(true);  // Start with loading=true to avoid showing balance=0 before first scan
   const [error, setError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -221,6 +222,7 @@ export function useNotes(
 
     if (keypairChanged || poolChanged) {
       setNotes([]);
+      setNotesPoolId(""); // Clear pool ID tracking
     }
 
     currentKeypairRef.current = keypair.masterPublicKey;
@@ -388,6 +390,8 @@ export function useNotes(
           );
 
           setNotes(mergedNotes);
+          // Mark which pool these notes are from
+          setNotesPoolId(poolId);
           // Clear progress after completion
           setScanProgress(null);
           // Update total notes in pool
@@ -504,8 +508,11 @@ export function useNotes(
     spent: note.spent || (!note.spent && localSpentSet.has(note.nullifier.toString())),
   }));
 
+  // Only return notes if they match the current poolId
+  const filteredNotes = notesPoolId === poolId ? notesWithLocalSpent : [];
+
   return {
-    notes: notesWithLocalSpent,
+    notes: filteredNotes,
     loading,
     error,
     refresh,

@@ -239,7 +239,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       );
 
       // 7. Calculate change amount (remaining input tokens)
-      const totalInputValue = notesWithProofs.reduce((sum, n) => sum + n.note.value, 0n);
+      const totalInputValue = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
       const changeAmount = totalInputValue - amountInBigInt;
 
       const changeRandom = randomFieldElement();
@@ -280,7 +280,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
         console.log(`Input Note ${i}:`, {
           token: note.token.toString(),
-          value: note.value.toString(),
+          value: note.amount.toString(),
           nsk: note.nsk.toString(),
           random: note.random.toString(),
           expectedNSK: expectedNSK.toString(),
@@ -342,10 +342,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         }
 
         console.log("✓ Merkle proof validation passed!");
-      } amount
+      }
 
       console.log("MPK:", keypair.masterPublicKey.toString());
-      console.log("Token In:", iamountokenId.toString());
+      console.log("Token In:", inputTokenId.toString());
       console.log("Token Out:", outputTokenId.toString());
       console.log("Merkle Root (verified):", computedRoots[0]?.toString());
 
@@ -357,10 +357,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         swapParams,
         outputNSK: outputNote.nsk,
         outputRandom: outputNote.random,
-        outputAmount: outputNote.value,
+        outputAmount: outputNote.amount,
         changeNSK: changeNote.nsk,
         changeRandom: changeNote.random,
-        changeAmount: changeNote.value,
+        changeAmount: changeNote.amount,
       };
 
       // 9. Generate ZK proof (30-60 seconds)
