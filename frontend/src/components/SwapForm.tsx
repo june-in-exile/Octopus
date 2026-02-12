@@ -21,7 +21,6 @@ import {
   estimateDeepBookSwap,
   buildSwapTransaction,
   buildSwapTransactionForTesting,
-  selectNotes,
   createNote,
   randomFieldElement,
   encryptNote,
@@ -30,11 +29,10 @@ import {
   bytesToBigIntLE,
   type SwapParams,
   type SwapInput,
-  type SelectableNote,
 } from "@june_zk/octopus-sdk";
 import { initPoseidon } from "@/lib/poseidon";
 import { NumberInput } from "@/components/NumberInput";
-import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
+import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
@@ -248,45 +246,19 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         return;
       }
 
-      // 1. Select notes for swap (use transfer selection logic)
-      const selectableNotes: SelectableNote[] = unspentNotes.map((ownedNote: OwnedNote) => ({
-        note: ownedNote.note,
-        leafIndex: ownedNote.leafIndex,
-        pathElements: [], // Will be fetched lazily
-      }));
-
-      const selectedNotes = selectNotes(selectableNotes, amountInBigInt);
-
-      // 2. Fetch Merkle proofs lazily for selected notes
+      // 1-3. Select notes, fetch proofs, and mark as spent
       const tokenInPoolId = tokens?.[tokenIn]?.poolId;
       if (!tokenInPoolId) {
         throw new Error(`Pool ID not found for ${tokenIn}`);
       }
 
-      const merkleProofs = await fetchMerkleProofs(
-        keypair.spendingKey,
+      const notesWithProofs = await selectNotesWithProofs(
+        notes,
+        amountInBigInt,
+        keypair,
         tokenInPoolId,
-        selectedNotes.map((n) => n.leafIndex)
+        markNoteSpent
       );
-
-      // Attach proofs to selected notes
-      const notesWithProofs = selectedNotes.map((n) => ({
-        ...n,
-        pathElements: merkleProofs.get(n.leafIndex)!,
-      }));
-
-      // Validate all notes have proofs
-      if (notesWithProofs.some((n) => !n.pathElements || n.pathElements.length === 0)) {
-        throw new Error("Failed to generate Merkle proofs for selected notes");
-      }
-
-      // 3. Mark selected notes as spent locally to prevent double-spending during proof generation
-      const selectedOwnedNotes = unspentNotes.filter((ownedNote: OwnedNote) =>
-        notesWithProofs.some(sn => sn.leafIndex === ownedNote.leafIndex)
-      );
-      selectedOwnedNotes.forEach((ownedNote: OwnedNote) => {
-        markNoteSpent?.(ownedNote.nullifier);
-      });
 
       // 4. Get token IDs from selected notes
       const inputTokenId = notesWithProofs[0].note.token;

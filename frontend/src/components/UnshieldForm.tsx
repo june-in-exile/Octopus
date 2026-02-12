@@ -5,8 +5,7 @@ import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
 import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { selectAndPrepareNotes } from "@/lib/noteSelection";
-import { fetchAndAttachMerkleProofs } from "@/lib/merkleProofHelper";
+import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
@@ -104,23 +103,17 @@ export function UnshieldForm({
     const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // 1. Select notes to cover amount
-      const selectedOwnedNotes = selectAndPrepareNotes(notes, amountMist);
-
-      // 2. Fetch Merkle proofs for selected notes
+      // 1. Select notes, fetch proofs, and mark as spent
       setState("fetching-merkle-proofs");
-      const notesWithProofs = await fetchAndAttachMerkleProofs(
-        selectedOwnedNotes,
+      const notesWithProofs = await selectNotesWithProofs(
+        notes,
+        amountMist,
         keypair,
-        tokenConfig.poolId
+        tokenConfig.poolId,
+        markNoteSpent
       );
 
-      // 3. Mark notes as spent before generating proof
-      selectedOwnedNotes.forEach((ownedNote) => {
-        markNoteSpent?.(ownedNote.nullifier);
-      });
-
-      // 4. Create output notes (change note)
+      // 2. Create output notes (change note)
       const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const outputNote = createUnshieldOutputs(
@@ -130,7 +123,7 @@ export function UnshieldForm({
         noteToken
       );
 
-      // 5. Generate ZK proof
+      // 3. Generate ZK proof
       setState("generating-proof");
       const { proof, publicSignals } = await generateUnshieldProof({
         keypair,
@@ -142,14 +135,14 @@ export function UnshieldForm({
         token: notesWithProofs[0].note.token,
       });
 
-      // 6. Convert proof to Sui format
+      // 4. Convert proof to Sui format
       const suiProof = convertUnshieldProofToSui(proof, publicSignals);
 
-      // 7. Encrypt output note using viewing public keys
+      // 5. Encrypt output note using viewing public keys
       const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
       const encryptedChangeNote = encryptNote(outputNote, viewingPk)
 
-      // 8. Build and submit transaction
+      // 6. Build and submit transaction
       setState("submitting");
       const tx = buildUnshieldTransaction(
         packageId!,
@@ -162,7 +155,7 @@ export function UnshieldForm({
 
       const result = await signAndExecute({ transaction: tx });
 
-      // 9. Success!
+      // 7. Success!
       setState("success");
       let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
       if (outputNote.amount > 0n) {
