@@ -4,7 +4,7 @@ import { selectAndPrepareNotes } from "@/lib/noteSelection";
 import { fetchAndAttachMerkleProofs } from "@/lib/merkleProofHelper";
 
 /**
- * Select notes to cover amount, fetch Merkle proofs, and mark as spent.
+ * Select notes to cover amount and fetch Merkle proofs.
  *
  * This is a common pattern across Transfer, Unshield, and Swap operations.
  *
@@ -12,15 +12,13 @@ import { fetchAndAttachMerkleProofs } from "@/lib/merkleProofHelper";
  * @param amount - Amount to cover (in smallest units)
  * @param keypair - User's Octopus keypair
  * @param poolId - Pool ID for fetching Merkle proofs
- * @param markNoteSpent - Optional callback to mark notes as spent locally
  * @returns Selected notes with attached Merkle proofs
  */
 export async function selectNotesWithProofs(
   notes: OwnedNote[],
   amount: bigint,
   keypair: OctopusKeypair,
-  poolId: string,
-  markNoteSpent?: (nullifier: bigint) => void
+  poolId: string
 ): Promise<OwnedNote[]> {
   // 1. Select notes to cover amount
   const selectedOwnedNotes = selectAndPrepareNotes(notes, amount);
@@ -31,11 +29,6 @@ export async function selectNotesWithProofs(
     keypair,
     poolId
   );
-
-  // 3. Mark notes as spent before generating proof
-  selectedOwnedNotes.forEach((ownedNote) => {
-    markNoteSpent?.(ownedNote.nullifier);
-  });
 
   return notesWithProofs;
 }

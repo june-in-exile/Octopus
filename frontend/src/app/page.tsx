@@ -14,6 +14,7 @@ import { SwapForm } from "@/components/SwapForm";
 import { useLocalKeypair } from "@/hooks/useLocalKeypair";
 import { useNotes } from "@/hooks/useNotes";
 import { usePoolInfo } from "@/hooks/usePoolInfo";
+import { useBalance } from "@/hooks/useBalance";
 import type { TokenConfig } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { getWorkerManager } from "@/lib/workerManager";
@@ -59,9 +60,11 @@ export default function Home() {
     error: notesError,
     refresh: refreshNotes,
     forceFullRefresh: forceFullRefreshNotes,
-    markNoteSpent,
     lastScanStats,
   } = useNotes(keypair, isLoading, tokenConfig?.poolId ?? "", tokenConfig?.type ?? "");
+
+  // Fetch wallet balance for ShieldForm
+  const { balance: walletBalance, loading: isLoadingBalance } = useBalance(account, tokenConfig);
 
   // Pool note counts — scanned once at startup for all pools, updated after operations
   const [workerNoteCounts, setWorkerNoteCounts] = useState<Record<string, number>>({});
@@ -99,12 +102,8 @@ export default function Home() {
   
   const handleOperationSuccess = async () => {
     // Refresh notes and pool info from blockchain after successful operation
-    // Add delay to allow blockchain events to be indexed
     await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    // Use forceFullRefresh to clear cache and do a full scan
-    // This ensures we query from the beginning and catch the new event
-    // even if the GraphQL indexer has a slight delay
+    
     forceFullRefreshNotes();
     refreshPoolInfo();
     refreshAllPoolCounts();
@@ -336,7 +335,13 @@ export default function Home() {
                     ) : (
                       <>
                         {activeTab === "shield" && (
-                          <ShieldForm keypair={keypair} tokenConfig={tokenConfig} onSuccess={handleOperationSuccess} />
+                          <ShieldForm
+                            keypair={keypair}
+                            tokenConfig={tokenConfig}
+                            balance={walletBalance}
+                            loading={isLoadingBalance}
+                            onSuccess={handleOperationSuccess}
+                          />
                         )}
                         {activeTab === "transfer" && (
                           <TransferForm
@@ -346,7 +351,6 @@ export default function Home() {
                             notes={notes}
                             loading={isLoadingNotes}
                             onSuccess={handleOperationSuccess}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                         {activeTab === "swap" && (
@@ -358,7 +362,6 @@ export default function Home() {
                             onSuccess={handleOperationSuccess}
                             lastScanStats={lastScanStats}
                             onRefresh={refreshNotes}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                         {activeTab === "unshield" && (
@@ -369,7 +372,6 @@ export default function Home() {
                             notes={notes}
                             loading={isLoadingNotes}
                             onSuccess={handleOperationSuccess}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                       </>

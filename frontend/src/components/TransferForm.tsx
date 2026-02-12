@@ -1,12 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
 } from "@mysten/dapp-kit";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
-import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import { Transaction } from "@mysten/sui/transactions";
+import { bcs } from "@mysten/sui/bcs";
+import {
+  cn,
+  parseTokenAmount,
+  formatTokenAmount,
+  truncateAddress,
+} from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
 import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
@@ -19,7 +26,6 @@ import {
   importViewingPublicKey,
   deriveViewingPublicKey,
   encryptNote,
-  buildTransferTransaction,
   type RecipientProfile,
 } from "@june_zk/octopus-sdk";
 
@@ -30,7 +36,6 @@ interface TransferFormProps {
   notes: OwnedNote[];
   loading: boolean;
   onSuccess?: () => void | Promise<void>;
-  markNoteSpent?: (nullifier: bigint) => void;
 }
 
 type TransferState =
@@ -48,7 +53,6 @@ export function TransferForm({
   notes,
   loading: notesLoading,
   onSuccess,
-  markNoteSpent,
 }: TransferFormProps) {
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
@@ -98,17 +102,16 @@ export function TransferForm({
       setError("Please enter a valid amount");
       return;
     }
-    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
+    const amountBase = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // 1. Select notes, fetch proofs, and mark as spent
+      // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
         notes,
-        amountMist,
+        amountBase,
         keypair,
-        tokenConfig.poolId,
-        markNoteSpent
+        tokenConfig.poolId
       );
 
       // 2. Create output notes (recipient + change)
@@ -117,7 +120,7 @@ export function TransferForm({
       const [recipientNote, changeNote] = createTransferOutputs(
         recipientProfile.mpk,
         keypair.masterPublicKey,
-        amountMist,
+        amountBase,
         inputTotal,
         noteToken
       );
@@ -145,13 +148,18 @@ export function TransferForm({
 
       // 5. Build and submit transaction
       setState("submitting");
-      const tx = buildTransferTransaction(
-        packageId!,
-        tokenConfig.poolId,
-        tokenConfig.type,
-        proof,
-        [encryptedRecipientNote, encryptedChangeNote]
-      );
+      const tx = new Transaction();
+
+      tx.moveCall({
+        target: `${packageId}::pool::transfer`,
+        typeArguments: [tokenConfig.type],
+        arguments: [
+          tx.object(tokenConfig.poolId),
+          tx.pure.vector("u8", Array.from(proof.proofBytes)),
+          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize([encryptedRecipientNote, encryptedChangeNote]).toBytes()),
+        ],
+      });
 
       const result = await signAndExecute({ transaction: tx });
 
@@ -165,12 +173,10 @@ export function TransferForm({
         message: successMessage,
         txDigest: result.digest
       });
-
-      // Clear form inputs on success
       setRecipientProfile(null);
       setAmount("");
 
-      // Trigger note rescan to pick up the change note
+      // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
       console.error("Transfer failed:", err);

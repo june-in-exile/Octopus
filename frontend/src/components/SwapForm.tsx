@@ -1,37 +1,46 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
   useSuiClient,
   useSuiClientContext,
+  useSuiClientQuery,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { cn, parseSui, formatSui } from "@/lib/utils";
-import { SUI_COIN_TYPE, DEEPBOOK_POOLS, DEEP_TOKEN_TYPE, ESTIMATED_DEEP_FEE, DEFAULT_SWAP_MODE } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
-import { useSuiClientQuery } from "@mysten/dapp-kit";
+import {
+  SUI_COIN_TYPE,
+  DEEPBOOK_POOLS,
+  DEEP_TOKEN_TYPE,
+  ESTIMATED_DEEP_FEE,
+  DEFAULT_SWAP_MODE,
+} from "@/lib/constants";
+import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
+import { NumberInput } from "@/components/NumberInput";
 import {
   generateSwapProof,
   calculateMinOutput,
   estimateDeepBookSwap,
-  buildSwapTransaction,
-  buildSwapTransactionForTesting,
-  createNote,
-  randomFieldElement,
   encryptNote,
   deriveViewingPublicKey,
-  poseidonHash,
-  bytesToBigIntLE,
   type SwapParams,
-  type SwapInput,
 } from "@june_zk/octopus-sdk";
 import { initPoseidon } from "@/lib/poseidon";
-import { NumberInput } from "@/components/NumberInput";
-import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
+import {
+  verifyNotesAndComputeRoots,
+  verifyOnChainRoot,
+} from "@/lib/merkleVerification";
+import {
+  deriveTokenIdFromCoinType,
+  buildSwapInput,
+  validateSufficientBalance,
+  checkCacheStaleness,
+} from "@/lib/swapUtils";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
@@ -40,7 +49,6 @@ interface SwapFormProps {
   error: string | null;
   onSuccess?: () => void | Promise<void>;
   onRefresh?: () => void | Promise<void>;
-  markNoteSpent?: (nullifier: bigint) => void;
   lastScanStats?: {
     eventsScanned: number;
     notesDecrypted: number;
@@ -48,7 +56,7 @@ interface SwapFormProps {
   } | null;
 }
 
-export function SwapForm({ keypair, notes, loading: notesLoading, error: notesError, onSuccess, onRefresh, markNoteSpent, lastScanStats }: SwapFormProps) {
+export function SwapForm({ keypair, notes, loading: notesLoading, error: notesError, onSuccess, onRefresh, lastScanStats }: SwapFormProps) {
   const { packageId, suiPoolId, tokens } = useNetworkConfig();
   const { network } = useSuiClientContext();
   const isMainnet = network === "mainnet";
@@ -144,7 +152,9 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         }
 
         // Convert to smallest units
-        const tokenInDecimals = tokens?.[tokenIn]?.decimals ?? 9;
+        const inConfig = tokens?.[tokenIn as keyof typeof tokens];
+        const outConfig = tokens?.[tokenOut as keyof typeof tokens];
+        const tokenInDecimals = inConfig?.decimals ?? 9;
         const amountInBigInt = BigInt(
           Math.floor(amountInFloat * Math.pow(10, tokenInDecimals))
         );
@@ -159,7 +169,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         );
 
         // Convert output to display units
-        const tokenOutDecimals = tokens?.[tokenOut]?.decimals ?? 9;
+        const tokenOutDecimals = outConfig?.decimals ?? 9;
         const amountOutFloat = Number(estimation.amountOut) /
           Math.pow(10, tokenOutDecimals);
 
@@ -203,30 +213,6 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       return;
     }
 
-    // Validate sufficient shielded balance early (before expensive proof generation)
-    const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
-    const totalShieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
-    const amountInBigInt = parseSui(amountIn);
-
-    if (totalShieldedBalance < amountInBigInt) {
-      setError(
-        `Insufficient shielded balance. You need ${amountIn} ${tokenIn} but only have ` +
-        `${formatSui(totalShieldedBalance)} ${tokenIn} available. Please shield more tokens first.`
-      );
-      return;
-    }
-
-    // Check cache staleness and warn user
-    const STALENESS_WARNING_MS = 5 * 60 * 1000; // 5 minutes
-    if (lastScanStats) {
-      const cacheAge = Date.now() - lastScanStats.timestamp;
-      if (cacheAge > STALENESS_WARNING_MS) {
-        const ageMinutes = Math.floor(cacheAge / 60000);
-        console.warn(`⚠️ Notes cache is ${ageMinutes} minutes old. Consider refreshing before swap.`);
-        // Note: We don't block the swap, but the dual root checks will catch any issues
-      }
-    }
-
     setIsSubmitting(true);
 
     try {
@@ -236,55 +222,51 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       const amountOutBigInt = parseSui(amountOut);
       const minAmountOut = calculateMinOutput(amountOutBigInt, slippage);
 
-      // Get unspent notes
-      const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
+      // Validate sufficient balance early
+      validateSufficientBalance(notes, amountInBigInt, tokenIn);
 
-      if (unspentNotes.length === 0) {
-        setError("No unspent notes found. Please shield tokens first.");
-        setIsSubmitting(false);
-        return;
+      // Check cache staleness
+      checkCacheStaleness(lastScanStats);
+
+      // Get token configurations
+      const tokenInConfig = tokens?.[tokenIn as keyof typeof tokens];
+      const tokenOutConfig = tokens?.[tokenOut as keyof typeof tokens];
+
+      if (!tokenInConfig) {
+        throw new Error(`Token config not found for ${tokenIn}`);
+      }
+      if (!tokenOutConfig) {
+        throw new Error(`Token config not found for ${tokenOut}`);
       }
 
-      // 1-3. Select notes, fetch proofs, and mark as spent
-      const tokenInPoolId = tokens?.[tokenIn]?.poolId;
-      if (!tokenInPoolId) {
-        throw new Error(`Pool ID not found for ${tokenIn}`);
-      }
-
+      // 1. Select notes and fetch proofs
       const notesWithProofs = await selectNotesWithProofs(
         notes,
         amountInBigInt,
         keypair,
-        tokenInPoolId,
-        markNoteSpent
+        tokenInConfig.poolId
       );
 
-      // 4. Get token IDs from selected notes
+      // 2. Derive token IDs
       const inputTokenId = notesWithProofs[0].note.token;
+      const outputCoinType = tokenOutConfig.type;
+      const outputTokenId = deriveTokenIdFromCoinType(outputCoinType);
 
-      // Derive output token ID from coin type (same as shield operation)
-      const outputCoinType = tokens?.[tokenOut]?.type;
-      if (!outputCoinType) {
-        throw new Error(`Coin type not found for ${tokenOut}`);
-      }
-      const outputPackageAddr = outputCoinType.split("::")[0];
-      const outputTokenId = poseidonHash([BigInt(outputPackageAddr)]);
-
-      // Get DeepBook pool ID (only required for production mode)
+      // 3. Get DeepBook pool ID
       const poolKey = `${tokenIn}_${tokenOut}`;
       const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
 
-      // In production mode, validate pool configuration
       if (swapMode === "production" && (!deepbookPoolId || deepbookPoolId === "0x...")) {
-        throw new Error(`DeepBook pool not configured for ${poolKey}. Please set the pool ID in your environment variables or switch to test mode.`);
+        throw new Error(
+          `DeepBook pool not configured for ${poolKey}. Please set the pool ID or switch to test mode.`
+        );
       }
 
-      // Convert pool ID to BigInt (use placeholder 0x0 in test mode)
       const poolIdToUse = swapMode === "test" ? "0x0" : deepbookPoolId;
       const poolIdBytes = poolIdToUse.replace("0x", "");
       const poolIdBigInt = poolIdBytes === "" ? 0n : BigInt("0x" + poolIdBytes);
 
-      // 5. Build swap parameters
+      // 4. Build swap parameters
       const swapParams: SwapParams = {
         tokenIn: inputTokenId,
         tokenOut: outputTokenId,
@@ -294,154 +276,52 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         slippageBps: slippage,
       };
 
-      // 6. Create output note (swapped tokens for recipient - self)
-      const outputRandom = randomFieldElement();
-      const outputNote = createNote(
-        keypair.masterPublicKey,
-        outputTokenId,
-        amountOutBigInt,
-        outputRandom
+      // 5. Verify notes and compute Merkle roots
+      const computedRoots = verifyNotesAndComputeRoots(
+        notesWithProofs,
+        keypair.masterPublicKey
       );
 
-      // 7. Calculate change amount (remaining input tokens)
-      const totalInputValue = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
-      const changeAmount = totalInputValue - amountInBigInt;
-
-      const changeRandom = randomFieldElement();
-      const changeNote = createNote(
-        keypair.masterPublicKey,
-        inputTokenId,
-        changeAmount,
-        changeRandom
+      // 6. Verify on-chain root (pre-proof)
+      await verifyOnChainRoot(
+        client,
+        packageId!,
+        suiPoolId!,
+        SUI_COIN_TYPE,
+        account.address,
+        computedRoots[0],
+        "pre-proof"
       );
-
-      // 8. Build swap input for proof generation
-      // Debug: Verify NSK derivation and Merkle proofs for each input note
-      console.log("=== Swap Input Verification ===");
-      const MERKLE_TREE_DEPTH = 16;
-      const computedRoots: bigint[] = [];
-
-      for (let i = 0; i < notesWithProofs.length; i++) {
-        const note = notesWithProofs[i].note;
-        const expectedNSK = poseidonHash([keypair.masterPublicKey, note.random]);
-        const matches = expectedNSK === note.nsk;
-
-        // Compute Merkle root from this note's proof
-        let root = note.commitment;
-        const leafIndex = BigInt(notesWithProofs[i].leafIndex);
-        const pathElements = notesWithProofs[i].pathElements!;
-
-        for (let level = 0; level < MERKLE_TREE_DEPTH; level++) {
-          const sibling = pathElements[level];
-          const isRight = (leafIndex >> BigInt(level)) & 1n;
-          if (isRight === 0n) {
-            root = poseidonHash([root, sibling]);
-          } else {
-            root = poseidonHash([sibling, root]);
-          }
-        }
-
-        computedRoots.push(root);
-
-        console.log(`Input Note ${i}:`, {
-          token: note.token.toString(),
-          value: note.amount.toString(),
-          nsk: note.nsk.toString(),
-          random: note.random.toString(),
-          expectedNSK: expectedNSK.toString(),
-          nskMatches: matches,
-          leafIndex: notesWithProofs[i].leafIndex,
-          commitment: note.commitment.toString(),
-          merkleRoot: root.toString(),
-        });
-
-        if (!matches) {
-          throw new Error(`Input note ${i} has invalid NSK! Expected ${expectedNSK} but got ${note.nsk}`);
-        }
-      }
-
-      // Verify both notes have the same Merkle root
-      if (computedRoots.length === 2 && computedRoots[0] !== computedRoots[1]) {
-        throw new Error(
-          `Merkle root mismatch detected!\n` +
-          `Note 0 root: ${computedRoots[0].toString()}\n` +
-          `Note 1 root: ${computedRoots[1].toString()}\n` +
-          `Your notes have stale Merkle proofs. Please refresh your notes and try again.`
-        );
-      }
-
-      // Helper function to fetch and verify on-chain root
-      const verifyOnChainRoot = async (stage: string) => {
-        const onChainRootResult = await client.devInspectTransactionBlock({
-          transactionBlock: (() => {
-            const tx = new Transaction();
-            tx.moveCall({
-              target: `${packageId}::pool::get_merkle_root`,
-              typeArguments: [SUI_COIN_TYPE],
-              arguments: [tx.object(suiPoolId!)],
-            });
-            return tx;
-          })(),
-          sender: account?.address || "0x0",
-        });
-
-        if (onChainRootResult.results?.[0]?.returnValues?.[0]) {
-          // returnValues[0] is a tuple: [bytes: number[], type: string]
-          const [rootBytes] = onChainRootResult.results[0].returnValues[0];
-
-          // Use SDK's tested utility function for LE byte conversion
-          const onChainRoot = bytesToBigIntLE(rootBytes);
-          const localRoot = computedRoots[0];
-
-          console.log(`[${stage}] On-chain root (hex):`, onChainRoot.toString(16));
-          console.log(`[${stage}] Local root (hex):`, localRoot.toString(16));
-          console.log(`[${stage}] On-chain Merkle Root:`, onChainRoot.toString());
-          console.log(`[${stage}] Local Merkle Root:`, localRoot.toString());
-
-          if (onChainRoot !== localRoot) {
-            throw new Error(
-              `Your notes have outdated Merkle proofs! (detected at ${stage})\n` +
-              `Local root: ${localRoot.toString()}\n` +
-              `On-chain root: ${onChainRoot.toString()}\n\n` +
-              `New notes have been added to the pool since you last scanned. ` +
-              `Please refresh your notes and try again.`
-            );
-          }
-
-          console.log(`✓ [${stage}] Merkle proof validation passed!`);
-        }
-      };
-
-      // Verify computed root matches on-chain root (pre-proof check)
-      await verifyOnChainRoot("pre-proof");
 
       console.log("MPK:", keypair.masterPublicKey.toString());
       console.log("Token In:", inputTokenId.toString());
       console.log("Token Out:", outputTokenId.toString());
       console.log("Merkle Root (verified):", computedRoots[0]?.toString());
 
-      const swapInput: SwapInput = {
+      // 7. Build swap input
+      const { swapInput, outputNote, changeNote } = buildSwapInput(
         keypair,
-        inputNotes: notesWithProofs.map(n => n.note),
-        inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
-        inputPathElements: notesWithProofs.map(n => n.pathElements!),
+        notesWithProofs,
         swapParams,
-        outputNSK: outputNote.nsk,
-        outputRandom: outputNote.random,
-        outputAmount: outputNote.amount,
-        changeNSK: changeNote.nsk,
-        changeRandom: changeNote.random,
-        changeAmount: changeNote.amount,
-      };
+        outputTokenId,
+        amountOutBigInt
+      );
 
-      // 9. Generate ZK proof (returns Sui format directly, 30-60 seconds)
+      // 8. Generate ZK proof (30-60s)
       const proof = await generateSwapProof(swapInput);
 
-      // 9.5. Re-verify on-chain root after proof generation
-      // (catch any changes that happened during the 30-60s proof generation window)
-      await verifyOnChainRoot("post-proof");
+      // 9. Re-verify on-chain root (post-proof)
+      await verifyOnChainRoot(
+        client,
+        packageId!,
+        suiPoolId!,
+        SUI_COIN_TYPE,
+        account.address,
+        computedRoots[0],
+        "post-proof"
+      );
 
-      // 10. Encrypt notes for recipient (self)
+      // 10. Encrypt notes
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
@@ -449,50 +329,59 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       // 11. Validate production mode requirements
       if (swapMode === "production") {
         if (!selectedDeepCoin) {
-          throw new Error("DEEP tokens required for production swap. Please acquire DEEP tokens or switch to test mode.");
+          throw new Error(
+            "DEEP tokens required for production swap. Please acquire DEEP tokens or switch to test mode."
+          );
         }
-        const deepCoinBalance = deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin);
+        const deepCoinBalance = deepBalance?.data?.find(
+          (c) => c.coinObjectId === selectedDeepCoin
+        );
         if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
           throw new Error("Insufficient DEEP balance for swap fees");
         }
       }
 
-      // 12. Build and execute transaction (mode-specific)
-      const tokenInType = tokens?.[tokenIn]?.type;
-      const tokenOutType = tokens?.[tokenOut]?.type;
-      const tokenOutPoolId = tokens?.[tokenOut]?.poolId;
+      // 12. Build and execute transaction
+      const tx = new Transaction();
 
-      if (!tokenInType || !tokenOutType || !tokenInPoolId || !tokenOutPoolId) {
-        throw new Error("Token configuration incomplete");
+      if (swapMode === "production") { 
+        tx.moveCall({
+          target: `${packageId}::pool::swap`,
+          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+          arguments: [
+            tx.object(tokenInConfig.poolId),
+            tx.object(tokenOutConfig.poolId),
+            tx.object(deepbookPoolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure.u64(amountIn),
+            tx.pure.u64(minAmountOut),
+            tx.object(selectedDeepCoin!),
+            tx.object('0x6'), // Clock shared object
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+      } else { 
+        const [mockDeepCoin] = tx.splitCoins(tx.gas, [1]);
+
+        tx.moveCall({
+          target: `${packageId}::pool::swap_for_testing`,
+          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+          arguments: [
+            tx.object(tokenInConfig.poolId),
+            tx.object(tokenOutConfig.poolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure.u64(amountIn),
+            tx.pure.u64(minAmountOut),
+            mockDeepCoin,
+            tx.object('0x6'), // Clock shared object
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
       }
-
-      const tx = swapMode === "production"
-        ? buildSwapTransaction(
-          packageId!,
-          tokenInPoolId,
-          tokenOutPoolId,
-          deepbookPoolId,
-          tokenInType,
-          tokenOutType,
-          proof,
-          amountInBigInt,
-          minAmountOut,
-          selectedDeepCoin!,
-          encryptedOutputNote,
-          encryptedChangeNote
-        )
-        : buildSwapTransactionForTesting(
-          packageId!,
-          tokenInPoolId,
-          tokenOutPoolId,
-          tokenInType,
-          tokenOutType,
-          proof,
-          amountInBigInt,
-          minAmountOut,
-          encryptedOutputNote,
-          encryptedChangeNote
-        );
 
       const result = await signAndExecute({ transaction: tx });
 

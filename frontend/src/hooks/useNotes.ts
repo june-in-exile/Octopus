@@ -42,33 +42,6 @@ export interface OwnedNote {
  * @param isInitializing - Whether the keypair is still being initialized (Poseidon, etc.)
  * @returns Notes, loading state, and helper functions
  */
-// Helper to get localStorage key for spent nullifiers
-function getSpentNullifiersKey(mpk: bigint): string {
-  return `octopus_spent_nullifiers_${mpk.toString()}`;
-}
-
-// Load spent nullifiers from localStorage
-function loadSpentNullifiers(mpk: bigint): Set<string> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const key = getSpentNullifiersKey(mpk);
-    const stored = localStorage.getItem(key);
-    return stored ? new Set(JSON.parse(stored)) : new Set();
-  } catch {
-    return new Set();
-  }
-}
-
-// Save spent nullifiers to localStorage
-function saveSpentNullifiers(mpk: bigint, nullifiers: Set<string>): void {
-  if (typeof window === "undefined") return;
-  try {
-    const key = getSpentNullifiersKey(mpk);
-    localStorage.setItem(key, JSON.stringify(Array.from(nullifiers)));
-  } catch (err) {
-    console.error("Failed to save spent nullifiers:", err);
-  }
-}
 
 export function useNotes(
   keypair: OctopusKeypair | null,
@@ -106,21 +79,6 @@ export function useNotes(
   // Track whether next refresh should force full cache clear (used after operations)
   const [shouldClearCache, setShouldClearCache] = useState(false);
 
-  // Initialize localSpentSet from localStorage
-  const [localSpentSet, setLocalSpentSet] = useState<Set<string>>(() => {
-    if (!keypair) return new Set();
-    return loadSpentNullifiers(keypair.masterPublicKey);
-  });
-
-  // Load from localStorage when keypair changes
-  useEffect(() => {
-    if (!keypair) {
-      setLocalSpentSet(new Set());
-      return;
-    }
-    setLocalSpentSet(loadSpentNullifiers(keypair.masterPublicKey));
-  }, [keypair?.masterPublicKey]);
-
   // Manual refresh function (incremental scan with cache)
   const refresh = () => {
     setRefreshTrigger((prev) => prev + 1);
@@ -130,18 +88,6 @@ export function useNotes(
   const forceFullRefresh = () => {
     setShouldClearCache(true);
     setRefreshTrigger((prev) => prev + 1);
-  };
-
-  // Mark a note as spent locally (optimistic update) and persist to localStorage
-  const markNoteSpent = (nullifier: bigint) => {
-    if (!keypair) return;
-
-    setLocalSpentSet((prev) => {
-      const newSet = new Set(prev).add(nullifier.toString());
-      // Persist to localStorage
-      saveSpentNullifiers(keypair.masterPublicKey, newSet);
-      return newSet;
-    });
   };
 
   // Batch check multiple nullifiers for spent status (more efficient than one-by-one)
@@ -477,39 +423,6 @@ export function useNotes(
     return () => clearInterval(intervalId);
   }, [keypair, notes, batchCheckNullifierStatus]);
 
-  // CRITICAL FIX: On-chain state is the source of truth
-  // LocalStorage is only used for optimistic updates during transaction submission
-  // Clean up localStorage entries that contradict on-chain state
-  useEffect(() => {
-    if (!keypair) return;
-
-    // Find notes that are unspent on-chain but marked as spent in localStorage
-    const incorrectlyMarkedSpent = notes.filter(
-      (note) => !note.spent && localSpentSet.has(note.nullifier.toString())
-    );
-
-    if (incorrectlyMarkedSpent.length > 0) {
-      // Clean up localStorage - on-chain state is authoritative
-      setLocalSpentSet((prev) => {
-        const newSet = new Set(prev);
-        incorrectlyMarkedSpent.forEach((note) => {
-          newSet.delete(note.nullifier.toString());
-        });
-        saveSpentNullifiers(keypair.masterPublicKey, newSet);
-        return newSet;
-      });
-    }
-  }, [notes, localSpentSet, keypair]);
-
-  // Merge local spent status with on-chain spent status
-  // Only use localStorage for notes not yet confirmed on-chain
-  const notesWithLocalSpent = notes.map((note) => ({
-    ...note,
-    // On-chain spent status takes precedence
-    // LocalStorage only used if note is unspent on-chain (optimistic update)
-    spent: note.spent || (!note.spent && localSpentSet.has(note.nullifier.toString())),
-  }));
-
   // Compute expected token ID for this token type
   const expectedTokenId = useMemo(() => {
     if (!tokenType) return null;
@@ -529,12 +442,12 @@ export function useNotes(
 
     // If token type specified, also filter by token field
     if (expectedTokenId !== null) {
-      return notesWithLocalSpent.filter(n => n.note.token === expectedTokenId);
+      return notes.filter(n => n.note.token === expectedTokenId);
     }
 
     // No token filter specified, return all notes from this pool
-    return notesWithLocalSpent;
-  }, [notesPoolId, poolId, notesWithLocalSpent, expectedTokenId]);
+    return notes;
+  }, [notesPoolId, poolId, notes, expectedTokenId]);
   
   return {
     notes: filteredNotes,
@@ -542,7 +455,6 @@ export function useNotes(
     error,
     refresh,
     forceFullRefresh, // Force full cache clear (use after operations)
-    markNoteSpent,
     scanProgress, // Include progress in return value
     lastScanStats, // Include scan statistics
     totalNotesInPool, // Total notes in pool (Shield - Unshield)
