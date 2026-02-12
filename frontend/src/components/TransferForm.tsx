@@ -173,12 +173,10 @@ export function TransferForm({
         message: successMessage,
         txDigest: result.digest
       });
-
-      // Clear form inputs on success
       setRecipientProfile(null);
       setAmount("");
 
-      // Trigger note rescan to pick up the change note
+      // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
       console.error("Transfer failed:", err);

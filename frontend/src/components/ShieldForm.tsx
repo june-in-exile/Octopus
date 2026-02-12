@@ -177,20 +177,17 @@ export function ShieldForm({
 
       const result = await signAndExecute({ transaction: tx });
 
-      // Success
+      // 3. Success!
       setState("success");
+      const successMessage = `Successfully shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!`;
       setSuccess({
-        message: `Shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!\nRefreshing balance...`,
+        message: successMessage,
         txDigest: result.digest,
       });
       setAmount("");
 
+      // 4. Trigger note rescan to pick up the change note
       await onSuccess?.();
-
-      setSuccess({
-        message: `Successfully shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!`,
-        txDigest: result.digest,
-      });
     } catch (err) {
       console.error("Shield failed:", err);
       setState("error");

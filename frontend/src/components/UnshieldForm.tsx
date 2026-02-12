@@ -171,12 +171,10 @@ export function UnshieldForm({
         message: successMessage,
         txDigest: result.digest
       });
-
-      // Clear form inputs on success
       setAmount("");
       setRecipient("");
 
-      // Trigger note rescan to pick up the change note
+      // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
       console.error("Unshield failed:", err);
