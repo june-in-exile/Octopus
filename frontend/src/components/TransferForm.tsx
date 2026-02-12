@@ -8,13 +8,13 @@ import {
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
+import { selectAndPrepareNotes } from "@/lib/noteSelection";
+import { fetchAndAttachMerkleProofs } from "@/lib/merkleProofHelper";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
 import { RecipientInput } from "@/components/RecipientInput";
 import {
-  selectNotes,
   createTransferOutputs,
   generateTransferProof,
   convertTransferProofToSui,
@@ -23,7 +23,6 @@ import {
   encryptNote,
   buildTransferTransaction,
   type RecipientProfile,
-  type SelectableNote,
 } from "@june_zk/octopus-sdk";
 
 interface TransferFormProps {
@@ -62,6 +61,21 @@ export function TransferForm({
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
+  const isProcessing = state !== "idle" && state !== "error" && state !== "success";
+
+  const getProgressMessage = () => {
+    switch (state) {
+      case "fetching-merkle-proofs":
+        return "// Fetching Merkle proofs";
+      case "generating-proof":
+        return "// Proof generation in progress (30-60s)";
+      case "submitting":
+        return "// Awaiting wallet confirmation";
+      default:
+        return "";
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -89,62 +103,23 @@ export function TransferForm({
     const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // 1. Get unspent notes
-      const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
-      if (unspentNotes.length === 0) {
-        setState("error");
-        setError("No unspent notes available. Shield some tokens first!");
-        return;
-      }
+      // 1. Select notes to cover amount
+      const selectedOwnedNotes = selectAndPrepareNotes(notes, amountMist);
 
-      // 2. Select notes to cover amount
-      const selectableNotes: SelectableNote[] = unspentNotes.map((n) => ({
-        note: n.note,
-        leafIndex: n.leafIndex,
-        pathElements: n.pathElements,
-      }))
-
-      const selectedNotes = selectNotes(selectableNotes, amountMist);
-      if (!selectedNotes || selectedNotes.length === 0) {
-        setState("error");
-        setError("Insufficient balance or unable to select appropriate notes!");
-        return;
-      }
-
-      // Convert back to OwnedNote[]
-      const selectedOwnedNotes = selectedNotes.map((selectedNote: SelectableNote) => {
-        const ownedNote = unspentNotes.find((n) => n.leafIndex === selectedNote.leafIndex);
-        if (!ownedNote) {
-          throw new Error(`Could not find owned note for leafIndex ${selectedNote.leafIndex}`);
-        }
-        return ownedNote;
-      });
-
-      // 3. Fetch Merkle proofs for selected notes
+      // 2. Fetch Merkle proofs for selected notes
       setState("fetching-merkle-proofs");
-      const leafIndices = selectedOwnedNotes.map(n => n.leafIndex);
-
-      const merkleProofs = await fetchMerkleProofs(
-        keypair.spendingKey,
-        tokenConfig.poolId,
-        leafIndices
+      const notesWithProofs = await fetchAndAttachMerkleProofs(
+        selectedOwnedNotes,
+        keypair,
+        tokenConfig.poolId
       );
 
-      // Attach Merkle proofs to selected notes
-      const notesWithProofs = selectedOwnedNotes.map(n => {
-        const pathElements = merkleProofs.get(n.leafIndex);
-        if (!pathElements || pathElements.length === 0) {
-          throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
-        }
-        return { ...n, pathElements };
-      });
-
-      // 4. Mark notes as spent before generating proof
+      // 3. Mark notes as spent before generating proof
       selectedOwnedNotes.forEach((ownedNote) => {
         markNoteSpent?.(ownedNote.nullifier);
       });
 
-      // 5. Create output notes (recipient + change)
+      // 4. Create output notes (recipient + change)
       const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const [recipientNote, changeNote] = createTransferOutputs(
@@ -155,7 +130,7 @@ export function TransferForm({
         noteToken
       );
 
-      // 6. Generate ZK proof
+      // 5. Generate ZK proof
       setState("generating-proof");
       const proof = await generateTransferProof({
         keypair,
@@ -167,10 +142,10 @@ export function TransferForm({
         token: notesWithProofs[0].note.token,
       });
 
-      // 7. Convert proof to Sui format
+      // 6. Convert proof to Sui format
       const suiProof = convertTransferProofToSui(proof.proof, proof.publicSignals);
 
-      // 8. Encrypt output notes using viewing public keys
+      // 7. Encrypt output notes using viewing public keys
       const recipientViewingPk = typeof recipientProfile.viewingPublicKey === 'string'
         ? importViewingPublicKey(recipientProfile.viewingPublicKey)
         : recipientProfile.viewingPublicKey;
@@ -179,7 +154,7 @@ export function TransferForm({
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 9. Build and submit transaction
+      // 8. Build and submit transaction
       setState("submitting");
       const tx = buildTransferTransaction(
         packageId!,
@@ -191,9 +166,9 @@ export function TransferForm({
 
       const result = await signAndExecute({ transaction: tx });
 
-      // 10. Success!
+      // 9. Success!
       setState("success");
-      let successMessage = `Transferred ${amount} ${tokenConfig.symbol}!`;
+      let successMessage = `Transferred ${amount} ${tokenConfig.symbol}`;
       if (changeNote.amount > 0n) {
         successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
@@ -229,7 +204,7 @@ export function TransferForm({
             placeholder="0.000000000"
             step={0.000000001}
             min={0}
-            disabled={state !== "idle" && state !== "error"}
+            disabled={isProcessing}
           />
           <p className="mt-2 text-[10px] text-gray-500 font-mono">
             {notesLoading ? (
@@ -252,7 +227,7 @@ export function TransferForm({
         {/* Recipient Profile Input */}
         <RecipientInput
           onRecipientChange={setRecipientProfile}
-          disabled={state !== "idle" && state !== "error"}
+          disabled={isProcessing}
         />
 
         {/* Note Selection Info */}
@@ -264,7 +239,7 @@ export function TransferForm({
       </div>
 
       {/* Progress indicator */}
-      {(state === "fetching-merkle-proofs" || state === "generating-proof" || state === "submitting") && (
+      {isProcessing && (
         <div className="p-4 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
           <div className="flex items-center gap-3">
             <svg
@@ -295,9 +270,7 @@ export function TransferForm({
                     : "Submitting Transaction..."}
               </p>
               <p className="text-[10px] text-gray-400 font-mono mt-0.5">
-                {state === "generating-proof"
-                  ? "// Proof generation in progress (30-60s)"
-                  : "// Awaiting wallet confirmation"}
+                {getProgressMessage()}
               </p>
             </div>
           </div>
@@ -340,10 +313,10 @@ export function TransferForm({
 
       <button
         type="submit"
-        disabled={!account || !keypair || (state !== "idle" && state !== "error")}
+        disabled={!account || !keypair || isProcessing}
         className={cn(
           "btn-primary w-full",
-          (state !== "idle" && state !== "error") && "cursor-wait opacity-70"
+          isProcessing && "cursor-wait opacity-70"
         )}
         style={{
           backgroundColor: 'transparent',
@@ -351,7 +324,7 @@ export function TransferForm({
           borderColor: '#00d9ff',
         }}
       >
-        {(state !== "idle" && state !== "error") ? "◉ PROCESSING..." : "⇄ PRIVATE TRANSFER"}
+        {isProcessing ? "◉ PROCESSING..." : "⇄ PRIVATE TRANSFER"}
       </button>
 
       {/* Info Box - Hidden when success is shown */}
