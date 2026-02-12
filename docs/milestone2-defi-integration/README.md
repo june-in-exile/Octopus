@@ -202,7 +202,7 @@ public entry fun swap_production<TokenIn, TokenOut>(
 ### Current Tests ✅
 
 - **Circuit Tests**: All proof generation tests passing
-- **Contract Tests**: 27 tests passing (including swap with mock)
+- **Contract Tests**: 28 tests passing (including swap with mock)
 - **SDK Tests**: Proof serialization and transaction building verified
 
 ### Required for DeepBook ⚠️

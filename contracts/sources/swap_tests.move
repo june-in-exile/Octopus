@@ -412,6 +412,9 @@ module octopus::swap_tests {
             // Use dummy nullifier for second input (zero value)
             let dummy_nullifier = x"0000000000000000000000000000000000000000000000000000000000000000";
 
+            // Use actual zero commitment (all bytes = 0) for zero change
+            let zero_change_commitment = x"0000000000000000000000000000000000000000000000000000000000000000";
+
             let public_inputs = build_swap_public_inputs(
                 TEST_TOKEN_IN,
                 TEST_TOKEN_OUT,
@@ -420,7 +423,7 @@ module octopus::swap_tests {
                 dummy_nullifier, // Second input is dummy (value = 0)
                 swap_data_hash,
                 TEST_OUTPUT_COMMITMENT,
-                TEST_CHANGE_COMMITMENT, // Change commitment for zero value
+                zero_change_commitment, // Zero commitment (all bytes = 0)
             );
 
             let clock = clock::create_for_testing(ctx);
@@ -439,8 +442,8 @@ module octopus::swap_tests {
             );
             clock::destroy_for_testing(clock);
 
-            // Verify change commitment added (even if zero value)
-            assert!(pool::get_note_count(&pool_sui) == 2, 0); // Original 1 + change
+            // Verify change commitment NOT added when zero (fixed bug)
+            assert!(pool::get_note_count(&pool_sui) == 1, 0); // Only original note (no zero change)
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);
@@ -506,6 +509,69 @@ module octopus::swap_tests {
             // Verify swap succeeded
             assert!(pool::is_nullifier_spent(&pool_usdc, TEST_NULLIFIER_1), 0);
             assert!(pool::get_balance(&pool_sui) == 100_000_000, 1); // Received SUI
+
+            ts::return_shared(pool_sui);
+            ts::return_shared(pool_usdc);
+        };
+
+        ts::end(scenario);
+    }
+
+    #[test]
+    fun test_swap_with_nonzero_change() {
+        // Test that non-zero change commitments ARE added to the tree
+        let mut scenario = ts::begin(ADMIN);
+        create_test_pools(&mut scenario);
+
+        // Shield initial SUI for swap
+        ts::next_tx(&mut scenario, ALICE);
+        mint_sui(&mut scenario, 100_000_000_000, ALICE);
+        shield_sui(&mut scenario, ALICE, 100_000_000_000, TEST_COMMITMENT_1);
+
+        ts::next_tx(&mut scenario, ALICE);
+        {
+            let mut pool_sui = ts::take_shared<PrivacyPool<SUI>>(&scenario);
+            let mut pool_usdc = ts::take_shared<PrivacyPool<USDC>>(&scenario);
+            let ctx = ts::ctx(&mut scenario);
+
+            let root = pool::get_merkle_root(&pool_sui);
+            let swap_data_hash = x"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+
+            // Use non-zero commitment for change (simulating partial swap)
+            let nonzero_change_commitment = x"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+            let public_inputs = build_swap_public_inputs(
+                TEST_TOKEN_IN,
+                TEST_TOKEN_OUT,
+                root,
+                TEST_NULLIFIER_1,
+                TEST_NULLIFIER_2,
+                swap_data_hash,
+                TEST_OUTPUT_COMMITMENT,
+                nonzero_change_commitment, // Non-zero change commitment
+            );
+
+            let initial_note_count = pool::get_note_count(&pool_sui);
+
+            let clock = clock::create_for_testing(ctx);
+            pool::swap_for_testing<SUI, USDC>(
+                &mut pool_sui,
+                &mut pool_usdc,
+                TEST_SWAP_PROOF,
+                public_inputs,
+                50_000_000_000, // Swap only half
+                47_500_000_000,
+                coin::mint_for_testing<DEEP>(0, ctx),
+                &clock,
+                vector::empty<u8>(),
+                vector::empty<u8>(),
+                ctx
+            );
+            clock::destroy_for_testing(clock);
+
+            // Verify change commitment WAS added (non-zero)
+            assert!(pool::get_note_count(&pool_sui) == initial_note_count + 1, 0); // Change added
+            assert!(pool::get_note_count(&pool_usdc) == 1, 1); // Output added
 
             ts::return_shared(pool_sui);
             ts::return_shared(pool_usdc);

@@ -12,6 +12,8 @@ export const NETWORK_CONFIG = {
     suiPoolId: process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID || null,
     usdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null,
     usdcCoinType: process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE || null,
+    dbusdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null, // DBUSDC uses same pool as USDC
+    dbusdcCoinType: process.env.NEXT_PUBLIC_TESTNET_DBUSDC_TYPE || null,
     graphqlUrl: "https://graphql.testnet.sui.io/graphql",
   },
   mainnet: {
@@ -43,17 +45,33 @@ export interface TokenConfig {
   poolId: string;
 }
 
-// DeepBook pool mappings (SUI/USDC pair - network-specific)
-const getDeepBookPoolId = () => {
+// DeepBook pool mappings (network-specific)
+const getDeepBookPoolId = (tokenPair: string) => {
   if (NETWORK === "mainnet") {
-    return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
+    // Mainnet uses SUI/USDC pool
+    if (tokenPair === "SUI_USDC" || tokenPair === "USDC_SUI") {
+      return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
+    }
+  } else {
+    // Testnet uses SUI/DBUSDC pool
+    if (tokenPair === "SUI_DBUSDC" || tokenPair === "DBUSDC_SUI") {
+      return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC || "0x...";
+    }
+    // Legacy USDC pool (for backward compatibility, test mode only)
+    if (tokenPair === "SUI_USDC" || tokenPair === "USDC_SUI") {
+      return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_USDC || "0x...";
+    }
   }
-  return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_USDC || "0x...";
+  return "0x...";
 };
 
 export const DEEPBOOK_POOLS: Record<string, string> = {
-  SUI_USDC: getDeepBookPoolId(),
-  USDC_SUI: getDeepBookPoolId(), // Same pool, reverse direction
+  // Mainnet pools
+  SUI_USDC: getDeepBookPoolId("SUI_USDC"),
+  USDC_SUI: getDeepBookPoolId("USDC_SUI"),
+  // Testnet pools
+  SUI_DBUSDC: getDeepBookPoolId("SUI_DBUSDC"),
+  DBUSDC_SUI: getDeepBookPoolId("DBUSDC_SUI"),
 };
 
 // DEEP token configuration for DeepBook fees

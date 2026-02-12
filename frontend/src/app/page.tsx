@@ -356,6 +356,7 @@ export default function Home() {
                             loading={isLoadingNotes}
                             error={notesError}
                             onSuccess={handleOperationSuccess}
+                            lastScanStats={lastScanStats}
                             onRefresh={refreshNotes}
                             markNoteSpent={markNoteSpent}
                           />

@@ -41,21 +41,30 @@ export class ClientMerkleTree {
       const isLeft = currentIndex % 2 === 0;
       const siblingIndex = isLeft ? currentIndex + 1 : currentIndex - 1;
 
-      // Get sibling hash
-      let sibling: bigint;
-      if (this.leaves.has(siblingIndex)) {
-        // Sibling exists in the tree
-        const siblingCommitment = this.leaves.get(siblingIndex)!;
+      // Compute the sibling hash at this level
+      const siblingSubtreeStart = siblingIndex * (1 << level);
+      const siblingSubtreeEnd = (siblingIndex + 1) * (1 << level);
 
-        // If we're not at level 0, we need to compute the hash up to this level
-        if (level === 0) {
-          sibling = siblingCommitment;
-        } else {
-          // Compute the hash of the sibling subtree
-          sibling = this.computeSubtreeHash(siblingIndex, level);
+      // Check if any leaves exist in the sibling's subtree range
+      let hasLeaves = false;
+      for (let i = siblingSubtreeStart; i < siblingSubtreeEnd; i++) {
+        if (this.leaves.has(i)) {
+          hasLeaves = true;
+          break;
         }
+      }
+
+      let sibling: bigint;
+      if (hasLeaves) {
+        // Compute the hash of the sibling subtree
+        sibling = this.computeSubtreeHash(
+          siblingIndex,
+          level,
+          siblingSubtreeStart,
+          siblingSubtreeEnd
+        );
       } else {
-        // Sibling doesn't exist, use zero hash
+        // No leaves in sibling subtree, use zero hash
         sibling = this.zeros[level];
       }
 
@@ -74,11 +83,9 @@ export class ClientMerkleTree {
       return this.zeros[this.depth];
     }
 
-    // Find the maximum leaf index
-    const maxIndex = Math.max(...this.leaves.keys());
-
     // Compute root by hashing from leaves to root
-    return this.computeSubtreeHash(0, this.depth, 0, maxIndex + 1);
+    // The root is the hash of the entire tree from index 0 to 2^depth
+    return this.computeSubtreeHash(0, this.depth, 0, 1 << this.depth);
   }
 
   /**

@@ -82,7 +82,7 @@ sui move build
 sui move test
 ```
 
-Expected output: **27 tests passing**
+Expected output: **28 tests passing**
 
 Reference [contracts/README.md](contracts/README.md) for deployment guides.
 

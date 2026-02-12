@@ -21,7 +21,7 @@ module octopus::swap {
     /// * `ctx` - Transaction context
     ///
     /// Returns remaining SUI, USDC output, and unused DEEP to the sender
-    public fun swap_sui _to_usdc<SUI, USDC>(
+    public fun swap_sui_to_usdc<SUI, USDC>(
         pool: &mut Pool<SUI, USDC>,
         sui_in: Coin<SUI>,
         deep_in: Coin<DEEP>,

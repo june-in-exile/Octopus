@@ -562,9 +562,15 @@ module octopus::pool {
         let output_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
         merkle_tree::insert(&mut pool_out.merkle_tree, output_commitment);
 
-        // 11. Add change commitment to pool_in Merkle tree
-        let change_position = merkle_tree::get_next_index(&pool_in.merkle_tree);
-        merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+        // 11. Add change commitment to pool_in Merkle tree (only if not zero)
+        let change_position = if (!is_zero_commitment(&change_commitment)) {
+            let position = merkle_tree::get_next_index(&pool_in.merkle_tree);
+            merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+            position
+        } else {
+            // Use a sentinel value for zero commitment (not inserted into tree)
+            0
+        };
 
         // 12. Emit event for wallet scanning
         event::emit(SwapEvent {
@@ -943,8 +949,15 @@ module octopus::pool {
         let output_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
         merkle_tree::insert(&mut pool_out.merkle_tree, output_commitment);
 
-        let change_position = merkle_tree::get_next_index(&pool_in.merkle_tree);
-        merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+        // Add change commitment to pool_in Merkle tree (only if not zero)
+        let change_position = if (!is_zero_commitment(&change_commitment)) {
+            let position = merkle_tree::get_next_index(&pool_in.merkle_tree);
+            merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+            position
+        } else {
+            // Use a sentinel value for zero commitment (not inserted into tree)
+            0
+        };
 
         event::emit(SwapEvent {
             pool_in_id: object::id(pool_in),

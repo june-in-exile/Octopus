@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import {
+  useCurrentAccount,
+  useSignAndExecuteTransaction,
+} from "@mysten/dapp-kit";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
-import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
 import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
 import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
