@@ -65,17 +65,6 @@ export {
   generateSwapProof,
 } from "./prover.js";
 
-// Sui interactions
-export {
-  buildShieldTransaction,
-  buildUnshieldTransaction,
-  buildTransferTransaction,
-  buildSwapTransaction,
-  buildSwapTransactionForTesting,
-  TESTNET_CONFIG,
-  type SuiConfig,
-} from "./transaction.js";
-
 // Transfer utilities
 export {
   createTransferOutputs,

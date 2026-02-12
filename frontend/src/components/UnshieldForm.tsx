@@ -2,8 +2,17 @@
 
 import { useState } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
-import { useCurrentAccount, useSignAndExecuteTransaction } from "@mysten/dapp-kit";
-import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import {
+  useCurrentAccount,
+  useSignAndExecuteTransaction,
+} from "@mysten/dapp-kit";
+import { Transaction } from "@mysten/sui/transactions";
+import {
+  cn,
+  parseTokenAmount,
+  formatTokenAmount,
+  truncateAddress,
+} from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
 import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
@@ -14,7 +23,6 @@ import {
   generateUnshieldProof,
   deriveViewingPublicKey,
   encryptNote,
-  buildUnshieldTransaction,
 } from "@june_zk/octopus-sdk";
 
 interface UnshieldFormProps {
@@ -24,7 +32,6 @@ interface UnshieldFormProps {
   notes: OwnedNote[];
   loading: boolean;
   onSuccess?: () => void | Promise<void>;
-  markNoteSpent?: (nullifier: bigint) => void;
 }
 
 type UnshieldState =
@@ -42,7 +49,6 @@ export function UnshieldForm({
   notes,
   loading: notesLoading,
   onSuccess,
-  markNoteSpent,
 }: UnshieldFormProps) {
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
@@ -99,17 +105,16 @@ export function UnshieldForm({
       setError("Please enter a valid amount");
       return;
     }
-    const amountMist = parseTokenAmount(amount, tokenConfig.decimals);
+    const amountBase = parseTokenAmount(amount, tokenConfig.decimals);
 
     try {
-      // 1. Select notes, fetch proofs, and mark as spent
+      // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
         notes,
-        amountMist,
+        amountBase,
         keypair,
-        tokenConfig.poolId,
-        markNoteSpent
+        tokenConfig.poolId
       );
 
       // 2. Create output notes (change note)
@@ -117,7 +122,7 @@ export function UnshieldForm({
       const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
       const outputNote = createUnshieldOutputs(
         keypair.masterPublicKey,
-        amountMist,
+        amountBase,
         inputTotal,
         noteToken
       );
@@ -129,7 +134,7 @@ export function UnshieldForm({
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
         inputPathElements: notesWithProofs.map(n => n.pathElements!),
-        unshieldAmount: amountMist,
+        unshieldAmount: amountBase,
         outputNote,
         token: notesWithProofs[0].note.token,
       });
@@ -140,14 +145,19 @@ export function UnshieldForm({
 
       // 5. Build and submit transaction
       setState("submitting");
-      const tx = buildUnshieldTransaction(
-        packageId!,
-        tokenConfig.poolId,
-        tokenConfig.type,
-        proof,
-        recipient,
-        encryptedChangeNote
-      );
+      const tx = new Transaction();
+
+      tx.moveCall({
+        target: `${packageId}::pool::unshield`,
+        typeArguments: [tokenConfig.type],
+        arguments: [
+          tx.object(tokenConfig.poolId),
+          tx.pure.vector("u8", Array.from(proof.proofBytes)),
+          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure.address(recipient),
+          tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+        ],
+      });
 
       const result = await signAndExecute({ transaction: tx });
 
