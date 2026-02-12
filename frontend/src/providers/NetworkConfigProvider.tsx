@@ -5,7 +5,8 @@ import { useSuiClientContext } from "@mysten/dapp-kit";
 import { NETWORK_CONFIG, SUI_COIN_TYPE, type TokenConfig } from "@/lib/constants";
 
 interface NetworkConfigValue {
-  packageId: string | null;
+  packageId: string | null; // For function calls (published-at)
+  originalPackageId: string | null; // For event queries (original-id)
   suiPoolId: string | null;
   usdcPoolId: string | null;
   usdcCoinType: string | null;
@@ -24,6 +25,7 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
   const isTestnet = network === "testnet";
   const isConfigured =
     !!config?.packageId &&
+    !!config?.originalPackageId &&
     !!config?.suiPoolId &&
     (isTestnet
       ? !!(config as any).dbusdcPoolId && !!(config as any).dbusdcCoinType
@@ -71,6 +73,7 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
     <NetworkConfigContext.Provider
       value={{
         packageId: config?.packageId ?? null,
+        originalPackageId: config?.originalPackageId ?? null,
         suiPoolId: config?.suiPoolId ?? null,
         usdcPoolId: config?.usdcPoolId ?? null,
         usdcCoinType: config?.usdcCoinType ?? null,

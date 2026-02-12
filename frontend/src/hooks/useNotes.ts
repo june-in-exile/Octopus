@@ -77,7 +77,7 @@ export function useNotes(
   tokenType: string = ""
 ) {
   const client = useSuiClient();
-  const { packageId, graphqlUrl } = useNetworkConfig();
+  const { originalPackageId, graphqlUrl } = useNetworkConfig();
   const [notes, setNotes] = useState<OwnedNote[]>([]);
   const [notesPoolId, setNotesPoolId] = useState<string>(""); // Track which pool the current notes are from
   const [loading, setLoading] = useState(true);  // Start with loading=true to avoid showing balance=0 before first scan
@@ -274,7 +274,7 @@ export function useNotes(
         // Scan notes using Worker (GraphQL + decrypt + Merkle tree in background)
         const result = await worker.scanNotes(
           graphqlUrl ?? "https://graphql.testnet.sui.io/graphql",
-          packageId ?? "",
+          originalPackageId ?? "",
           poolId,
           keypair.spendingKey,
           keypair.nullifyingKey,

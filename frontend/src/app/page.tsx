@@ -25,7 +25,7 @@ type TokenSymbol = "SUI" | "USDC";
 export default function Home() {
   const account = useCurrentAccount();
   const { network } = useSuiClientContext();
-  const { packageId, tokens, graphqlUrl, isConfigured } = useNetworkConfig();
+  const { packageId, originalPackageId, tokens, graphqlUrl, isConfigured } = useNetworkConfig();
   const isMainnet = network === "mainnet";
   const [activeTab, setActiveTab] = useState<TabType>("shield");
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>("SUI");
@@ -67,11 +67,11 @@ export default function Home() {
   const [workerNoteCounts, setWorkerNoteCounts] = useState<Record<string, number>>({});
 
   const refreshAllPoolCounts = useCallback(async () => {
-    if (!tokens || !packageId || !graphqlUrl) return;
+    if (!tokens || !packageId || !originalPackageId || !graphqlUrl) return;
     const worker = getWorkerManager();
     const results = await Promise.allSettled(
       Object.values(tokens).map(async (token) => {
-        const count = await worker.countPoolNotes(graphqlUrl, packageId, token.poolId);
+        const count = await worker.countPoolNotes(graphqlUrl, originalPackageId, token.poolId);
         return { poolId: token.poolId, count };
       })
     );
@@ -82,7 +82,7 @@ export default function Home() {
       }
     }
     setWorkerNoteCounts((prev) => ({ ...prev, ...updates }));
-  }, [tokens, packageId, graphqlUrl]);
+  }, [tokens, packageId, originalPackageId, graphqlUrl]);
 
   // Scan all pools at startup
   useEffect(() => {

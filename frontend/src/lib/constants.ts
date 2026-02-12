@@ -8,7 +8,8 @@ export const NETWORK = "testnet" as "testnet" | "mainnet" | "devnet" | "localnet
 // Per-network contract addresses (all baked into the bundle at build time)
 export const NETWORK_CONFIG = {
   testnet: {
-    packageId: process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID || null,
+    packageId: process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID || null, // For function calls (published-at)
+    originalPackageId: process.env.NEXT_PUBLIC_TESTNET_ORIGINAL_PACKAGE_ID || null, // For event queries (original-id)
     suiPoolId: process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID || null,
     usdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null,
     usdcCoinType: process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE || null,
@@ -17,7 +18,8 @@ export const NETWORK_CONFIG = {
     graphqlUrl: "https://graphql.testnet.sui.io/graphql",
   },
   mainnet: {
-    packageId: process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID || null,
+    packageId: process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID || null, // For function calls (published-at)
+    originalPackageId: process.env.NEXT_PUBLIC_MAINNET_ORIGINAL_PACKAGE_ID || null, // For event queries (original-id)
     suiPoolId: process.env.NEXT_PUBLIC_MAINNET_SUI_POOL_ID || null,
     usdcPoolId: process.env.NEXT_PUBLIC_MAINNET_USDC_POOL_ID || null,
     usdcCoinType: process.env.NEXT_PUBLIC_MAINNET_USDC_TYPE || null,
