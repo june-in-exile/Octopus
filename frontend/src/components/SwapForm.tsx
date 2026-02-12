@@ -16,7 +16,6 @@ import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import {
   generateSwapProof,
-  convertSwapProofToSui,
   calculateMinOutput,
   estimateDeepBookSwap,
   buildSwapTransaction,
@@ -435,22 +434,19 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         changeAmount: changeNote.amount,
       };
 
-      // 9. Generate ZK proof (30-60 seconds)
-      const { proof, publicSignals } = await generateSwapProof(swapInput);
+      // 9. Generate ZK proof (returns Sui format directly, 30-60 seconds)
+      const proof = await generateSwapProof(swapInput);
 
       // 9.5. Re-verify on-chain root after proof generation
       // (catch any changes that happened during the 30-60s proof generation window)
       await verifyOnChainRoot("post-proof");
 
-      // 10. Convert proof to Sui format
-      const suiProof = convertSwapProofToSui(proof, publicSignals);
-
-      // 11. Encrypt notes for recipient (self)
+      // 10. Encrypt notes for recipient (self)
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 12. Validate production mode requirements
+      // 11. Validate production mode requirements
       if (swapMode === "production") {
         if (!selectedDeepCoin) {
           throw new Error("DEEP tokens required for production swap. Please acquire DEEP tokens or switch to test mode.");
@@ -461,7 +457,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         }
       }
 
-      // 13. Build and execute transaction (mode-specific)
+      // 12. Build and execute transaction (mode-specific)
       const tokenInType = tokens?.[tokenIn]?.type;
       const tokenOutType = tokens?.[tokenOut]?.type;
       const tokenOutPoolId = tokens?.[tokenOut]?.poolId;
@@ -478,7 +474,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           deepbookPoolId,
           tokenInType,
           tokenOutType,
-          suiProof,
+          proof,
           amountInBigInt,
           minAmountOut,
           selectedDeepCoin!,
@@ -491,7 +487,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           tokenOutPoolId,
           tokenInType,
           tokenOutType,
-          suiProof,
+          proof,
           amountInBigInt,
           minAmountOut,
           encryptedOutputNote,

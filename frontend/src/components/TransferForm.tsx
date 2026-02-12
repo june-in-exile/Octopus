@@ -16,7 +16,6 @@ import { RecipientInput } from "@/components/RecipientInput";
 import {
   createTransferOutputs,
   generateTransferProof,
-  convertTransferProofToSui,
   importViewingPublicKey,
   deriveViewingPublicKey,
   encryptNote,
@@ -123,7 +122,7 @@ export function TransferForm({
         noteToken
       );
 
-      // 3. Generate ZK proof
+      // 3. Generate ZK proof (returns Sui format directly)
       setState("generating-proof");
       const proof = await generateTransferProof({
         keypair,
@@ -135,10 +134,7 @@ export function TransferForm({
         token: notesWithProofs[0].note.token,
       });
 
-      // 4. Convert proof to Sui format
-      const suiProof = convertTransferProofToSui(proof.proof, proof.publicSignals);
-
-      // 5. Encrypt output notes using viewing public keys
+      // 4. Encrypt output notes using viewing public keys
       const recipientViewingPk = typeof recipientProfile.viewingPublicKey === 'string'
         ? importViewingPublicKey(recipientProfile.viewingPublicKey)
         : recipientProfile.viewingPublicKey;
@@ -147,19 +143,19 @@ export function TransferForm({
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 6. Build and submit transaction
+      // 5. Build and submit transaction
       setState("submitting");
       const tx = buildTransferTransaction(
         packageId!,
         tokenConfig.poolId,
         tokenConfig.type,
-        suiProof,
+        proof,
         [encryptedRecipientNote, encryptedChangeNote]
       );
 
       const result = await signAndExecute({ transaction: tx });
 
-      // 7. Success!
+      // 6. Success!
       setState("success");
       let successMessage = `Transferred ${amount} ${tokenConfig.symbol}`;
       if (changeNote.amount > 0n) {

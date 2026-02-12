@@ -26,13 +26,6 @@ export {
 // Byte conversion, math, and proof compression utilities
 export * from "./utils/index.js";
 
-// Proof generation
-export {
-  convertUnshieldProofToSui,
-  convertTransferProofToSui,
-  convertSwapProofToSui,
-} from "./converter.js";
-
 // Cryptographic utilities
 export {
   initPoseidon,

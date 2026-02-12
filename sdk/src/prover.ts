@@ -13,12 +13,20 @@ import {
   type SwapInput,
   type SwapCircuitInput,
   type Note,
+  type SuiUnshieldProof,
+  type SuiTransferProof,
+  type SuiSwapProof,
   MERKLE_TREE_DEPTH,
 } from "./types.js";
 import {
   computeMerkleRoot,
   poseidonHash,
 } from "./crypto.js";
+import {
+  serializeProof,
+  serializePublicInputs,
+} from "./utils/index.js";
+
 
 // Lazy-loaded Node.js modules (only used in Node.js environment)
 let fs: any;
@@ -217,11 +225,32 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
 }
 
 /**
- * Generate unshield proof using snarkjs (with change support)
+ * Convert snarkjs proof to Sui-compatible format (Arkworks compressed) with 2-input support
+ */
+function convertUnshieldProofToSui(
+  proof: snarkjs.Groth16Proof,
+  publicSignals: string[],
+): SuiUnshieldProof {
+  // Validate public signals count for 2-input unshield circuit
+  if (publicSignals.length !== 6) {
+    throw new Error(`Expected 6 public signals for 2-input unshield, got ${publicSignals.length}`);
+  }
+
+  const proofBytes = serializeProof(proof as any);
+  const publicInputsBytes = serializePublicInputs(publicSignals);
+
+  return {
+    proofBytes,
+    publicInputsBytes
+  };
+}
+
+/**
+ * Generate unshield proof and convert to Sui format (with change support)
  */
 export async function generateUnshieldProof(
   unshieldInput: UnshieldInput,
-): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
+): Promise<SuiUnshieldProof> {
   const { wasmPath, zkeyPath } = getUnshieldCircuitPaths();
 
   // 1. Build circuit input
@@ -241,7 +270,8 @@ export async function generateUnshieldProof(
 
   validateMerkleRoot(circuitInput.merkle_root, publicSignals[5]);
 
-  return { proof, publicSignals };
+  // 4. Convert to Sui format
+  return convertUnshieldProofToSui(proof, publicSignals);
 }
 
 // ============ Transfer Proof Functions ============
@@ -403,11 +433,29 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
 }
 
 /**
- * Generate transfer proof using snarkjs
+ * Convert transfer proof to Sui-compatible format (Arkworks compressed)
+ */
+function convertTransferProofToSui(
+  proof: snarkjs.Groth16Proof,
+  publicSignals: string[]
+): SuiTransferProof {
+  // Validate public signals count for transfer circuit
+  if (publicSignals.length !== 6) {
+    throw new Error(`Expected 6 public signals for transfer, got ${publicSignals.length}`);
+  }
+
+  const proofBytes = serializeProof(proof as any);
+  const publicInputsBytes = serializePublicInputs(publicSignals);
+
+  return { proofBytes, publicInputsBytes };
+}
+
+/**
+ * Generate transfer proof and convert to Sui format
  */
 export async function generateTransferProof(
   transferInput: TransferInput,
-): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
+): Promise<SuiTransferProof> {
   const { wasmPath, zkeyPath } = getTransferCircuitPaths();
 
   // 1. Build circuit input
@@ -427,7 +475,8 @@ export async function generateTransferProof(
 
   validateMerkleRoot(circuitInput.merkle_root, publicSignals[5]);
 
-  return { proof, publicSignals };
+  // 4. Convert to Sui format
+  return convertTransferProofToSui(proof, publicSignals);
 }
 
 // ============ Swap Proof Functions ============
@@ -591,30 +640,47 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 }
 
 /**
- * Generate a swap proof using the swap circuit
- *
- * Returns raw proof and public signals. Use convertSwapProofToSui() to convert to Sui format.
- * This matches the pattern used in prover.ts for consistency.
+ * Convert swap proof to Sui-compatible format (Arkworks compressed)
+ */
+function convertSwapProofToSui(
+  proof: snarkjs.Groth16Proof,
+  publicSignals: string[]
+): SuiSwapProof {
+  // Validate public signals count for swap circuit
+  // Expected: nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment, token_in, token_out, merkle_root
+  if (publicSignals.length !== 8) {
+    throw new Error(`Expected 8 public signals for swap, got ${publicSignals.length}`);
+  }
+
+  const proofBytes = serializeProof(proof as any);
+  const publicInputsBytes = serializePublicInputs(publicSignals);
+
+  return { proofBytes, publicInputsBytes };
+}
+
+/**
+ * Generate a swap proof and convert to Sui format
  */
 export async function generateSwapProof(
   swapInput: SwapInput,
-): Promise<{ proof: snarkjs.Groth16Proof; publicSignals: string[] }> {
+): Promise<SuiSwapProof> {
   const { wasmPath, zkeyPath } = getSwapCircuitPaths();
 
-  // Build circuit input
+  // 1. Build circuit input
   const input = buildSwapInput(swapInput);
 
-  // 1. Prepare resources (get content or paths based on environment)
+  // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
     ? validateAndGetPaths(wasmPath, zkeyPath)
     : await loadBrowserBuffers(wasmPath, zkeyPath);
 
-  // Generate proof using snarkjs
+  // 3. Execute proof generation
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     input as unknown as snarkjs.CircuitSignals,
     wasm,
     zkey
   );
 
-  return { proof, publicSignals };
+  // 4. Convert to Sui format
+  return convertSwapProofToSui(proof, publicSignals);
 }

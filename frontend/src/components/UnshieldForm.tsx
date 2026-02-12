@@ -12,7 +12,6 @@ import { NumberInput } from "@/components/NumberInput";
 import {
   createUnshieldOutputs,
   generateUnshieldProof,
-  convertUnshieldProofToSui,
   deriveViewingPublicKey,
   encryptNote,
   buildUnshieldTransaction,
@@ -123,9 +122,9 @@ export function UnshieldForm({
         noteToken
       );
 
-      // 3. Generate ZK proof
+      // 3. Generate ZK proof (returns Sui format directly)
       setState("generating-proof");
-      const { proof, publicSignals } = await generateUnshieldProof({
+      const proof = await generateUnshieldProof({
         keypair,
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
@@ -135,27 +134,24 @@ export function UnshieldForm({
         token: notesWithProofs[0].note.token,
       });
 
-      // 4. Convert proof to Sui format
-      const suiProof = convertUnshieldProofToSui(proof, publicSignals);
-
-      // 5. Encrypt output note using viewing public keys
+      // 4. Encrypt output note using viewing public keys
       const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
       const encryptedChangeNote = encryptNote(outputNote, viewingPk)
 
-      // 6. Build and submit transaction
+      // 5. Build and submit transaction
       setState("submitting");
       const tx = buildUnshieldTransaction(
         packageId!,
         tokenConfig.poolId,
         tokenConfig.type,
-        suiProof,
+        proof,
         recipient,
         encryptedChangeNote
       );
 
       const result = await signAndExecute({ transaction: tx });
 
-      // 7. Success!
+      // 6. Success!
       setState("success");
       let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
       if (outputNote.amount > 0n) {
