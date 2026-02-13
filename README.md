@@ -98,6 +98,13 @@ This generates the SDK TypeScript library that the frontend depends on.
 
 ### 4. Run Frontend (Web UI)
 
+> **Environment Setup**: The frontend reads contract addresses from a `.env.local` file.
+> Create a symlink to the root `.env` before running:
+>
+> ```bash
+> ln -s ../.env frontend/.env.local
+> ```
+
 ```bash
 cd frontend
 npm install

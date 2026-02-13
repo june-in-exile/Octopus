@@ -61,6 +61,7 @@ export function TransferForm({
   const [state, setState] = useState<TransferState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const isProcessing = state !== "idle" && state !== "error" && state !== "success";
@@ -116,13 +117,13 @@ export function TransferForm({
 
       // 2. Create output notes (recipient + change)
       const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
-      const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
+      const token = notesWithProofs[0].note.token;
       const [recipientNote, changeNote] = createTransferOutputs(
         recipientProfile.mpk,
         keypair.masterPublicKey,
         amountBase,
         inputTotal,
-        noteToken
+        token
       );
 
       // 3. Generate ZK proof (returns Sui format directly)
@@ -133,7 +134,8 @@ export function TransferForm({
         inputLeafIndices: notesWithProofs.map((n) => n.leafIndex),
         inputPathElements: notesWithProofs.map((n) => n.pathElements!),
         recipientMpk: recipientProfile.mpk,
-        outputNotes: [recipientNote, changeNote],
+        recipientNote,
+        changeNote,
         token: notesWithProofs[0].note.token,
       });
 

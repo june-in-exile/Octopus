@@ -84,51 +84,34 @@ compile_circuit() {
     local cap
     cap=$(capitalize "$name")
 
-    echo "[1/10] Compiling $name.circom..."
+    echo "[1/7] Compiling $name.circom..."
     circom $name.circom --r1cs --wasm --sym -o $BUILD_DIR
 
-    echo "[2/10] Circuit info:"
+    echo "[2/7] Circuit info:"
     snarkjs r1cs info $BUILD_DIR/${name}.r1cs
 
-    echo "[3/10] Generating zkey (Groth16 setup)..."
+    echo "[3/7] Generating zkey (Groth16 setup)..."
     snarkjs groth16 setup \
         $BUILD_DIR/${name}.r1cs \
         $BUILD_DIR/${ptau} \
         $BUILD_DIR/${name}_0000.zkey
 
-    echo "[4/10] Contributing to ceremony..."
+    echo "[4/7] Contributing to ceremony..."
     snarkjs zkey contribute \
         $BUILD_DIR/${name}_0000.zkey \
         $BUILD_DIR/${name}_final.zkey \
         --name="Octopus Dev" \
         -v -e="random entropy $(date +%s)"
 
-    echo "[5/10] Exporting verification key..."
+    echo "[5/7] Exporting verification key..."
     snarkjs zkey export verificationkey \
         $BUILD_DIR/${name}_final.zkey \
         $BUILD_DIR/${name}_vk.json
 
-    echo "[6/10] Constraint count:"
+    echo "[6/7] Constraint count:"
     snarkjs r1cs info $BUILD_DIR/${name}.r1cs | grep "# of Constraints"
 
-    echo "[7/10] Generating test input..."
-    node scripts/generate${cap}TestInput.js
-
-    echo "[8/10] Generating witness and proof..."
-    snarkjs groth16 fullprove \
-        ${BUILD_DIR}/${name}_input.json \
-        ${BUILD_DIR}/${name}_js/${name}.wasm \
-        ${BUILD_DIR}/${name}_final.zkey \
-        ${BUILD_DIR}/${name}_proof.json \
-        ${BUILD_DIR}/${name}_public.json
-
-    echo "[9/10] Verifying proof..."
-    snarkjs groth16 verify \
-        ${BUILD_DIR}/${name}_vk.json \
-        ${BUILD_DIR}/${name}_public.json \
-        ${BUILD_DIR}/${name}_proof.json
-
-    echo "[10/10] Converting VK to Sui format and copying to frontend..."
+    echo "[7/7] Converting VK to Sui format and copying to frontend..."
     node scripts/arkworksConverter.js ${name}
     mkdir -p ${FRONTEND}/${name}_js
     cp ${BUILD_DIR}/${name}_js/${name}.wasm ${FRONTEND}/${name}_js/

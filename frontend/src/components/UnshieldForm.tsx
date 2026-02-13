@@ -57,6 +57,7 @@ export function UnshieldForm({
   const [state, setState] = useState<UnshieldState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
   const isProcessing = state !== "idle" && state !== "error" && state !== "success";
@@ -119,12 +120,12 @@ export function UnshieldForm({
 
       // 2. Create output notes (change note)
       const inputTotal = notesWithProofs.reduce((sum: bigint, n: { note: { amount: bigint } }) => sum + n.note.amount, 0n);
-      const noteToken = notesWithProofs[0].note.token; // Use actual token from selected note
-      const outputNote = createUnshieldOutputs(
+      const token = notesWithProofs[0].note.token;
+      const changeNote = createUnshieldOutputs(
         keypair.masterPublicKey,
         amountBase,
         inputTotal,
-        noteToken
+        token
       );
 
       // 3. Generate ZK proof (returns Sui format directly)
@@ -135,13 +136,13 @@ export function UnshieldForm({
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
         inputPathElements: notesWithProofs.map(n => n.pathElements!),
         unshieldAmount: amountBase,
-        outputNote,
+        changeNote,
         token: notesWithProofs[0].note.token,
       });
 
       // 4. Encrypt output note using viewing public keys
       const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const encryptedChangeNote = encryptNote(outputNote, viewingPk)
+      const encryptedChangeNote = encryptNote(changeNote, viewingPk)
 
       // 5. Build and submit transaction
       setState("submitting");
@@ -164,8 +165,8 @@ export function UnshieldForm({
       // 6. Success!
       setState("success");
       let successMessage = `Unshielded ${amount} ${tokenConfig.symbol}`;
-      if (outputNote.amount > 0n) {
-        successMessage += ` (Change: ${formatTokenAmount(outputNote.amount, tokenConfig.decimals)} ${tokenConfig.symbol})`;
+      if (changeNote.amount > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenConfig.decimals)} ${tokenConfig.symbol})`;
       }
       setSuccess({
         message: successMessage,

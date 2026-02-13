@@ -28,17 +28,17 @@ template Unshield(levels) {
     signal input nullifying_key;         // Secret key for nullifier generation (256-bit)
 
     // Input note (note being spent/unshielded)
-    signal input input_randoms[2];      // Random blinding factor
+    signal input input_randoms[2];       // Random blinding factor
     signal input input_amounts[2];       // Note amounts (can be 0 for dummy)
-    signal input input_leaf_indices[2]; // Leaf positions in tree
+    signal input input_leaf_indices[2];  // Leaf positions in tree
     signal input input_path_elements[2][levels];  // Merkle proof siblings
 
     // Change note (if input > unshield_amount, return change)
-    signal input change_amount;           // Change amount
     signal input change_random;          // Random blinding factor for change
+    signal input change_amount;          // Change amount
 
     // ============ Public Inputs ============
-    signal input unshield_amount;         // Amount to unshield to public address
+    signal input unshield_amount;        // Amount to unshield to public address
     signal input token;                  // Token identifier (address hash)
     signal input merkle_root;            // Expected Merkle root
 

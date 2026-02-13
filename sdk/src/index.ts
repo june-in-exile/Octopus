@@ -1,28 +1,3 @@
-// DEX Integration (DeepBook price fetching - legacy Cetus exports deprecated)
-// Note: Cetus integration has been replaced with DeepBook
-// export {
-//   getCetusPool,
-//   estimateCetusSwap,
-//   findCetusPool,
-//   getCetusPrice,
-//   CETUS_TESTNET_POOLS,
-//   type CetusPoolConfig,
-//   type SwapEstimation,
-// } from "./dex.js";
-
-// DeepBook V3 Integration
-export {
-  estimateDeepBookSwap,
-  getDeepBookPrice,
-  getDeepBookPool,
-  type DeepBookPoolConfig,
-} from "./dex/deepbook.js";
-
-// DEX Adapter Interface
-export {
-  type DexAdapter,
-} from "./dex/adapter.js";
-
 // Byte conversion, math, and proof compression utilities
 export * from "./utils/index.js";
 
@@ -47,6 +22,11 @@ export {
   quickCheckNote,
 } from "./crypto.js";
 
+// DeepBook V3 Integration
+export {
+  estimateDeepBookSwap,
+} from "./deepbook.js";
+
 // Merkle tree utilities
 export {
   ClientMerkleTree,
@@ -64,6 +44,11 @@ export {
   generateTransferProof,
   generateSwapProof,
 } from "./prover.js";
+
+// Swap utilities
+export {
+  createSwapOutputs,
+} from "./swap.js";
 
 // Transfer utilities
 export {

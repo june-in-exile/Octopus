@@ -10,11 +10,18 @@ import {
   useSuiClientQuery,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
-import { cn, parseSui, formatSui } from "@/lib/utils";
 import {
-  SUI_COIN_TYPE,
-  DEEPBOOK_POOLS,
-  DEEP_TOKEN_TYPE,
+  cn,
+  parseTokenAmount,
+  formatSui,
+  getTokenIdFromCoinType,
+  formatTokenAmount,
+  truncateAddress,
+} from "@/lib/utils";
+import {
+  NETWORK,
+  NETWORK_CONFIG,
+  CLOCK_OBJECT_ID,
   ESTIMATED_DEEP_FEE,
   DEFAULT_SWAP_MODE,
 } from "@/lib/constants";
@@ -23,41 +30,37 @@ import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
 import {
+  createSwapOutputs,
   generateSwapProof,
-  calculateMinOutput,
   estimateDeepBookSwap,
   encryptNote,
   deriveViewingPublicKey,
-  type SwapParams,
 } from "@june_zk/octopus-sdk";
-import { initPoseidon } from "@/lib/poseidon";
-import {
-  verifyNotesAndComputeRoots,
-  verifyOnChainRoot,
-} from "@/lib/merkleVerification";
-import {
-  deriveTokenIdFromCoinType,
-  buildSwapInput,
-  validateSufficientBalance,
-  checkCacheStaleness,
-} from "@/lib/swapUtils";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
   notes: OwnedNote[];
   loading: boolean;
-  error: string | null;
   onSuccess?: () => void | Promise<void>;
-  onRefresh?: () => void | Promise<void>;
-  lastScanStats?: {
-    eventsScanned: number;
-    notesDecrypted: number;
-    timestamp: number;
-  } | null;
 }
 
-export function SwapForm({ keypair, notes, loading: notesLoading, error: notesError, onSuccess, onRefresh, lastScanStats }: SwapFormProps) {
-  const { packageId, suiPoolId, tokens } = useNetworkConfig();
+type SwapState =
+  | "idle"
+  | "fetching-merkle-proofs"
+  | "generating-proof"
+  | "submitting"
+  | "success"
+  | "error";
+
+export function SwapForm({
+  keypair,
+  notes,
+  loading: notesLoading,
+  onSuccess,
+}: SwapFormProps) {
+  const { packageId, tokens: tokenConfig } = useNetworkConfig();
+  const account = useCurrentAccount();
+
   const { network } = useSuiClientContext();
   const isMainnet = network === "mainnet";
 
@@ -65,38 +68,52 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
   const availableTokens = isMainnet ? ["SUI", "USDC"] as const : ["SUI", "DBUSDC"] as const;
   const defaultTokenOut = isMainnet ? "USDC" : "DBUSDC";
 
+  const [tokenInSymbol, setTokenInSymbol] = useState<"SUI" | "USDC" | "DBUSDC">("SUI");
+  const [tokenOutSymbol, setTokenOutSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(defaultTokenOut);
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
-  const [tokenIn, setTokenIn] = useState<"SUI" | "USDC" | "DBUSDC">("SUI");
-  const [tokenOut, setTokenOut] = useState<"SUI" | "USDC" | "DBUSDC">(defaultTokenOut);
   const [slippage, setSlippage] = useState(50); // 0.5% in bps
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEstimating, setIsEstimating] = useState(false);
+  const [state, setState] = useState<SwapState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const [priceImpact, setPriceImpact] = useState<number>(0);
   const [swapMode, setSwapMode] = useState<"test" | "production">(DEFAULT_SWAP_MODE);
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
 
-  const account = useCurrentAccount();
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+
+  const isProcessing = state !== "idle" && state !== "error" && state !== "success";
+
+  const getProgressMessage = () => {
+    switch (state) {
+      case "fetching-merkle-proofs":
+        return "// Building Merkle proofs";
+      case "generating-proof":
+        return "// Proof generation in progress (30-60s)";
+      case "submitting":
+        return "// Awaiting wallet confirmation";
+      default:
+        return "";
+    }
+  };
 
   // Query DEEP tokens (only in production mode)
   const { data: deepBalance } = useSuiClientQuery(
     "getCoins",
     {
       owner: account?.address ?? "",
-      coinType: DEEP_TOKEN_TYPE,
+      coinType: NETWORK_CONFIG[NETWORK === "mainnet" ? 'mainnet' : 'testnet'].deepCoinType,
     },
     {
-      enabled: swapMode === "production" && !!account?.address,
+      enabled: !!account?.address,
     }
   );
 
   // Auto-select DEEP coin with sufficient balance
   useEffect(() => {
-    if (swapMode === "production" && deepBalance?.data) {
+    if (deepBalance?.data) {
       const adequateCoin = deepBalance.data.find(
         (coin) => BigInt(coin.balance) >= ESTIMATED_DEEP_FEE
       );
@@ -108,8 +125,8 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
   // Switch token pair
   const handleSwitchTokens = () => {
-    setTokenIn(tokenOut);
-    setTokenOut(tokenIn);
+    setTokenInSymbol(tokenOutSymbol);
+    setTokenOutSymbol(tokenInSymbol);
     setAmountIn(amountOut);
     setAmountOut("");
   };
@@ -128,7 +145,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         const amountInFloat = parseFloat(amountIn);
 
         // Check if swapping same token
-        if (tokenIn === tokenOut) {
+        if (tokenInSymbol === tokenOutSymbol) {
           setAmountOut(amountIn);
           setPriceImpact(0);
           setIsEstimating(false);
@@ -144,23 +161,21 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         }
 
         // Production mode: Get real price from DeepBook
-        const poolKey = `${tokenIn}_${tokenOut}`;
-        const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
-
+        const deepbookPoolId = (NETWORK === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
         if (!deepbookPoolId || deepbookPoolId === "0x...") {
-          throw new Error(`DeepBook pool not configured for ${poolKey}`);
+          throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
         }
 
         // Convert to smallest units
-        const inConfig = tokens?.[tokenIn as keyof typeof tokens];
-        const outConfig = tokens?.[tokenOut as keyof typeof tokens];
-        const tokenInDecimals = inConfig?.decimals ?? 9;
+        const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+        const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+        const tokenInDecimals = tokenInConfig?.decimals ?? 9;
         const amountInBigInt = BigInt(
           Math.floor(amountInFloat * Math.pow(10, tokenInDecimals))
         );
 
         // Estimate swap using DeepBook
-        const isBid = tokenIn === "USDC" || tokenIn === "DBUSDC"; // Buying SUI with USDC/DBUSDC
+        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC"; // Buying SUI with USDC/DBUSDC
         const estimation = await estimateDeepBookSwap(
           client,
           deepbookPoolId,
@@ -169,7 +184,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         );
 
         // Convert output to display units
-        const tokenOutDecimals = outConfig?.decimals ?? 9;
+        const tokenOutDecimals = tokenOutConfig?.decimals ?? 9;
         const amountOutFloat = Number(estimation.amountOut) /
           Math.pow(10, tokenOutDecimals);
 
@@ -186,7 +201,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenIn, tokenOut, client, swapMode]);
+  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, swapMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,192 +228,118 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       return;
     }
 
-    setIsSubmitting(true);
+    const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+    if (!tokenInConfig) {
+      throw new Error(`Token config not found for ${tokenInSymbol}`);
+    }
+    const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+    if (!tokenOutConfig) {
+      throw new Error(`Token config not found for ${tokenOutSymbol}`);
+    }
+
+    const amountInBase = parseTokenAmount(amountIn, tokenInConfig.decimals);
+    const amountOutBase = parseTokenAmount(amountIn, tokenOutConfig.decimals);
 
     try {
-      await initPoseidon();
-
-      const amountInBigInt = parseSui(amountIn);
-      const amountOutBigInt = parseSui(amountOut);
-      const minAmountOut = calculateMinOutput(amountOutBigInt, slippage);
-
-      // Validate sufficient balance early
-      validateSufficientBalance(notes, amountInBigInt, tokenIn);
-
-      // Check cache staleness
-      checkCacheStaleness(lastScanStats);
-
-      // Get token configurations
-      const tokenInConfig = tokens?.[tokenIn as keyof typeof tokens];
-      const tokenOutConfig = tokens?.[tokenOut as keyof typeof tokens];
-
-      if (!tokenInConfig) {
-        throw new Error(`Token config not found for ${tokenIn}`);
-      }
-      if (!tokenOutConfig) {
-        throw new Error(`Token config not found for ${tokenOut}`);
-      }
-
       // 1. Select notes and fetch proofs
+      setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
         notes,
-        amountInBigInt,
+        amountInBase,
         keypair,
         tokenInConfig.poolId
       );
 
-      // 2. Derive token IDs
-      const inputTokenId = notesWithProofs[0].note.token;
-      const outputCoinType = tokenOutConfig.type;
-      const outputTokenId = deriveTokenIdFromCoinType(outputCoinType);
+      // 2. Create output notes (swap + change)
+      const inputTotal = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
+      const tokenIn = notesWithProofs[0].note.token;
+      const tokenOut = getTokenIdFromCoinType(tokenOutConfig.type);
+      const [swapNote, changeNote] = createSwapOutputs(
+        keypair.masterPublicKey,
+        amountInBase,
+        amountOutBase,
+        inputTotal,
+        tokenIn,
+        tokenOut,
+      )
 
-      // 3. Get DeepBook pool ID
-      const poolKey = `${tokenIn}_${tokenOut}`;
-      const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
-
-      if (swapMode === "production" && (!deepbookPoolId || deepbookPoolId === "0x...")) {
-        throw new Error(
-          `DeepBook pool not configured for ${poolKey}. Please set the pool ID or switch to test mode.`
-        );
-      }
-
-      const poolIdToUse = swapMode === "test" ? "0x0" : deepbookPoolId;
-      const poolIdBytes = poolIdToUse.replace("0x", "");
-      const poolIdBigInt = poolIdBytes === "" ? 0n : BigInt("0x" + poolIdBytes);
-
-      // 4. Build swap parameters
-      const swapParams: SwapParams = {
-        tokenIn: inputTokenId,
-        tokenOut: outputTokenId,
-        amountIn: amountInBigInt,
-        minAmountOut,
-        dexPoolId: poolIdBigInt,
-        slippageBps: slippage,
-      };
-
-      // 5. Verify notes and compute Merkle roots
-      const computedRoots = verifyNotesAndComputeRoots(
-        notesWithProofs,
-        keypair.masterPublicKey
-      );
-
-      // 6. Verify on-chain root (pre-proof)
-      await verifyOnChainRoot(
-        client,
-        packageId!,
-        suiPoolId!,
-        SUI_COIN_TYPE,
-        account.address,
-        computedRoots[0],
-        "pre-proof"
-      );
-
-      console.log("MPK:", keypair.masterPublicKey.toString());
-      console.log("Token In:", inputTokenId.toString());
-      console.log("Token Out:", outputTokenId.toString());
-      console.log("Merkle Root (verified):", computedRoots[0]?.toString());
-
-      // 7. Build swap input
-      const { swapInput, outputNote, changeNote } = buildSwapInput(
+      // 3. Generate ZK proof (returns Sui format directly)
+      setState("generating-proof");
+      const proof = await generateSwapProof({
         keypair,
-        notesWithProofs,
-        swapParams,
-        outputTokenId,
-        amountOutBigInt
-      );
+        inputNotes: notesWithProofs.map(n => n.note),
+        inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
+        inputPathElements: notesWithProofs.map(n => n.pathElements!),
+        swapNote,
+        changeNote,
+      });
 
-      // 8. Generate ZK proof (30-60s)
-      const proof = await generateSwapProof(swapInput);
+      // 4. Encrypt output note using viewing public keys
+      const viewingPk = deriveViewingPublicKey(keypair.spendingKey);
+      const encryptedOutputNote = encryptNote(swapNote, viewingPk);
+      const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
-      // 9. Re-verify on-chain root (post-proof)
-      await verifyOnChainRoot(
-        client,
-        packageId!,
-        suiPoolId!,
-        SUI_COIN_TYPE,
-        account.address,
-        computedRoots[0],
-        "post-proof"
-      );
-
-      // 10. Encrypt notes
-      const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
-      const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
-      const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
-
-      // 11. Validate production mode requirements
-      if (swapMode === "production") {
-        if (!selectedDeepCoin) {
-          throw new Error(
-            "DEEP tokens required for production swap. Please acquire DEEP tokens or switch to test mode."
-          );
-        }
-        const deepCoinBalance = deepBalance?.data?.find(
-          (c) => c.coinObjectId === selectedDeepCoin
-        );
-        if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
-          throw new Error("Insufficient DEEP balance for swap fees");
-        }
+      // 5. Get DeepBook pool ID
+      const deepbookPoolId = (NETWORK === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
+      if (!deepbookPoolId || deepbookPoolId === "0x...") {
+        throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
       }
 
-      // 12. Build and execute transaction
+      if (!selectedDeepCoin) {
+        throw new Error(
+          "DEEP tokens required for swap. Please acquire DEEP tokens."
+        );
+      }
+      const deepCoinBalance = deepBalance?.data?.find(
+        (c) => c.coinObjectId === selectedDeepCoin
+      );
+      if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
+        throw new Error("Insufficient DEEP balance for swap fees");
+      }
+
+      // 6. Build and submit transaction
+      setState("submitting");
       const tx = new Transaction();
 
-      if (swapMode === "production") { 
-        tx.moveCall({
-          target: `${packageId}::pool::swap`,
-          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
-          arguments: [
-            tx.object(tokenInConfig.poolId),
-            tx.object(tokenOutConfig.poolId),
-            tx.object(deepbookPoolId),
-            tx.pure.vector("u8", Array.from(proof.proofBytes)),
-            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-            tx.pure.u64(amountIn),
-            tx.pure.u64(minAmountOut),
-            tx.object(selectedDeepCoin!),
-            tx.object('0x6'), // Clock shared object
-            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
-            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-          ],
-        });
-      } else { 
-        const [mockDeepCoin] = tx.splitCoins(tx.gas, [1]);
-
-        tx.moveCall({
-          target: `${packageId}::pool::swap_for_testing`,
-          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
-          arguments: [
-            tx.object(tokenInConfig.poolId),
-            tx.object(tokenOutConfig.poolId),
-            tx.pure.vector("u8", Array.from(proof.proofBytes)),
-            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-            tx.pure.u64(amountIn),
-            tx.pure.u64(minAmountOut),
-            mockDeepCoin,
-            tx.object('0x6'), // Clock shared object
-            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
-            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-          ],
-        });
-      }
+      tx.moveCall({
+        target: `${packageId}::pool::swap`,
+        typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+        arguments: [
+          tx.object(tokenInConfig.poolId),
+          tx.object(tokenOutConfig.poolId),
+          tx.object(deepbookPoolId),
+          tx.pure.vector("u8", Array.from(proof.proofBytes)),
+          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure.u64(amountIn),
+          tx.pure.u64((amountOutBase * BigInt(10000 - slippage)) / 10000n),
+          tx.object(selectedDeepCoin!),
+          tx.object(CLOCK_OBJECT_ID),
+          tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+          tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+        ],
+      });
 
       const result = await signAndExecute({ transaction: tx });
 
-      setSuccess(`Swap successful! TX: ${result.digest}`);
-      if (onSuccess) await onSuccess();
+      // 7. Success!
+      setState("success");
+      let successMessage = `Swapped ${amountIn} ${tokenInSymbol} → ${amountOut} ${tokenOutSymbol}`;
+      if (changeNote.amount > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenInConfig.decimals)} ${tokenInSymbol})`;
+      }
+      setSuccess({
+        message: successMessage,
+        txDigest: result.digest
+      });
+      setAmountIn("");
+      setAmountOut("");
+
+      // 8. Trigger note rescan to pick up the output and change notes
+      await onSuccess?.();
     } catch (err) {
       console.error("Swap failed:", err);
+      setState("error");
       setError(err instanceof Error ? err.message : "Swap failed");
-
-      // If transaction fails, trigger refresh to reconcile state
-      if (onRefresh) {
-        setTimeout(() => {
-          onRefresh();
-        }, 1000);
-      }
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -408,8 +349,8 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
   const canUseProductionMode = isMainnet || (
     !isMainnet &&
     swapMode === "production" &&
-    tokenIn === "SUI" &&
-    tokenOut === "DBUSDC"
+    tokenInSymbol === "SUI" &&
+    tokenOutSymbol === "DBUSDC"
   );
 
   const isFormValid =
@@ -429,7 +370,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         <div>
           <p className="text-xs font-mono text-gray-300 mb-1">Swap Mode</p>
           <p className="text-[10px] text-gray-500 font-mono">
-            {swapMode === "test" ? "Mock 1:1 swap (no DEEP required)" : "Real DeepBook swap (requires DEEP)"}
+            {swapMode === "test" ? "Mock 1:1 swap (DEEP required)" : "Real DeepBook swap (DEEP required)"}
           </p>
         </div>
         <div className="flex gap-2">
@@ -487,7 +428,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         </div>
       )}
 
-      {!isMainnet && swapMode === "production" && (tokenIn !== "SUI" || tokenOut !== "DBUSDC") && (
+      {!isMainnet && swapMode === "production" && (tokenInSymbol !== "SUI" || tokenOutSymbol !== "DBUSDC") && (
         <div className="p-3 border border-red-600/40 bg-red-900/20 clip-corner">
           <div className="flex items-start gap-2">
             <span className="text-red-400 text-sm">✕</span>
@@ -506,10 +447,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           </label>
           <div className="flex gap-2">
             <select
-              value={tokenIn}
-              onChange={(e) => setTokenIn(e.target.value as "SUI" | "USDC" | "DBUSDC")}
+              value={tokenInSymbol}
+              onChange={(e) => setTokenInSymbol(e.target.value as "SUI" | "USDC" | "DBUSDC")}
               className="input w-24"
-              disabled={isSubmitting}
+              disabled={isProcessing}
             >
               {availableTokens.map(token => (
                 <option key={token} value={token}>{token}</option>
@@ -521,7 +462,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
               placeholder="0.0"
               step={0.000000001}
               min={0}
-              disabled={isSubmitting}
+              disabled={isProcessing}
               className="flex-1"
             />
           </div>
@@ -533,7 +474,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
             type="button"
             onClick={handleSwitchTokens}
             className="p-2 clip-corner border border-cyber-blue/30 hover:bg-cyber-blue/10 transition"
-            disabled={isSubmitting}
+            disabled={isProcessing}
           >
             <svg className="w-5 h-5 text-cyber-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
@@ -548,10 +489,10 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           </label>
           <div className="flex gap-2">
             <select
-              value={tokenOut}
-              onChange={(e) => setTokenOut(e.target.value as "SUI" | "USDC" | "DBUSDC")}
+              value={tokenOutSymbol}
+              onChange={(e) => setTokenOutSymbol(e.target.value as "SUI" | "USDC" | "DBUSDC")}
               className="input w-24"
-              disabled={isSubmitting}
+              disabled={isProcessing}
             >
               {availableTokens.map(token => (
                 <option key={token} value={token}>{token}</option>
@@ -602,7 +543,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
                 key={bps}
                 type="button"
                 onClick={() => setSlippage(bps)}
-                disabled={isSubmitting}
+                disabled={isProcessing}
                 className={cn(
                   "px-3 py-1.5 text-xs font-mono font-bold uppercase tracking-wider transition clip-corner",
                   slippage === bps
@@ -631,6 +572,45 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           </div>
         )}
 
+        {/* Progress indicator */}
+        {isProcessing && (
+          <div className="p-4 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
+            <div className="flex items-center gap-3">
+              <svg
+                className="h-5 w-5 animate-spin text-cyber-blue"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
+              </svg>
+              <div>
+                <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
+                  {state === "fetching-merkle-proofs"
+                    ? "Building Merkle Tree..."
+                    : state === "generating-proof"
+                      ? "Generating ZK Proof..."
+                      : "Submitting Transaction..."}
+                </p>
+                <p className="text-[10px] text-gray-400 font-mono mt-0.5">
+                  {getProgressMessage()}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Error Message */}
         {error && (
           <div className="p-3 border border-red-600/30 bg-red-900/20 clip-corner">
@@ -646,7 +626,23 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           <div className="p-3 border border-green-600/30 bg-green-900/20 clip-corner">
             <div className="flex items-start gap-2">
               <span className="text-green-500 text-sm">✓</span>
-              <p className="text-xs text-green-400 font-mono leading-relaxed">{success}</p>
+              <div className="text-xs text-green-400 font-mono leading-relaxed">
+                <p>{success.message}</p>
+                {success.txDigest && (
+                  <>
+                    {' '}
+                    <a
+                      href={`https://${network}.suivision.xyz/txblock/${success.txDigest}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-cyber-blue hover:text-cyber-blue/80 underline"
+                      title={`View transaction: ${success.txDigest}`}
+                    >
+                      [{truncateAddress(success.txDigest, 6)}]
+                    </a>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -655,13 +651,13 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={!isFormValid || isSubmitting}
+        disabled={!isFormValid || isProcessing}
         className={cn(
           "btn-primary w-full",
-          isSubmitting && "cursor-wait opacity-70"
+          isProcessing && "cursor-wait opacity-70"
         )}
       >
-        {isSubmitting ? (
+        {isProcessing ? (
           <span className="flex items-center justify-center gap-2">
             <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
               <circle
