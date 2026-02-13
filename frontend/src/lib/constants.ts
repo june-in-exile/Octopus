@@ -22,6 +22,7 @@ export const NETWORK_CONFIG = {
     originalPackageId: process.env.NEXT_PUBLIC_TESTNET_ORIGINAL_PACKAGE_ID || null, // For event queries (original-id)
     suiPoolId: process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID || null,
     usdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null,
+    dbusdcPoolId: process.env.NEXT_PUBLIC_TESTNET_DBUSDC_POOL_ID || null,
     usdcCoinType: process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE || null,
     dbusdcCoinType: process.env.NEXT_PUBLIC_TESTNET_DBUSDC_TYPE || null,
     deepCoinType: process.env.NEXT_PUBLIC_TESTNET_DEEP_TYPE || null,

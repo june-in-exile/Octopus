@@ -28,7 +28,7 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
     !!config?.originalPackageId &&
     !!config?.suiPoolId &&
     (isTestnet
-      ? !!config.usdcPoolId && !!(config as any).dbusdcCoinType
+      ? !!config.usdcPoolId && !!(config as any).dbusdcCoinType && !!(config as any).dbusdcPoolId
       : !!config.usdcPoolId && !!config.usdcCoinType);
 
   const tokens = isConfigured
@@ -50,7 +50,7 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
             type: (config as any).dbusdcCoinType!,
             symbol: "DBUSDC",
             decimals: 6,
-            poolId: config.usdcPoolId!,
+            poolId: (config as any).dbusdcPoolId!,
           },
         }
       : {

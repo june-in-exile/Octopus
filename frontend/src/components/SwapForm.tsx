@@ -23,7 +23,6 @@ import {
   NETWORK_CONFIG,
   CLOCK_OBJECT_ID,
   ESTIMATED_DEEP_FEE,
-  DEFAULT_SWAP_MODE,
 } from "@/lib/constants";
 import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
@@ -78,7 +77,6 @@ export function SwapForm({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const [priceImpact, setPriceImpact] = useState<number>(0);
-  const [swapMode, setSwapMode] = useState<"test" | "production">(DEFAULT_SWAP_MODE);
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
 
   const client = useSuiClient();
@@ -121,7 +119,7 @@ export function SwapForm({
     } else {
       setSelectedDeepCoin(null);
     }
-  }, [swapMode, deepBalance]);
+  }, [deepBalance]);
 
   // Switch token pair
   const handleSwitchTokens = () => {
@@ -152,15 +150,6 @@ export function SwapForm({
           return;
         }
 
-        // Test mode uses 1:1 mock swap (matches contract behavior)
-        if (swapMode === "test") {
-          setAmountOut(amountIn);
-          setPriceImpact(0);
-          setIsEstimating(false);
-          return;
-        }
-
-        // Production mode: Get real price from DeepBook
         const deepbookPoolId = (NETWORK === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
         if (!deepbookPoolId || deepbookPoolId === "0x...") {
           throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
@@ -201,7 +190,7 @@ export function SwapForm({
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, swapMode]);
+  }, [amountIn, tokenInSymbol, tokenOutSymbol, client]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -345,16 +334,7 @@ export function SwapForm({
 
   const unspentNotes = notes.filter((n) => !n.spent);
 
-  // Allow production mode on mainnet, or on testnet for SUI/DBUSDC swaps only
-  const canUseProductionMode = isMainnet || (
-    !isMainnet &&
-    swapMode === "production" &&
-    tokenInSymbol === "SUI" &&
-    tokenOutSymbol === "DBUSDC"
-  );
-
   const isFormValid =
-    (canUseProductionMode || swapMode === "test") &&
     !!account &&
     !!keypair &&
     !!amountIn &&
@@ -365,79 +345,30 @@ export function SwapForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {/* Mode Toggle */}
-      <div className="flex items-center justify-between p-3 border border-cyber-blue/30 bg-black/40 clip-corner">
-        <div>
-          <p className="text-xs font-mono text-gray-300 mb-1">Swap Mode</p>
-          <p className="text-[10px] text-gray-500 font-mono">
-            {swapMode === "test" ? "Mock 1:1 swap (DEEP required)" : "Real DeepBook swap (DEEP required)"}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setSwapMode("test")}
-            className={cn(
-              "px-3 py-1 text-xs font-mono clip-corner border transition",
-              swapMode === "test"
-                ? "bg-cyber-blue/20 border-cyber-blue text-cyber-blue"
-                : "border-gray-600 text-gray-400 hover:border-gray-500"
-            )}
-          >
-            Test
-          </button>
-          <button
-            type="button"
-            onClick={() => setSwapMode("production")}
-            className={cn(
-              "px-3 py-1 text-xs font-mono clip-corner border transition",
-              swapMode === "production"
-                ? "bg-cyber-blue/20 border-cyber-blue text-cyber-blue"
-                : "border-gray-600 text-gray-400 hover:border-gray-500"
-            )}
-          >
-            Production
-          </button>
-        </div>
-      </div>
-
-      {/* DEEP Token Warning (Production Mode) */}
-      {swapMode === "production" && (
-        <div className={cn(
-          "p-3 border clip-corner",
-          selectedDeepCoin
-            ? "border-green-600/40 bg-green-900/20"
-            : "border-yellow-600/40 bg-yellow-900/20"
-        )}>
-          <div className="flex items-start gap-2">
-            <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
-              {selectedDeepCoin ? "✓" : "!"}
-            </span>
-            <div className="flex-1">
-              <p className={cn(
-                "text-xs font-mono leading-relaxed",
-                selectedDeepCoin ? "text-green-400" : "text-yellow-400"
-              )}>
-                {selectedDeepCoin
-                  ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
-                  : "DEEP tokens required for swap fees. Please acquire DEEP tokens or switch to test mode."
-                }
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {!isMainnet && swapMode === "production" && (tokenInSymbol !== "SUI" || tokenOutSymbol !== "DBUSDC") && (
-        <div className="p-3 border border-red-600/40 bg-red-900/20 clip-corner">
-          <div className="flex items-start gap-2">
-            <span className="text-red-400 text-sm">✕</span>
-            <p className="text-xs text-red-400 font-mono leading-relaxed">
-              Production swap on testnet only supports <span className="text-amber-400 font-bold">SUI/DBUSDC</span>. Switch to test mode or select SUI/DBUSDC pair.
+      {/* DEEP Token Status */}
+      <div className={cn(
+        "p-3 border clip-corner",
+        selectedDeepCoin
+          ? "border-green-600/40 bg-green-900/20"
+          : "border-yellow-600/40 bg-yellow-900/20"
+      )}>
+        <div className="flex items-start gap-2">
+          <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
+            {selectedDeepCoin ? "✓" : "!"}
+          </span>
+          <div className="flex-1">
+            <p className={cn(
+              "text-xs font-mono leading-relaxed",
+              selectedDeepCoin ? "text-green-400" : "text-yellow-400"
+            )}>
+              {selectedDeepCoin
+                ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
+                : "DEEP tokens required for swap fees. Please acquire DEEP tokens."
+              }
             </p>
           </div>
         </div>
-      )}
+      </div>
 
       <div className="space-y-4">
         {/* Token In */}

@@ -21,7 +21,7 @@ import { getWorkerManager } from "@/lib/workerManager";
 import { initPoseidon } from "@/lib/poseidon";
 
 type TabType = "shield" | "unshield" | "transfer" | "swap";
-type TokenSymbol = "SUI" | "USDC";
+type TokenSymbol = "SUI" | "USDC" | "DBUSDC";
 
 export default function Home() {
   const account = useCurrentAccount();
@@ -267,7 +267,7 @@ export default function Home() {
                 <div className="card">
                   <div className="flex items-center gap-3 px-4 py-3">
                     <span className="text-[10px] text-gray-500 font-mono uppercase tracking-wider">Token:</span>
-                    {(["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
+                    {(tokens ? Object.keys(tokens) as TokenSymbol[] : ["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
                       <button
                         key={sym}
                         onClick={() => setSelectedToken(sym)}
