@@ -299,7 +299,7 @@ export function SwapForm({
           tx.object(deepbookPoolId),
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure.u64(amountIn),
+          tx.pure.u64(amountInBase),
           tx.pure.u64((amountOutBase * BigInt(10000 - slippage)) / 10000n),
           tx.object(selectedDeepCoin!),
           tx.object(CLOCK_OBJECT_ID),
@@ -307,8 +307,12 @@ export function SwapForm({
           tx.pure.vector("u8", Array.from(encryptedChangeNote)),
         ],
       });
+      
+      console.log("tx:", tx);
 
       const result = await signAndExecute({ transaction: tx });
+      
+      console.log("result:", result);
 
       // 7. Success!
       setState("success");

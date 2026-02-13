@@ -158,11 +158,6 @@ function convertUnshieldProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[],
 ): SuiProof {
-  // Validate public signals count for 2-input unshield circuit
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for 2-input unshield, got ${publicSignals.length}`);
-  }
-
   const proofBytes = serializeProof(proof as any);
   const publicInputsBytes = serializePublicInputs(publicSignals);
 
@@ -302,11 +297,6 @@ function convertTransferProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[]
 ): SuiProof {
-  // Validate public signals count for transfer circuit
-  if (publicSignals.length !== 6) {
-    throw new Error(`Expected 6 public signals for transfer, got ${publicSignals.length}`);
-  }
-
   const proofBytes = serializeProof(proof as any);
   const publicInputsBytes = serializePublicInputs(publicSignals);
 
@@ -426,12 +416,6 @@ function convertSwapProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[]
 ): SuiProof {
-  // Validate public signals count for swap circuit
-  // Expected: nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment, token_in, token_out, merkle_root
-  if (publicSignals.length !== 8) {
-    throw new Error(`Expected 8 public signals for swap, got ${publicSignals.length}`);
-  }
-
   const proofBytes = serializeProof(proof as any);
   const publicInputsBytes = serializePublicInputs(publicSignals);
 

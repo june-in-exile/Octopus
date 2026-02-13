@@ -74,23 +74,6 @@ fi
 echo "Package ID: $PACKAGE_ID"
 echo ""
 
-# Update or append an env variable in a file
-update_env_var() {
-    local key=$1
-    local value=$2
-    local file=$3
-
-    if grep -q "^${key}=" "$file"; then
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            sed -i '' "s|^${key}=.*|${key}=${value}|" "$file"
-        else
-            sed -i "s|^${key}=.*|${key}=${value}|" "$file"
-        fi
-    else
-        echo "${key}=${value}" >> "$file"
-    fi
-}
-
 # Update a single pool's VK
 update_pool_vk() {
     local vk=$1
@@ -113,8 +96,10 @@ update_pool_vk() {
     fi
 
     echo "Looking for PoolAdminCap..."
+    local original_pkg_var="NEXT_PUBLIC_${NETWORK_UPPER}_ORIGINAL_PACKAGE_ID"
+    local original_pkg="${!original_pkg_var:-$PACKAGE_ID}"
     local admin_cap_id
-    admin_cap_id=$(sui client objects --json 2>/dev/null | jq -r --arg pkg "$PACKAGE_ID" --arg pid "$pool_id" '.[] | select(.data.type == ($pkg + "::pool::PoolAdminCap") and .data.content.fields.pool_id == $pid) | .data.objectId' | head -1)
+    admin_cap_id=$(sui client objects --json 2>/dev/null | jq -r --arg pkg "$original_pkg" --arg pid "$pool_id" '.[] | select(.data.type == ($pkg + "::pool::PoolAdminCap") and .data.content.fields.pool_id == $pid) | .data.objectId' | head -1)
 
     if [ -z "$admin_cap_id" ]; then
         echo "Error: PoolAdminCap not found for $pool_upper pool"
@@ -186,10 +171,6 @@ update_vk() {
             update_pool_vk "$vk" usdc "${!USDC_POOL_ID_VAR}" "${!USDC_TYPE_VAR}"
             ;;
     esac
-
-    update_env_var "${NETWORK_UPPER}_${vk_upper}_VK" "$NEW_VK" "$ENV_FILE"
-    echo "✓ Updated ${NETWORK_UPPER}_${vk_upper}_VK in $ENV_FILE"
-    echo ""
 }
 
 # Determine which VKs to update

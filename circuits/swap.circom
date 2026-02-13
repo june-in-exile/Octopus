@@ -93,4 +93,4 @@ template Swap(levels) {
 }
 
 // Main circuit with 16 levels (supports 2^16 = 65,536 notes)
-component main {public [token_in, token_out, merkle_root]} = Swap(16);
+component main {public [token_in, token_out, amount_in, amount_out, merkle_root]} = Swap(16);

@@ -54,7 +54,7 @@ const getDeepBookPoolId = (tokenPair: string) => {
 };
 
 // Estimated DEEP fee for swap operations (~0.01 DEEP)
-export const ESTIMATED_DEEP_FEE = 10_000_000n; // In smallest units (6 decimals)
+export const ESTIMATED_DEEP_FEE = 10_000n; // 0.01 DEEP in smallest units (6 decimals)
 
 // Default swap mode (test mode for testnet, can be overridden by user)
 export const DEFAULT_SWAP_MODE: "test" | "production" = NETWORK === "mainnet" ? "production" : "test";
