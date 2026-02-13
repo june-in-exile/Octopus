@@ -32,17 +32,6 @@ export function formatSui(mist: bigint | number): string {
 }
 
 /**
- * Parse SUI amount to MIST
- */
-export function parseSui(sui: string): bigint {
-  const parsed = parseFloat(sui);
-  if (isNaN(parsed) || parsed < 0) {
-    throw new Error("Invalid SUI amount");
-  }
-  return BigInt(Math.floor(parsed * 1e9));
-}
-
-/**
  * Truncate address for display
  */
 export function truncateAddress(address: string, chars = 4): string {

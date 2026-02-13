@@ -358,10 +358,7 @@ export default function Home() {
                             keypair={keypair}
                             notes={notes}
                             loading={isLoadingNotes}
-                            error={notesError}
                             onSuccess={handleOperationSuccess}
-                            lastScanStats={lastScanStats}
-                            onRefresh={refreshNotes}
                           />
                         )}
                         {activeTab === "unshield" && (

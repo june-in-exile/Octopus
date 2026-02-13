@@ -54,6 +54,16 @@ export interface SuiVerificationKey {
   vkBytes: Uint8Array;
 }
 
+/**
+ * ZK proof in Sui-compatible format
+ */
+export interface SuiProof {
+  /** Proof points (128 bytes: A || B || C) */
+  proofBytes: Uint8Array;
+  /** Public inputs */
+  publicInputsBytes: Uint8Array;
+}
+
 // ============ Unshield Types ============
 
 /**
@@ -71,7 +81,7 @@ export interface UnshieldInput {
   /** Amount to unshield */
   unshieldAmount: bigint;
   /** Change note */
-  outputNote: Note;
+  changeNote: Note;
   /** Token type */
   token: bigint;
 }
@@ -89,23 +99,13 @@ export interface UnshieldCircuitInput {
   input_leaf_indices: string[];     // [2] - Leaf positions in tree
   input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
 
-  change_amount: string;            // Change amount (private input)
   change_random: string;            // Random for change note (private input)
+  change_amount: string;            // Change amount (private input)
 
   // Public inputs
   unshield_amount: string;          // Amount to unshield
   token: string;                    // Token type to unshield
   merkle_root: string;              // Merkle root to verify against
-}
-
-/**
- * Unshield proof in Sui-compatible format
- */
-export interface SuiUnshieldProof {
-  /** Proof points (128 bytes: A || B || C) */
-  proofBytes: Uint8Array;
-  /** Public inputs */
-  publicInputsBytes: Uint8Array;
 }
 
 // ============ Transfer Types ============
@@ -124,8 +124,10 @@ export interface TransferInput {
   inputPathElements: bigint[][];
   /** Recipient's master public key (for transfer output) */
   recipientMpk: bigint;
-  /** Output notes (recipient and change) */
-  outputNotes: Note[];
+  /** Recipient note */
+  recipientNote: Note;
+  /** Change note */
+  changeNote: Note;
   /** Token type */
   token: bigint;
 }
@@ -144,8 +146,8 @@ export interface TransferCircuitInput {
   input_path_elements: string[][];  // [2][levels] - Merkle proof siblings
 
   recipient_mpk: string;            // Recipient's master public key
-  transfer_amount: string;          // Amount to transfer to recipient
-  transfer_random: string;          // Random for transfer commitment
+  recipient_amount: string;          // Amount to transfer to recipient
+  recipient_random: string;          // Random for transfer commitment
 
   change_amount: string;            // Change amount back to sender
   change_random: string;            // Random for change commitment
@@ -155,35 +157,8 @@ export interface TransferCircuitInput {
   merkle_root: string;              // Merkle root to verify against
 }
 
-/**
- * Transfer proof in Sui-compatible format
- */
-export interface SuiTransferProof {
-  /** Proof points (128 bytes: A || B || C) */
-  proofBytes: Uint8Array;
-  /** Public inputs */
-  publicInputsBytes: Uint8Array;
-}
 
 // ============ Swap Types ============
-
-/**
- * Swap transaction parameters
- */
-export interface SwapParams {
-  /** Input token type (e.g., SUI) */
-  tokenIn: bigint;
-  /** Output token type (e.g., USDC) */
-  tokenOut: bigint;
-  /** Exact amount to swap */
-  amountIn: bigint;
-  /** Minimum output amount (slippage protection) */
-  minAmountOut: bigint;
-  /** DEX pool identifier hash */
-  dexPoolId: bigint;
-  /** Slippage tolerance in basis points (e.g., 50 = 0.5%) */
-  slippageBps: number;
-}
 
 /**
  * Input for generating a swap proof
@@ -197,20 +172,10 @@ export interface SwapInput {
   inputLeafIndices: number[];
   /** Merkle proof paths for input notes */
   inputPathElements: bigint[][];
-  /** Swap parameters */
-  swapParams: SwapParams;
-  /** Output note recipient's NSK */
-  outputNSK: bigint;
-  /** Random blinding factor for output note */
-  outputRandom: bigint;
-  /** Expected output amount from DEX */
-  outputAmount: bigint;
-  /** Change note recipient's NSK (usually sender's own NSK) */
-  changeNSK: bigint;
-  /** Random blinding factor for change note */
-  changeRandom: bigint;
-  /** Change amount (excess input) */
-  changeAmount: bigint;
+  /** Swap note */
+  swapNote: Note;
+  /** Change note */
+  changeNote: Note;
 }
 
 /**
@@ -222,46 +187,26 @@ export interface SwapCircuitInput {
   nullifying_key: string;
 
   // Private inputs - Input notes
-  input_nsks: string[];
   input_amounts: string[];
   input_randoms: string[];
   input_leaf_indices: string[];
   input_path_elements: string[][];
 
-  // Private inputs - Swap parameters
+  // Private inputs - Swap note
+  swap_random: string;
+
+  // Private inputs - Change note
+  change_random: string;
+  change_amount: string;
+
+  // Public inputs
   token_in: string;
   token_out: string;
   amount_in: string;
-  min_amount_out: string;
-  dex_pool_id: string;
-
-  // Private inputs - Output note
-  output_nsk: string;
-  output_amount: string;
-  output_random: string;
-
-  // Private inputs - Change note
-  change_nsk: string;
-  change_amount: string;
-  change_random: string;
-
-  // Public inputs
+  amount_out: string;
   merkle_root: string;
-  input_nullifiers: string[];
-  output_commitment: string;
-  change_commitment: string;
-  swap_data_hash: string;
 }
 
-/**
- * Swap proof in Sui-compatible format
- */
-export interface SuiSwapProof {
-  /** Proof points (128 bytes: A || B || C) */
-  proofBytes: Uint8Array;
-  /** Public inputs */
-  publicInputsBytes: Uint8Array;
-}
 
 // ============ Viewing Key & Recipient Management ============
 

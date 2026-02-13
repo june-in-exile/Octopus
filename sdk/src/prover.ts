@@ -12,19 +12,14 @@ import {
   type TransferCircuitInput,
   type SwapInput,
   type SwapCircuitInput,
-  type Note,
-  type SuiUnshieldProof,
-  type SuiTransferProof,
-  type SuiSwapProof,
-  MERKLE_TREE_DEPTH,
+  type SuiProof,
 } from "./types.js";
-import {
-  computeMerkleRoot,
-  poseidonHash,
-} from "./crypto.js";
 import {
   serializeProof,
   serializePublicInputs,
+  validateInputs,
+  padInputsTo2,
+  computeAndVerifyMerkleRoot,
 } from "./utils/index.js";
 
 
@@ -63,12 +58,6 @@ async function loadBrowserBuffers(wasmPath: string, zkeyPath: string): Promise<[
     loadFileBrowser(zkeyPath),
   ]);
   return [new Uint8Array(wasmBuf), new Uint8Array(zkeyBuf)];
-}
-
-function validateMerkleRoot(expected: string, actual: string): void {
-  if (expected !== actual) {
-    console.warn("Merkle root mismatch between SDK and circuit");
-  }
 }
 
 // ============ Unshield Proof Functions ============
@@ -110,58 +99,18 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     inputLeafIndices,
     inputPathElements,
     unshieldAmount,
-    outputNote,
+    changeNote,
     token
   } = unshieldInput;
 
-  // Validate inputs
-  if (inputNotes.length < 1 || inputNotes.length > 2) {
-    throw new Error("Unshield requires 1 or 2 input notes");
-  }
-  if (inputLeafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
-    throw new Error("Leaf indices and path elements must match notes count");
-  }
+  validateInputs(inputNotes, inputLeafIndices, inputPathElements, token, "Unshield");
 
-  // Verify all path elements have correct length
-  for (const paths of inputPathElements) {
-    if (paths.length !== MERKLE_TREE_DEPTH) {
-      throw new Error(
-        `Invalid path elements length: ${paths.length}, expected ${MERKLE_TREE_DEPTH}`
-      );
-    }
-  }
-
-  // Verify all notes have same token
-  if (inputNotes.some(n => n.token !== token)) {
-    throw new Error("All input notes must be same token type");
-  }
-
-  // Pad to 2 inputs if only 1 provided (dummy note with anount=0)
-  const paddedInputs = [...inputNotes];
-  const paddedIndices = [...inputLeafIndices];
-  const paddedPaths = [...inputPathElements];
-
-  if (paddedInputs.length === 1) {
-    // Create dummy note (anount=0 triggers Merkle bypass in circuit)
-    const dummyRandom = 0n;
-    const dummyNote: Note = {
-      nsk: 0n,
-      token: token,
-      amount: 0n,               // Triggers Merkle bypass
-      random: dummyRandom,
-      commitment: 0n
-    };
-    paddedInputs.push(dummyNote);
-    // Use a unique leaf index for the dummy note to avoid nullifier collision.
-    const dummyIndex = inputLeafIndices[0] === 0 ? 1 : 0;
-    paddedIndices.push(dummyIndex);
-    // For dummy input, path elements should all be zero
-    paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
-  }
+  const [paddedInputs, paddedIndices, paddedPaths] = padInputsTo2(
+    inputNotes, inputLeafIndices, inputPathElements, token
+  );
 
   // Validate balance
-  const inputSum = paddedInputs.reduce((sum, n) => sum + n.amount, 0n);
-  const changeNote = outputNote;
+  const inputSum = inputNotes.reduce((sum, n) => sum + n.amount, 0n);
   if (unshieldAmount <= 0n) {
     throw new Error(`Unshield amount must be positive, got: ${unshieldAmount}`);
   }
@@ -178,29 +127,7 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     );
   }
 
-  // Compute merkle root from first input note
-  const merkleRoot = computeMerkleRoot(
-    paddedInputs[0].commitment,
-    paddedPaths[0],
-    paddedIndices[0]
-  );
-
-  // Verify second input (if non-dummy) has same root
-  if (paddedInputs.length === 2 && paddedInputs[1].amount > 0n) {
-    const root2 = computeMerkleRoot(
-      paddedInputs[1].commitment,
-      paddedPaths[1],
-      paddedIndices[1]
-    );
-
-    if (root2 !== merkleRoot) {
-      throw new Error(
-        `Merkle root mismatch! This will cause circuit failure.\n` +
-        `Input 0: leafIndex=${paddedIndices[0]}, root=${merkleRoot.toString()}\n` +
-        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n`
-      );
-    }
-  }
+  const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
   const circuitInput: UnshieldCircuitInput = {
     // Private inputs
@@ -212,8 +139,8 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
     input_leaf_indices: paddedIndices.map(idx => idx.toString()),
     input_path_elements: paddedPaths.map(path => path.map(e => e.toString())),
 
-    change_amount: changeNote.amount.toString(),
     change_random: changeNote.random.toString(),
+    change_amount: changeNote.amount.toString(),
 
     // Public inputs
     unshield_amount: unshieldAmount.toString(),
@@ -230,7 +157,7 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
 function convertUnshieldProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[],
-): SuiUnshieldProof {
+): SuiProof {
   // Validate public signals count for 2-input unshield circuit
   if (publicSignals.length !== 6) {
     throw new Error(`Expected 6 public signals for 2-input unshield, got ${publicSignals.length}`);
@@ -250,7 +177,7 @@ function convertUnshieldProofToSui(
  */
 export async function generateUnshieldProof(
   unshieldInput: UnshieldInput,
-): Promise<SuiUnshieldProof> {
+): Promise<SuiProof> {
   const { wasmPath, zkeyPath } = getUnshieldCircuitPaths();
 
   // 1. Build circuit input
@@ -267,8 +194,6 @@ export async function generateUnshieldProof(
     wasm,
     zkey
   );
-
-  validateMerkleRoot(circuitInput.merkle_root, publicSignals[5]);
 
   // 4. Convert to Sui format
   return convertUnshieldProofToSui(proof, publicSignals);
@@ -314,68 +239,28 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
     inputLeafIndices,
     inputPathElements,
     recipientMpk,
-    outputNotes,
+    recipientNote,
+    changeNote,
     token
   } = transferInput;
 
-  // Validate inputs
-  if (inputNotes.length < 1 || inputNotes.length > 2) {
-    throw new Error("Transfer requires 1 or 2 input notes");
-  }
-  if (inputLeafIndices.length !== inputNotes.length || inputPathElements.length !== inputNotes.length) {
-    throw new Error("Leaf indices and path elements must match notes count");
-  }
+  validateInputs(inputNotes, inputLeafIndices, inputPathElements, token, "Transfer");
 
-  // Verify all path elements have correct length
-  for (const paths of inputPathElements) {
-    if (paths.length !== MERKLE_TREE_DEPTH) {
-      throw new Error(
-        `Invalid path elements length: ${paths.length}, expected ${MERKLE_TREE_DEPTH}`
-      );
-    }
-  }
-
-  // Verify all notes have same token
-  if (inputNotes.some(n => n.token !== token)) {
-    throw new Error("All input notes must be same token type");
-  }
-
-  // Pad to 2 inputs if only 1 provided (use dummy note with anount=0)
-  const paddedInputs = [...inputNotes];
-  const paddedIndices = [...inputLeafIndices];
-  const paddedPaths = [...inputPathElements];
-
-  if (paddedInputs.length === 1) {
-    // Create dummy note (anount=0 triggers Merkle bypass in circuit)
-    const dummyRandom = 0n;
-    const dummyNote: Note = {
-      nsk: 0n,
-      token: token,
-      amount: 0n,               // Triggers Merkle bypass
-      random: dummyRandom,
-      commitment: 0n
-    };
-    paddedInputs.push(dummyNote);
-    // Use a unique leaf index for the dummy note to avoid nullifier collision.
-    const dummyIndex = inputLeafIndices[0] === 0 ? 1 : 0;
-    paddedIndices.push(dummyIndex);
-    // For dummy input, path elements should all be zero
-    paddedPaths.push(Array(MERKLE_TREE_DEPTH).fill(0n));
-  }
+  const [paddedInputs, paddedIndices, paddedPaths] = padInputsTo2(
+    inputNotes, inputLeafIndices, inputPathElements, token
+  );
 
   // Validate balance
   const inputSum = inputNotes.reduce((sum, note) => sum + note.amount, 0n);
-  const transferNote = outputNotes[0];
-  const changeNote = outputNotes[1];
-  if (transferNote.amount <= 0n) {
-    throw new Error(`Transfer amount must be positive, got: ${transferNote.amount}`);
+  if (recipientNote.amount <= 0n) {
+    throw new Error(`Transfer amount must be positive, got: ${recipientNote.amount}`);
   }
-  if (transferNote.amount > inputSum) {
+  if (recipientNote.amount > inputSum) {
     throw new Error(
-      `Transfer amount (${transferNote.amount}) exceeds total input anount (${inputSum})`
+      `Transfer amount (${recipientNote.amount}) exceeds total input anount (${inputSum})`
     );
   }
-  const outputSum = transferNote.amount + changeNote.amount;
+  const outputSum = recipientNote.amount + changeNote.amount;
   if (inputSum !== outputSum) {
     throw new Error(
       `Balance mismatch: inputs=${inputSum}, outputs=${outputSum}. ` +
@@ -383,29 +268,7 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
     );
   }
 
-  // Compute merkle root from first input note
-  const merkleRoot = computeMerkleRoot(
-    paddedInputs[0].commitment,
-    paddedPaths[0],
-    paddedIndices[0]
-  );
-
-  // Verify second input (if non-dummy) has same root
-  if (paddedInputs.length === 2 && paddedInputs[1].amount > 0n) {
-    const root2 = computeMerkleRoot(
-      paddedInputs[1].commitment,
-      paddedPaths[1],
-      paddedIndices[1]
-    );
-
-    if (root2 !== merkleRoot) {
-      throw new Error(
-        `Merkle root mismatch! This will cause circuit failure.\n` +
-        `Input 0: leafIndex=${paddedIndices[0]}, root=${merkleRoot.toString()}\n` +
-        `Input 1: leafIndex=${paddedIndices[1]}, root=${root2.toString()}\n`
-      );
-    }
-  }
+  const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
   const circuitInput: TransferCircuitInput = {
     // Private inputs
@@ -418,11 +281,11 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
     input_path_elements: paddedPaths.map((path) => path.map((e) => e.toString())),
 
     recipient_mpk: recipientMpk.toString(),
-    transfer_amount: transferNote.amount.toString(),
-    transfer_random: transferNote.random.toString(),
+    recipient_random: recipientNote.random.toString(),
+    recipient_amount: recipientNote.amount.toString(),
 
-    change_amount: changeNote.amount.toString(),
     change_random: changeNote.random.toString(),
+    change_amount: changeNote.amount.toString(),
 
     // Public inputs
     token: token.toString(),
@@ -438,7 +301,7 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
 function convertTransferProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[]
-): SuiTransferProof {
+): SuiProof {
   // Validate public signals count for transfer circuit
   if (publicSignals.length !== 6) {
     throw new Error(`Expected 6 public signals for transfer, got ${publicSignals.length}`);
@@ -455,7 +318,7 @@ function convertTransferProofToSui(
  */
 export async function generateTransferProof(
   transferInput: TransferInput,
-): Promise<SuiTransferProof> {
+): Promise<SuiProof> {
   const { wasmPath, zkeyPath } = getTransferCircuitPaths();
 
   // 1. Build circuit input
@@ -472,8 +335,6 @@ export async function generateTransferProof(
     wasm,
     zkey
   );
-
-  validateMerkleRoot(circuitInput.merkle_root, publicSignals[5]);
 
   // 4. Convert to Sui format
   return convertTransferProofToSui(proof, publicSignals);
@@ -517,126 +378,45 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
     inputNotes,
     inputLeafIndices,
     inputPathElements,
-    swapParams,
-    outputNSK,
-    outputRandom,
-    outputAmount,
-    changeNSK,
-    changeRandom,
-    changeAmount,
+    swapNote,
+    changeNote,
   } = swapInput;
 
-  // Ensure we have exactly 2 input notes (pad with dummy if needed)
-  const notes = [...inputNotes];
-  const leafIndices = [...inputLeafIndices];
-  const pathElements = [...inputPathElements];
+  const tokenIn = changeNote.token;
+  const tokenOut = swapNote.token;
 
-  while (notes.length < 2) {
-    // Create dummy note with zero amount
-    // IMPORTANT: NSK must satisfy circuit constraint: NSK = Poseidon(MPK, random)
-    // We use random=0 for simplicity, so NSK = Poseidon(MPK, 0)
-    const dummyRandom = 0n;
-    const dummyNSK = poseidonHash([keypair.masterPublicKey, dummyRandom]);
-    const dummyNote: Note = {
-      nsk: dummyNSK,  // Correctly derived NSK
-      token: swapParams.tokenIn,
-      amount: 0n,
-      random: dummyRandom,
-      commitment: poseidonHash([dummyNSK, swapParams.tokenIn, 0n]),
-    };
-    notes.push(dummyNote);
-    leafIndices.push(0);
-    pathElements.push(new Array(MERKLE_TREE_DEPTH).fill(0n));
-  }
+  validateInputs(inputNotes, inputLeafIndices, inputPathElements, tokenIn, "Swap");
 
-  // Verify path elements length
-  if (pathElements[0].length !== MERKLE_TREE_DEPTH) {
-    throw new Error(
-      `Invalid path elements length: ${pathElements[0].length}, expected ${MERKLE_TREE_DEPTH}`
-    );
-  }
-
-  // Compute nullifiers for input notes
-  const nullifier1 = poseidonHash([keypair.nullifyingKey, BigInt(leafIndices[0])]);
-  const nullifier2 = poseidonHash([keypair.nullifyingKey, BigInt(leafIndices[1])]);
-
-  // Compute output commitment = Poseidon(NSK, token_out, output_anount)
-  const outputCommitment = poseidonHash([outputNSK, swapParams.tokenOut, outputAmount]);
-
-  // Compute change commitment = Poseidon(NSK, token_in, change_anount)
-  const changeCommitment = poseidonHash([changeNSK, swapParams.tokenIn, changeAmount]);
-
-  // Compute swap data hash = Poseidon(token_in, token_out, amount_in, min_amount_out, dex_pool_id)
-  const swapDataHash = poseidonHash([
-    swapParams.tokenIn,
-    swapParams.tokenOut,
-    swapParams.amountIn,
-    swapParams.minAmountOut,
-    swapParams.dexPoolId,
-  ]);
-
-  // Compute Merkle root from both input notes and verify they match
-  const root1 = computeMerkleRoot(
-    notes[0].commitment,
-    pathElements[0],
-    leafIndices[0]
-  );
-  const root2 = computeMerkleRoot(
-    notes[1].commitment,
-    pathElements[1],
-    leafIndices[1]
+  const [paddedInputs, paddedIndices, paddedPaths] = padInputsTo2(
+    inputNotes, inputLeafIndices, inputPathElements, tokenIn
   );
 
-  // Verify both notes compute the same Merkle root
-  if (root1 !== root2) {
-    throw new Error(
-      `Merkle root mismatch! ` +
-      `Note 0 (leafIndex=${leafIndices[0]}): ${root1.toString()} ` +
-      `Note 1 (leafIndex=${leafIndices[1]}): ${root2.toString()}. ` +
-      `This usually means the notes have stale Merkle proofs. Try refreshing your notes.`
-    );
-  }
+  const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
-  const root = root1;
-
-  return {
-    // Private inputs - Keypair
+  const circuitInput: SwapCircuitInput = {
+    // Private inputs
     spending_key: keypair.spendingKey.toString(),
     nullifying_key: keypair.nullifyingKey.toString(),
 
-    // Private inputs - Input notes
-    input_nsks: notes.map(n => n.nsk.toString()),
-    input_amounts: notes.map(n => n.amount.toString()),
-    input_randoms: notes.map(n => n.random.toString()),
-    input_leaf_indices: leafIndices.map(i => i.toString()),
-    input_path_elements: pathElements.map(path =>
-      path.map(element => element.toString())
-    ),
+    input_randoms: paddedInputs.map((n) => n.random.toString()),
+    input_amounts: paddedInputs.map(n => n.amount.toString()),
+    input_leaf_indices: paddedIndices.map((idx) => idx.toString()),
+    input_path_elements: paddedPaths.map((path) => path.map((e) => e.toString())),
 
-    // Private inputs - Swap parameters
-    token_in: swapParams.tokenIn.toString(),
-    token_out: swapParams.tokenOut.toString(),
-    amount_in: swapParams.amountIn.toString(),
-    min_amount_out: swapParams.minAmountOut.toString(),
-    dex_pool_id: swapParams.dexPoolId.toString(),
+    swap_random: swapNote.random.toString(),
 
-    // Private inputs - Output note
-    output_nsk: outputNSK.toString(),
-    output_amount: outputAmount.toString(),
-    output_random: outputRandom.toString(),
-
-    // Private inputs - Change note
-    change_nsk: changeNSK.toString(),
-    change_amount: changeAmount.toString(),
-    change_random: changeRandom.toString(),
+    change_random: changeNote.random.toString(),
+    change_amount: changeNote.amount.toString(),
 
     // Public inputs
-    merkle_root: root.toString(),
-    input_nullifiers: [nullifier1.toString(), nullifier2.toString()],
-    output_commitment: outputCommitment.toString(),
-    change_commitment: changeCommitment.toString(),
-    swap_data_hash: swapDataHash.toString(),
+    token_in: tokenIn.toString(),
+    token_out: tokenOut.toString(),
+    amount_in: (paddedInputs.reduce((sum, n) => { return sum + BigInt(n.amount) }, 0n) - changeNote.amount).toString(),
+    amount_out: swapNote.amount.toString(),
+    merkle_root: merkleRoot.toString(),
   };
+
+  return circuitInput;
 }
 
 /**
@@ -645,7 +425,7 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 function convertSwapProofToSui(
   proof: snarkjs.Groth16Proof,
   publicSignals: string[]
-): SuiSwapProof {
+): SuiProof {
   // Validate public signals count for swap circuit
   // Expected: nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment, token_in, token_out, merkle_root
   if (publicSignals.length !== 8) {
@@ -663,11 +443,11 @@ function convertSwapProofToSui(
  */
 export async function generateSwapProof(
   swapInput: SwapInput,
-): Promise<SuiSwapProof> {
+): Promise<SuiProof> {
   const { wasmPath, zkeyPath } = getSwapCircuitPaths();
 
   // 1. Build circuit input
-  const input = buildSwapInput(swapInput);
+  const circuitInput = buildSwapInput(swapInput);
 
   // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
@@ -676,7 +456,7 @@ export async function generateSwapProof(
 
   // 3. Execute proof generation
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-    input as unknown as snarkjs.CircuitSignals,
+    circuitInput as unknown as snarkjs.CircuitSignals,
     wasm,
     zkey
   );

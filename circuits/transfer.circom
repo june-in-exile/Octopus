@@ -29,18 +29,18 @@ template Transfer(levels) {
 
     // Input notes (notes being spent)
     signal input input_randoms[2];       // Random blinding factors
-    signal input input_amounts[2];        // Note amounts (can be 0 for dummy)
+    signal input input_amounts[2];       // Note amounts (can be 0 for dummy)
     signal input input_leaf_indices[2];  // Leaf positions in tree
     signal input input_path_elements[2][levels];  // Merkle proof siblings
 
     // Output notes (notes being created)
     signal input recipient_mpk;          // Recipient master public key
-    signal input transfer_amount;         // Transfer amount
-    signal input transfer_random;        // Random blinding factor for transfer
+    signal input recipient_random;       // Random blinding factor for recipient
+    signal input recipient_amount;       // Recipient amount
 
-    // Change note (if input > transfer_amount, return change)
-    signal input change_amount;           // Change amount
+    // Change note (if input > recipient_amount, return change)
     signal input change_random;          // Random blinding factor for change
+    signal input change_amount;          // Change amount
 
     // ============ Public Inputs ============
     signal input token;                  // Token identifier (address hash)
@@ -48,13 +48,13 @@ template Transfer(levels) {
 
     // ============ Public Outputs ============
     signal output input_nullifiers[2];   // Nullifiers for input notes
-    signal output transfer_commitment;   // Commitments for transferred amount
+    signal output recipient_commitment;  // Commitments for recipient
     signal output change_commitment;     // Commitments for change
 
     // ============ Step 1: Range Check ============
-    // Transfer amount > 0
-    signal valid_transfer <== GreaterThan(120)([transfer_amount, 0]);
-    valid_transfer === 1;
+    // Recipient amount > 0
+    signal valid_recipient <== GreaterThan(120)([recipient_amount, 0]);
+    valid_recipient === 1;
     // Change amount >= 0
     signal valid_change <== GreaterEqThan(120)([change_amount, 0]);
     valid_change === 1;
@@ -62,7 +62,7 @@ template Transfer(levels) {
     // ============ Step 2: Balance Conservation ============
     // Verify sum(input_amounts) = sum(output_amounts)
     signal input_sum <== input_amounts[0] + input_amounts[1];
-    signal output_sum <== transfer_amount + change_amount;
+    signal output_sum <== recipient_amount + change_amount;
     input_sum === output_sum;
 
     // ============ Step 3: Compute MPK ============
@@ -76,8 +76,8 @@ template Transfer(levels) {
 
     // ============ Step 5: Verify Output Commitments ============
     // Output note commitment = Poseidon(recipient_NSK, token, amount)
-    signal transfer_nsk <== Poseidon(2)([recipient_mpk, transfer_random]);
-    transfer_commitment <== Poseidon(3)([transfer_nsk, token, transfer_amount]);
+    signal recipient_nsk <== Poseidon(2)([recipient_mpk, recipient_random]);
+    recipient_commitment <== Poseidon(3)([recipient_nsk, token, recipient_amount]);
 
     // ============ Step 6: Verify Change Commitment ============
     // Change note commitment = Poseidon(sender_NSK, token, change_amount)

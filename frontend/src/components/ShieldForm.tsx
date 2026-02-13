@@ -54,6 +54,7 @@ export function ShieldForm({
   const [state, setState] = useState<ShieldState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 

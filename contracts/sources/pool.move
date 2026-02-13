@@ -117,8 +117,8 @@ module octopus::pool {
         pool_out_id: ID,
         /// Nullifiers that were spent (2 inputs)
         input_nullifiers: vector<vector<u8>>,
-        /// Output commitment (swapped token)
-        output_commitment: vector<u8>,
+        /// Swap commitment (for swapped token)
+        swap_commitment: vector<u8>,
         /// Change commitment (remaining input token)
         change_commitment: vector<u8>,
         /// Position of output commitment in output pool tree
@@ -368,13 +368,13 @@ module octopus::pool {
     /// 2. Both input notes exist in Merkle tree (2 Merkle proofs)
     /// 3. Correct nullifier computation for both inputs
     /// 4. Correct commitment computation for transfer and change outputs
-    /// 5. Balance conservation: sum(input_amounts) = transfer_amount + change_amount
+    /// 5. Balance conservation: sum(input_amounts) = recipient_amount + change_amount
     ///
     /// Public inputs format (192 bytes total):
     /// - token (32 bytes): Token type identifier
     /// - merkle_root (32 bytes): Merkle tree root
     /// - input_nullifiers[2] (64 bytes): Nullifiers for both input notes
-    /// - transfer_commitment (32 bytes): Commitment for transfer to recipient
+    /// - recipient_commitment (32 bytes): Commitment for transfer to recipient
     /// - change_commitment (32 bytes): Commitment for change back to sender
     public fun transfer<T>(
         pool: &mut PrivacyPool<T>,
@@ -387,8 +387,8 @@ module octopus::pool {
         assert!(vector::length(&public_inputs_bytes) == 192, E_INVALID_PUBLIC_INPUTS);
         assert!(vector::length(&encrypted_notes) == 2, E_INVALID_PUBLIC_INPUTS);
 
-        // 1. Parse public inputs [nullifier1, nullifier2, transfer_commitment, change_commitment, token, merkle_root]
-        let (nullifier1, nullifier2, transfer_commitment, change_commitment, _token, merkle_root) =
+        // 1. Parse public inputs [nullifier1, nullifier2, recipient_commitment, change_commitment, token, merkle_root]
+        let (nullifier1, nullifier2, recipient_commitment, change_commitment, _token, merkle_root) =
             parse_transfer_public_inputs(&public_inputs_bytes);
 
         // 2. Verify merkle root is valid (current or in history)
@@ -427,9 +427,9 @@ module octopus::pool {
 
         // 8. Insert transfer commitment into Merkle tree (for recipient)
         let position = merkle_tree::get_next_index(&pool.merkle_tree);
-        merkle_tree::insert(&mut pool.merkle_tree, transfer_commitment);
+        merkle_tree::insert(&mut pool.merkle_tree, recipient_commitment);
         vector::push_back(&mut output_notes, encrypted_notes[0]);
-        vector::push_back(&mut output_commitments, transfer_commitment);
+        vector::push_back(&mut output_commitments, recipient_commitment);
         vector::push_back(&mut output_positions, position);
 
 
@@ -484,7 +484,6 @@ module octopus::pool {
         deepbook_pool: &mut DeepBookPool<TokenIn, TokenOut>,
         proof_bytes: vector<u8>,
         public_inputs_bytes: vector<u8>,
-        amount_in: u64,
         min_amount_out: u64,
         deep_in: Coin<DEEP>,
         clock: &Clock,
@@ -492,14 +491,11 @@ module octopus::pool {
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
     ) {
-        // Validate public inputs length (8 field elements × 32 bytes = 256 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
-
-        // 0. Validate amount_in is greater than zero
-        assert!(amount_in > 0, E_ZERO_AMOUNT);
+        // Validate public inputs length (7 field elements × 32 bytes = 224 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 224, E_INVALID_PUBLIC_INPUTS);
 
         // 1. Parse public inputs
-        let (_token_in, _token_out, merkle_root, nullifier1, nullifier2, _swap_data_hash, output_commitment, change_commitment) =
+        let (nullifier1, nullifier2, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, _amount_out_bytes, merkle_root) =
             parse_swap_public_inputs(&public_inputs_bytes);
 
         // 2. Verify merkle root is valid (current or in history)
@@ -520,6 +516,7 @@ module octopus::pool {
         );
 
         // 5. Execute swap through DeepBook V3
+        let amount_in: u64 = field_element_to_u64(&amount_in_bytes);
         assert!(balance::value(&pool_in.balance) >= amount_in, E_INSUFFICIENT_BALANCE);
         let coin_in = coin::take(&mut pool_in.balance, amount_in, ctx);
 
@@ -560,7 +557,7 @@ module octopus::pool {
 
         // 10. Add output commitment to pool_out Merkle tree
         let output_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
-        merkle_tree::insert(&mut pool_out.merkle_tree, output_commitment);
+        merkle_tree::insert(&mut pool_out.merkle_tree, swap_commitment);
 
         // 11. Add change commitment to pool_in Merkle tree (only if not zero)
         let change_position = if (!is_zero_commitment(&change_commitment)) {
@@ -577,7 +574,7 @@ module octopus::pool {
             pool_in_id: object::id(pool_in),
             pool_out_id: object::id(pool_out),
             input_nullifiers: vector[nullifier1, nullifier2],
-            output_commitment: output_commitment,
+            swap_commitment: swap_commitment,
             change_commitment: change_commitment,
             output_position,
             change_position,
@@ -643,18 +640,30 @@ module octopus::pool {
         false
     }
 
+    /// Convert 32-byte field element to u64
+    /// Takes the least significant 8 bytes and converts to u64 (little-endian)
+    fun field_element_to_u64(bytes: &vector<u8>): u64 {
+        use sui::bcs;
+        
+        let mut b = bcs::new(*bytes);
+        bcs::peel_u64(&mut b)
+    }
+
+    /// Check if a commitment is zero (all bytes are 0)
+    fun is_zero_commitment(commitment: &vector<u8>): bool {
+        let len = vector::length(commitment);
+        let mut i = 0;
+        while (i < len) {
+            if (*vector::borrow(commitment, i) != 0u8) {
+                return false
+            };
+            i = i + 1;
+        };
+        true
+    }
+
     /// Parse unshield public inputs from concatenated bytes (for unshield with 2-input support).
     /// Returns (nullifier1, nullifier2, change_commitment, unshield_amount, token, merkle_root) each as 32-byte vectors.
-    ///
-    /// Public signals from circuit (192 bytes total):
-    /// Public outputs (computed by circuit):
-    /// - input_nullifiers[0] (32 bytes): First nullifier
-    /// - input_nullifiers[1] (32 bytes): Second nullifier (0 if dummy note)
-    /// - change_commitment (32 bytes): Commitment for change note (0 if no change)
-    /// Public inputs (provided by user):
-    /// - unshield_amount (32 bytes): Amount to unshield (as field element)
-    /// - token (32 bytes): Token type identifier
-    /// - merkle_root (32 bytes): Merkle tree root
     fun parse_unshield_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         let mut nullifier1 = vector::empty<u8>();
         let mut nullifier2 = vector::empty<u8>();
@@ -703,277 +712,134 @@ module octopus::pool {
         (nullifier1, nullifier2, change_commitment, unshield_amount_bytes, token, merkle_root)
     }
 
-    /// Convert 32-byte field element to u64
-    /// Takes the least significant 8 bytes and converts to u64 (little-endian)
-    fun field_element_to_u64(bytes: &vector<u8>): u64 {
-        let mut result = 0u64;
-        let mut multiplier = 1u64;
-
-        // Take first 8 bytes (little-endian)
-        let mut i = 0;
-        while (i < 8) {
-            let byte_val = (*vector::borrow(bytes, i) as u64);
-            result = result + (byte_val * multiplier);
-            // Only update multiplier if we haven't processed the last byte yet
-            if (i < 7) {
-                multiplier = multiplier * 256;
-            };
-            i = i + 1;
-        };
-
-        result
-    }
-
-    /// Check if a commitment is zero (all bytes are 0)
-    fun is_zero_commitment(commitment: &vector<u8>): bool {
-        let len = vector::length(commitment);
-        let mut i = 0;
-        while (i < len) {
-            if (*vector::borrow(commitment, i) != 0u8) {
-                return false
-            };
-            i = i + 1;
-        };
-        true
-    }
-
     /// Parse transfer public inputs from concatenated bytes (for transfer).
-    /// Returns (token, merkle_root, nullifier1, nullifier2, transfer_commitment, change_commitment) each as 32-byte vectors.
+    /// Returns (nullifier1, nullifier2, recipient_commitment, change_commitment, token, merkle_root) each as 32-byte vectors.
     fun parse_transfer_public_inputs(bytes: &vector<u8>):
         (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
 
-        let mut token = vector::empty<u8>();
-        let mut merkle_root = vector::empty<u8>();
         let mut nullifier1 = vector::empty<u8>();
         let mut nullifier2 = vector::empty<u8>();
-        let mut transfer_commitment = vector::empty<u8>();
+        let mut recipient_commitment = vector::empty<u8>();
         let mut change_commitment = vector::empty<u8>();
+        let mut token = vector::empty<u8>();
+        let mut merkle_root = vector::empty<u8>();
 
-        // Extract token (bytes 0-31)
+        // Extract nullifier1 (bytes 0-31)
         let mut i = 0;
+        while (i < 96) {
+            vector::push_back(&mut nullifier1, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract nullifier2 (bytes 32-63)
+        while (i < 128) {
+            vector::push_back(&mut nullifier2, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract recipient_commitment (bytes 64-95)
+        while (i < 160) {
+            vector::push_back(&mut recipient_commitment, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract change_commitment (bytes 96-127)
+        while (i < 192) {
+            vector::push_back(&mut change_commitment, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract token (bytes 128-159)
         while (i < 32) {
             vector::push_back(&mut token, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract merkle_root (bytes 32-63)
+        // Extract merkle_root (bytes 160-191)
         while (i < 64) {
             vector::push_back(&mut merkle_root, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract nullifier1 (bytes 64-95)
-        while (i < 96) {
+        (nullifier1, nullifier2, recipient_commitment, change_commitment, token, merkle_root)
+    }
+
+    /// Parse swap public inputs from concatenated bytes (for swap).
+    /// Returns (nullifier1, nullifier2, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root) each as 32-byte vectors.
+    fun parse_swap_public_inputs(bytes: &vector<u8>):
+        (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+
+        let mut nullifier1 = vector::empty<u8>();
+        let mut nullifier2 = vector::empty<u8>();
+        let mut swap_commitment = vector::empty<u8>();
+        let mut change_commitment = vector::empty<u8>();
+        let mut token_in = vector::empty<u8>();
+        let mut token_out = vector::empty<u8>();
+        let mut amount_in = vector::empty<u8>();
+        let mut amount_out = vector::empty<u8>();
+        let mut merkle_root = vector::empty<u8>();
+
+        // Extract nullifier1 (bytes 0-31)
+        let mut i = 0;
+        while (i < 32) {
             vector::push_back(&mut nullifier1, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract nullifier2 (bytes 96-127)
-        while (i < 128) {
+        // Extract nullifier2 (bytes 32-63)
+        while (i < 64) {
             vector::push_back(&mut nullifier2, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract transfer_commitment (bytes 128-159)
-        while (i < 160) {
-            vector::push_back(&mut transfer_commitment, *vector::borrow(bytes, i));
+        // Extract swap_commitment (bytes 64-95)
+        while (i < 96) {
+            vector::push_back(&mut swap_commitment, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract change_commitment (bytes 160-191)
-        while (i < 192) {
+        // Extract change_commitment (bytes 96-127)
+        while (i < 128) {
             vector::push_back(&mut change_commitment, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        (token, merkle_root, nullifier1, nullifier2, transfer_commitment, change_commitment)
-    }
-
-    /// Parse swap public inputs from concatenated bytes (for swap).
-    /// Returns (token_in, token_out, merkle_root, nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment)
-    /// each as 32-byte vectors.
-    ///
-    /// Public signal order (8 × 32 = 256 bytes):
-    /// - Public inputs (token_in, token_out, merkle_root) come first
-    /// - Public outputs (nullifiers, swap_data_hash, output_commitment, change_commitment) follow
-    fun parse_swap_public_inputs(bytes: &vector<u8>):
-        (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
-
-        let mut token_in = vector::empty<u8>();
-        let mut token_out = vector::empty<u8>();
-        let mut merkle_root = vector::empty<u8>();
-        let mut nullifier1 = vector::empty<u8>();
-        let mut nullifier2 = vector::empty<u8>();
-        let mut swap_data_hash = vector::empty<u8>();
-        let mut output_commitment = vector::empty<u8>();
-        let mut change_commitment = vector::empty<u8>();
-
-        // Extract token_in (bytes 0-31)
+        // Extract token_in (bytes 128-159)
         let mut i = 0;
-        while (i < 32) {
+        while (i < 160) {
             vector::push_back(&mut token_in, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract token_out (bytes 32-63)
-        while (i < 64) {
+        // Extract token_out (bytes 160-191)
+        while (i < 192) {
             vector::push_back(&mut token_out, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract merkle_root (bytes 64-95)
-        while (i < 96) {
+        // Extract amount_in (bytes 192-223)
+        let mut i = 0;
+        while (i < 224) {
+            vector::push_back(&mut amount_in, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract amount_out (bytes 224-255)
+        while (i < 256) {
+            vector::push_back(&mut amount_out, *vector::borrow(bytes, i));
+            i = i + 1;
+        };
+
+        // Extract merkle_root (bytes 256-287)
+        while (i < 288) {
             vector::push_back(&mut merkle_root, *vector::borrow(bytes, i));
             i = i + 1;
         };
 
-        // Extract nullifier1 (bytes 96-127)
-        while (i < 128) {
-            vector::push_back(&mut nullifier1, *vector::borrow(bytes, i));
-            i = i + 1;
-        };
-
-        // Extract nullifier2 (bytes 128-159)
-        while (i < 160) {
-            vector::push_back(&mut nullifier2, *vector::borrow(bytes, i));
-            i = i + 1;
-        };
-
-        // Extract swap_data_hash (bytes 160-191)
-        while (i < 192) {
-            vector::push_back(&mut swap_data_hash, *vector::borrow(bytes, i));
-            i = i + 1;
-        };
-
-        // Extract output_commitment (bytes 192-223)
-        while (i < 224) {
-            vector::push_back(&mut output_commitment, *vector::borrow(bytes, i));
-            i = i + 1;
-        };
-
-        // Extract change_commitment (bytes 224-255)
-        while (i < 256) {
-            vector::push_back(&mut change_commitment, *vector::borrow(bytes, i));
-            i = i + 1;
-        };
-
-        (token_in, token_out, merkle_root, nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment)
-    }
-
-    /// Execute a mock swap (1:1 ratio) for testing.
-    /// TODO: Replace with real DeepBook V3 integration.
-    ///
-    /// In production, this should:
-    /// 1. Call DeepBook V3 place_market_order function
-    /// 2. Get real market price from order book
-    /// 3. Apply slippage protection
-    /// 4. Return actual output amount
-    #[test_only]
-    fun execute_mock_swap<TokenIn, TokenOut>(
-        coin_in: Coin<TokenIn>,
-        min_amount_out: u64,
-        pool_out: &mut PrivacyPool<TokenOut>,
-        ctx: &mut TxContext,
-    ): u64 {
-        // Get input amount
-        let amount_in = coin::value(&coin_in);
-
-        // Destroy input coin (in real DEX integration, this would go to the DEX)
-        coin::burn_for_testing(coin_in);
-
-        // Mock 1:1 swap (simplified for testing)
-        // In production, this would call:
-        // let (coin_out, _) = deepbook::place_market_order<TokenIn, TokenOut>(pool, true, amount_in, coin_in, ...);
-        let amount_out = amount_in; // 1:1 ratio for testing
-
-        // Check slippage protection
-        assert!(amount_out >= min_amount_out, E_INSUFFICIENT_BALANCE);
-
-        // Mint output tokens (in real DEX integration, we'd receive from DEX)
-        let coin_out = coin::mint_for_testing<TokenOut>(amount_out, ctx);
-
-        // Add to output pool balance
-        balance::join(&mut pool_out.balance, coin::into_balance(coin_out));
-
-        amount_out
+        (nullifier1, nullifier2, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root)
     }
 
     // ============ Test Helpers ============
-
-    /// Test-only swap that skips ZK proof verification and DeepBook integration.
-    /// Mirrors the production swap logic with a mock 1:1 exchange rate.
-    #[test_only]
-    public fun swap_for_testing<TokenIn, TokenOut>(
-        pool_in: &mut PrivacyPool<TokenIn>,
-        pool_out: &mut PrivacyPool<TokenOut>,
-        proof_bytes: vector<u8>,
-        public_inputs_bytes: vector<u8>,
-        amount_in: u64,
-        min_amount_out: u64,
-        deep_in: Coin<DEEP>,
-        _clock: &Clock,
-        encrypted_output_note: vector<u8>,
-        encrypted_change_note: vector<u8>,
-        ctx: &mut TxContext,
-    ) {
-        // Validate public inputs length (8 field elements × 32 bytes = 256 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
-        assert!(amount_in > 0, E_ZERO_AMOUNT);
-
-        // Return DEEP tokens to sender (not needed for mock swap)
-        transfer::public_transfer(deep_in, tx_context::sender(ctx));
-
-        let (_token_in, _token_out, merkle_root, nullifier1, nullifier2, _swap_data_hash, output_commitment, change_commitment) =
-            parse_swap_public_inputs(&public_inputs_bytes);
-
-        assert!(is_valid_root(pool_in, &merkle_root), E_INVALID_ROOT);
-        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier1), E_DOUBLE_SPEND);
-        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier2), E_DOUBLE_SPEND);
-
-        // Skip proof verification — use execute_mock_swap instead of real DEX
-        let _ = proof_bytes;
-        assert!(balance::value(&pool_in.balance) >= amount_in, E_INSUFFICIENT_BALANCE);
-        let amount_out = execute_mock_swap<TokenIn, TokenOut>(
-            coin::take(&mut pool_in.balance, amount_in, ctx),
-            min_amount_out,
-            pool_out,
-            ctx,
-        );
-
-        nullifier::mark_spent(&mut pool_in.nullifiers, nullifier1);
-        nullifier::mark_spent(&mut pool_in.nullifiers, nullifier2);
-
-        save_historical_root(pool_in);
-        save_historical_root(pool_out);
-
-        let output_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
-        merkle_tree::insert(&mut pool_out.merkle_tree, output_commitment);
-
-        // Add change commitment to pool_in Merkle tree (only if not zero)
-        let change_position = if (!is_zero_commitment(&change_commitment)) {
-            let position = merkle_tree::get_next_index(&pool_in.merkle_tree);
-            merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
-            position
-        } else {
-            // Use a sentinel value for zero commitment (not inserted into tree)
-            0
-        };
-
-        event::emit(SwapEvent {
-            pool_in_id: object::id(pool_in),
-            pool_out_id: object::id(pool_out),
-            input_nullifiers: vector[nullifier1, nullifier2],
-            output_commitment,
-            change_commitment,
-            output_position,
-            change_position,
-            amount_in,
-            amount_out,
-            encrypted_output_note,
-            encrypted_change_note,
-        });
-    }
-
     #[test_only]
     public fun destroy_for_testing<T>(pool: PrivacyPool<T>) {
         let PrivacyPool {
