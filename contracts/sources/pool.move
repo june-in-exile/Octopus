@@ -506,7 +506,6 @@ module octopus::pool {
         proof_bytes: vector<u8>,
         public_inputs_bytes: vector<u8>,
         nullifiers: vector<vector<u8>>,
-        min_amount_out: u64,
         deep_in: Coin<DEEP>,
         clock: &Clock,
         encrypted_output_note: vector<u8>,
@@ -517,9 +516,12 @@ module octopus::pool {
         assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
         assert!(vector::length(&nullifiers) == 2, E_INVALID_PUBLIC_INPUTS);
 
-        // 1. Parse public inputs [nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root]
-        let (nullifiers_hash, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, _amount_out_bytes, merkle_root) =
+        // 1. Parse public inputs [nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, min_amount_out, merkle_root]
+        let (nullifiers_hash, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, min_amount_out_bytes, merkle_root) =
             parse_swap_public_inputs(&public_inputs_bytes);
+
+        // Extract min_amount_out directly from the verified public inputs
+        let min_amount_out: u64 = field_element_to_u64(&min_amount_out_bytes);
 
         let nullifier1 = *vector::borrow(&nullifiers, 0);
         let nullifier2 = *vector::borrow(&nullifiers, 1);
@@ -615,6 +617,115 @@ module octopus::pool {
         };
 
         // 11. Emit event
+        event::emit(SwapEvent {
+            pool_in_id: object::id(pool_in),
+            pool_out_id: object::id(pool_out),
+            amount_in,
+            amount_out,
+            input_nullifiers: used_nullifiers,
+            swap_position,
+            swap_commitment,
+            encrypted_output_note,
+        });
+    }
+
+    /// Swap quote token for base token (bid direction: e.g. DBUSDC → SUI).
+    /// Use this when the input token is the quote token in the DeepBook pair.
+    /// Type parameters: <Base, Quote> matching the DeepBook pool's fixed order.
+    /// * `pool_in`  - Privacy pool for the quote (input) token
+    /// * `pool_out` - Privacy pool for the base (output) token
+    /// * `deepbook_pool` - DeepBook pool (always <Base, Quote> regardless of direction)
+    public fun swap_bid<Base, Quote>(
+        pool_in: &mut PrivacyPool<Quote>,
+        pool_out: &mut PrivacyPool<Base>,
+        deepbook_pool: &mut DeepBookPool<Base, Quote>,
+        proof_bytes: vector<u8>,
+        public_inputs_bytes: vector<u8>,
+        nullifiers: vector<vector<u8>>,
+        deep_in: Coin<DEEP>,
+        clock: &Clock,
+        encrypted_output_note: vector<u8>,
+        encrypted_change_note: vector<u8>,
+        ctx: &mut TxContext,
+    ) {
+        assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
+        assert!(vector::length(&nullifiers) == 2, E_INVALID_PUBLIC_INPUTS);
+
+        let (nullifiers_hash, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, min_amount_out_bytes, merkle_root) =
+            parse_swap_public_inputs(&public_inputs_bytes);
+
+        let min_amount_out: u64 = field_element_to_u64(&min_amount_out_bytes);
+
+        let nullifier1 = *vector::borrow(&nullifiers, 0);
+        let nullifier2 = *vector::borrow(&nullifiers, 1);
+
+        let n1_u256 = field_element_to_u256(&nullifier1);
+        let n2_u256 = field_element_to_u256(&nullifier2);
+        let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
+        let computed_hash_bytes = u256_to_field_element(computed_hash);
+        assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
+
+        assert!(is_valid_root(pool_in, &merkle_root), E_INVALID_ROOT);
+
+        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier1), E_DOUBLE_SPEND);
+        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier2), E_DOUBLE_SPEND);
+
+        let pvk = groth16::prepare_verifying_key(&groth16::bn254(), &pool_in.swap_vk_bytes);
+        let public_inputs = groth16::public_proof_inputs_from_bytes(public_inputs_bytes);
+        let proof_points = groth16::proof_points_from_bytes(proof_bytes);
+        assert!(
+            groth16::verify_groth16_proof(&groth16::bn254(), &pvk, &public_inputs, &proof_points),
+            E_INVALID_PROOF
+        );
+
+        let amount_in: u64 = field_element_to_u64(&amount_in_bytes);
+        assert!(balance::value(&pool_in.balance) >= amount_in, E_INSUFFICIENT_BALANCE);
+        let coin_in = coin::take(&mut pool_in.balance, amount_in, ctx);
+
+        // Bid: swap quote (coin_in) for base output
+        let (base_out, quote_out, deep_out) = pool::swap_exact_quote_for_base(
+            deepbook_pool,
+            coin_in,
+            deep_in,
+            min_amount_out,
+            clock,
+            ctx
+        );
+
+        let amount_out = coin::value(&base_out);
+
+        // Return any unswapped quote remainder to pool_in
+        balance::join(&mut pool_in.balance, coin::into_balance(quote_out));
+
+        // Shield base output into pool_out
+        balance::join(&mut pool_out.balance, coin::into_balance(base_out));
+
+        transfer::public_transfer(deep_out, tx_context::sender(ctx));
+
+        let mut used_nullifiers = vector::empty<vector<u8>>();
+        nullifier::mark_spent(&mut pool_in.nullifiers, nullifier1);
+        vector::push_back(&mut used_nullifiers, nullifier1);
+        if (!is_zero_commitment(&nullifier2)) {
+            nullifier::mark_spent(&mut pool_in.nullifiers, nullifier2);
+            vector::push_back(&mut used_nullifiers, nullifier2);
+        };
+
+        save_historical_root(pool_out);
+        let swap_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
+        merkle_tree::insert(&mut pool_out.merkle_tree, swap_commitment);
+
+        if (!is_zero_commitment(&change_commitment)) {
+            save_historical_root(pool_in);
+            let change_position = merkle_tree::get_next_index(&pool_in.merkle_tree);
+            merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+            event::emit(ShieldEvent {
+                pool_id: object::id(pool_in),
+                position: change_position,
+                commitment: change_commitment,
+                encrypted_note: encrypted_change_note,
+            });
+        };
+
         event::emit(SwapEvent {
             pool_in_id: object::id(pool_in),
             pool_out_id: object::id(pool_out),
@@ -739,7 +850,7 @@ module octopus::pool {
     }
 
     /// Parse swap public inputs from concatenated bytes (for swap).
-    /// Returns (nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root) each as 32-byte vectors.
+    /// Returns (nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, min_amount_out, merkle_root) each as 32-byte vectors.
     fun parse_swap_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         (
             extract_field(bytes, 0),    // nullifiers_hash

@@ -48,7 +48,7 @@ template Swap(levels) {
     signal input token_in;               // Input token type (e.g., SUI)
     signal input token_out;              // Output token type (e.g., USDC)
     signal input amount_in;
-    signal input amount_out;
+    signal input min_amount_out;
     signal input merkle_root;            // Expected Merkle root
 
     // ============ Public Outputs ============
@@ -84,10 +84,10 @@ template Swap(levels) {
     nullifiers_hash <== Poseidon(2)([nullifiers[0], nullifiers[1]]);
 
     // ============ Step 5: Verify Swap Commitment ============
-    // Swap note commitment = Poseidon(NSK, token_out, amount_out)
-    // Note: Swap uses token_out (swapped token)
+    // Swap note commitment = Poseidon(NSK, token_out, min_amount_out)
+    // Note: Swap uses token_out (swapped token), committed to minimum guaranteed output
     signal swap_nsk <== Poseidon(2)([mpk, swap_random]);
-    swap_commitment <== Poseidon(3)([swap_nsk, token_out, amount_out]);
+    swap_commitment <== Poseidon(3)([swap_nsk, token_out, min_amount_out]);
 
     // ============ Step 6: Verify Change Commitment ============
     // Change note commitment = Poseidon(NSK, token_in, change_amount)
@@ -100,4 +100,4 @@ template Swap(levels) {
 }
 
 // Main circuit with 16 levels (supports 2^16 = 65,536 notes)
-component main {public [token_in, token_out, amount_in, amount_out, merkle_root]} = Swap(16);
+component main {public [token_in, token_out, amount_in, min_amount_out, merkle_root]} = Swap(16);

@@ -208,6 +208,10 @@ type OwnedNote = {
   leafIndex: number;
   nullifier: string;
   txDigest: string;
+  /** Actual amount received (from SwapEvent.amount_out). Only set for swap output notes.
+   *  The note.amount holds min_amount_out (what the ZKP commits to, used for proof generation).
+   *  displayAmount holds the real DeepBook output for UI display. */
+  displayAmount?: string;
 };
 
 type CollectedCommitment = {
@@ -533,7 +537,12 @@ function processSwapEvents(
       encryptedBytes, data.swap_commitment, leafIndex,
       (node.transaction as any)?.digest ?? '', ctx,
     );
-    if (owned) ownedNotes.push(owned);
+    if (!owned) continue;
+
+    // note.amount = min_amount_out (committed to ZKP, used for proof generation)
+    // displayAmount = actual DeepBook output (for UI display only)
+    const actualAmountOut = BigInt(data.amount_out ?? owned.note.amount);
+    ownedNotes.push({ ...owned, displayAmount: actualAmountOut.toString() });
   }
 
   return { ownedNotes, commitments };
@@ -557,6 +566,7 @@ function mergeWithCache(
     leafIndex: n.leafIndex,
     nullifier: n.nullifier,
     txDigest: n.txDigest,
+    displayAmount: (n as any).displayAmount,
   }));
 
   const cachedCommitments: CollectedCommitment[] = cachedData.allCommitments.map(c => ({

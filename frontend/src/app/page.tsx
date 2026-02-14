@@ -97,7 +97,7 @@ export default function Home() {
 
   // Calculate balance and note count from loaded notesamount
   const unspentNotes = notes.filter((n) => !n.spent);
-  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
+  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + (n.displayAmount ?? n.note.amount), 0n);
   const noteCount = unspentNotes.length;
   
   const handleOperationSuccess = async () => {
@@ -358,6 +358,7 @@ export default function Home() {
                             keypair={keypair}
                             notes={notes}
                             loading={isLoadingNotes}
+                            selectedToken={selectedToken}
                             onSuccess={handleOperationSuccess}
                           />
                         )}

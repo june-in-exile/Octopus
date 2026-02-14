@@ -468,7 +468,7 @@ function buildSwapCircuitInput(swapInput: SwapInput): SwapCircuitInput {
     token_in: tokenIn.toString(),
     token_out: tokenOut.toString(),
     amount_in: (paddedInputs.reduce((sum, n) => { return sum + BigInt(n.amount) }, 0n) - changeNote.amount).toString(),
-    amount_out: swapNote.amount.toString(),
+    min_amount_out: swapNote.amount.toString(),
     merkle_root: merkleRoot.toString(),
   };
 

@@ -26,6 +26,9 @@ export interface OwnedNote {
   spent: boolean;
   /** Transaction digest where this note was created */
   txDigest: string;
+  /** Actual amount received from DeepBook (swap output notes only).
+   *  Use this for display. note.amount holds min_amount_out (for proof generation). */
+  displayAmount?: bigint;
 }
 
 /**
@@ -302,6 +305,9 @@ export function useNotes(
               pathElements: scanned.pathElements,
               spent,
               txDigest: scanned.txDigest,
+              displayAmount: (scanned as any).displayAmount !== undefined
+                ? BigInt((scanned as any).displayAmount)
+                : undefined,
             };
 
             newOwnedNotes.push(ownedNote);

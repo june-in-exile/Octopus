@@ -19,7 +19,6 @@ import {
   truncateAddress,
 } from "@/lib/utils";
 import {
-  NETWORK,
   NETWORK_CONFIG,
   CLOCK_OBJECT_ID,
   ESTIMATED_DEEP_FEE,
@@ -40,6 +39,7 @@ interface SwapFormProps {
   keypair: OctopusKeypair | null;
   notes: OwnedNote[];
   loading: boolean;
+  selectedToken?: "SUI" | "USDC" | "DBUSDC";
   onSuccess?: () => void | Promise<void>;
 }
 
@@ -55,6 +55,7 @@ export function SwapForm({
   keypair,
   notes,
   loading: notesLoading,
+  selectedToken,
   onSuccess,
 }: SwapFormProps) {
   const { packageId, tokens: tokenConfig } = useNetworkConfig();
@@ -67,8 +68,16 @@ export function SwapForm({
   const availableTokens = isMainnet ? ["SUI", "USDC"] as const : ["SUI", "DBUSDC"] as const;
   const defaultTokenOut = isMainnet ? "USDC" : "DBUSDC";
 
-  const [tokenInSymbol, setTokenInSymbol] = useState<"SUI" | "USDC" | "DBUSDC">("SUI");
-  const [tokenOutSymbol, setTokenOutSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(defaultTokenOut);
+  const [tokenInSymbol, setTokenInSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(selectedToken ?? "SUI");
+  const [tokenOutSymbol, setTokenOutSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(
+    selectedToken && selectedToken !== "SUI" ? "SUI" : defaultTokenOut
+  );
+
+  useEffect(() => {
+    if (!selectedToken) return;
+    setTokenInSymbol(selectedToken);
+    setTokenOutSymbol(selectedToken === "SUI" ? defaultTokenOut : "SUI");
+  }, [selectedToken]);
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
   const [slippage, setSlippage] = useState(50); // 0.5% in bps
@@ -77,6 +86,7 @@ export function SwapForm({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const [priceImpact, setPriceImpact] = useState<number>(0);
+  const [estimationWarning, setEstimationWarning] = useState<string | null>(null);
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
 
   const client = useSuiClient();
@@ -102,7 +112,7 @@ export function SwapForm({
     "getCoins",
     {
       owner: account?.address ?? "",
-      coinType: NETWORK_CONFIG[NETWORK === "mainnet" ? 'mainnet' : 'testnet'].deepCoinType,
+      coinType: NETWORK_CONFIG[network === "mainnet" ? 'mainnet' : 'testnet'].deepCoinType,
     },
     {
       enabled: !!account?.address,
@@ -133,6 +143,7 @@ export function SwapForm({
   useEffect(() => {
     const estimateOutput = async () => {
       if (!amountIn || parseFloat(amountIn) <= 0) {
+        setEstimationWarning(null);
         setAmountOut("");
         setPriceImpact(0);
         return;
@@ -150,7 +161,7 @@ export function SwapForm({
           return;
         }
 
-        const deepbookPoolId = (NETWORK === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
+        const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
         if (!deepbookPoolId || deepbookPoolId === "0x...") {
           throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
         }
@@ -164,12 +175,22 @@ export function SwapForm({
         );
 
         // Estimate swap using DeepBook
-        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC"; // Buying SUI with USDC/DBUSDC
+        // isBid = buying base (SUI) with quote (DBUSDC/USDC)
+        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+        // DeepBook pool base/quote are fixed regardless of swap direction
+        const baseType = isBid ? tokenOutConfig?.type : tokenInConfig?.type;
+        const quoteType = isBid ? tokenInConfig?.type : tokenOutConfig?.type;
+        if (!baseType || !quoteType) {
+          throw new Error("Token type not configured");
+        }
         const estimation = await estimateDeepBookSwap(
           client,
           deepbookPoolId,
           amountInBigInt,
-          isBid
+          isBid,
+          baseType,
+          quoteType,
+          (network === "mainnet" ? "mainnet" : "testnet"),
         );
 
         // Convert output to display units
@@ -179,6 +200,11 @@ export function SwapForm({
 
         setAmountOut(amountOutFloat.toFixed(tokenOutDecimals));
         setPriceImpact(estimation.priceImpact);
+        setEstimationWarning(
+          estimation.isApproximate
+            ? "Insufficient order book depth — estimated from mid price. Actual fill price may vary."
+            : null
+        );
       } catch (err) {
         console.error("Failed to estimate output:", err);
         setAmountOut("0");
@@ -228,6 +254,8 @@ export function SwapForm({
 
     const amountInBase = parseTokenAmount(amountIn, tokenInConfig.decimals);
     const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
+    // Slippage-adjusted minimum: this is what the ZKP commits to and the note is spendable for
+    const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
 
     try {
       // 1. Select notes and fetch proofs
@@ -240,13 +268,14 @@ export function SwapForm({
       );
 
       // 2. Create output notes (swap + change)
+      // swapNote commits to minAmountOut — the slippage-protected minimum the circuit guarantees
       const inputTotal = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
       const tokenIn = notesWithProofs[0].note.token;
       const tokenOut = getTokenIdFromCoinType(tokenOutConfig.type);
       const [swapNote, changeNote] = createSwapOutputs(
         keypair.masterPublicKey,
         amountInBase,
-        amountOutBase,
+        minAmountOutBase,
         inputTotal,
         tokenIn,
         tokenOut,
@@ -269,7 +298,7 @@ export function SwapForm({
       const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
       // 5. Get DeepBook pool ID
-      const deepbookPoolId = (NETWORK === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
+      const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
       if (!deepbookPoolId || deepbookPoolId === "0x...") {
         throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
       }
@@ -300,7 +329,6 @@ export function SwapForm({
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
           tx.pure(nullifiers),
-          tx.pure.u64((amountOutBase * BigInt(10000 - slippage)) / 10000n),
           tx.object(selectedDeepCoin!),
           tx.object(CLOCK_OBJECT_ID),
           tx.pure.vector("u8", Array.from(encryptedOutputNote)),
@@ -383,7 +411,13 @@ export function SwapForm({
           <div className="flex gap-2">
             <select
               value={tokenInSymbol}
-              onChange={(e) => setTokenInSymbol(e.target.value as "SUI" | "USDC" | "DBUSDC")}
+              onChange={(e) => {
+                const newTokenIn = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                setTokenInSymbol(newTokenIn);
+                if (newTokenIn === tokenOutSymbol) {
+                  setTokenOutSymbol(tokenInSymbol);
+                }
+              }}
               className="input w-24"
               disabled={isProcessing}
             >
@@ -425,7 +459,13 @@ export function SwapForm({
           <div className="flex gap-2">
             <select
               value={tokenOutSymbol}
-              onChange={(e) => setTokenOutSymbol(e.target.value as "SUI" | "USDC" | "DBUSDC")}
+              onChange={(e) => {
+                const newTokenOut = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                setTokenOutSymbol(newTokenOut);
+                if (newTokenOut === tokenInSymbol) {
+                  setTokenInSymbol(tokenOutSymbol);
+                }
+              }}
               className="input w-24"
               disabled={isProcessing}
             >
@@ -463,6 +503,12 @@ export function SwapForm({
             <p className="mt-2 text-[10px] text-orange-500 font-mono flex items-center gap-1">
               <span>⚠</span>
               <span>HIGH PRICE IMPACT: {priceImpact.toFixed(2)}%</span>
+            </p>
+          )}
+          {!isEstimating && estimationWarning && (
+            <p className="mt-2 text-[10px] text-yellow-500 font-mono flex items-center gap-1">
+              <span>⚠</span>
+              <span>{estimationWarning}</span>
             </p>
           )}
         </div>

@@ -210,7 +210,7 @@ export interface SwapCircuitInput {
   token_in: string;
   token_out: string;
   amount_in: string;
-  amount_out: string;
+  min_amount_out: string;
   merkle_root: string;
 }
 

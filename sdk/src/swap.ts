@@ -8,12 +8,12 @@ import type { Note } from "./types.js";
 import { createNote } from "./crypto.js";
 
 /**
- * Create output notes for transfer (recipient + change).
+ * Create output notes for swap (swap output + change).
  *
  * @param mpk - Master public key
  * @param amountIn - Amount to swap in
- * @param amountOut - Amount to swap out
- * @param inputTotal - Sum of input note anounts
+ * @param minAmountOut - Minimum guaranteed output amount (slippage-adjusted, committed to ZKP)
+ * @param inputTotal - Sum of input note amounts
  * @param tokenIn - Token type identifier for change note
  * @param tokenOut - Token type identifier for output note
  * @returns Array of 2 output notes [swap, change]
@@ -21,7 +21,7 @@ import { createNote } from "./crypto.js";
 export function createSwapOutputs(
     mpk: bigint,
     amountIn: bigint,
-    amountOut: bigint,
+    minAmountOut: bigint,
     inputTotal: bigint,
     tokenIn: bigint,
     tokenOut: bigint,
@@ -32,11 +32,11 @@ export function createSwapOutputs(
         );
     }
 
-    // Output note (swapped tokens)
+    // Output note commits to min_amount_out (slippage-protected minimum)
     const swapNote = createNote(
         mpk,
         tokenOut,
-        amountOut
+        minAmountOut
     );
 
     // Change note (remaining input tokens)
