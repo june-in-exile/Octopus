@@ -227,7 +227,7 @@ export function SwapForm({
     }
 
     const amountInBase = parseTokenAmount(amountIn, tokenInConfig.decimals);
-    const amountOutBase = parseTokenAmount(amountIn, tokenOutConfig.decimals);
+    const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
 
     try {
       // 1. Select notes and fetch proofs
