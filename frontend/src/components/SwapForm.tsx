@@ -299,7 +299,6 @@ export function SwapForm({
           tx.object(deepbookPoolId),
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure.u64(amountInBase),
           tx.pure.u64((amountOutBase * BigInt(10000 - slippage)) / 10000n),
           tx.object(selectedDeepCoin!),
           tx.object(CLOCK_OBJECT_ID),
@@ -592,26 +591,7 @@ export function SwapForm({
           isProcessing && "cursor-wait opacity-70"
         )}
       >
-        {isProcessing ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
-            GENERATING PROOF...
-          </span>
-        ) : (
-          "⇄ PRIVATE SWAP"
-        )}
+        {isProcessing ? "◉ PROCESSING..." : "⇄ PRIVATE SWAP"}
       </button>
 
       {/* Info Box */}
