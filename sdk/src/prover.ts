@@ -21,6 +21,8 @@ import {
   padInputsTo2,
   computeAndVerifyMerkleRoot,
 } from "./utils/index.js";
+import { computeNullifier } from "./crypto.js";
+import { bigIntToLE32 } from "./utils/bytes.js";
 
 
 // Lazy-loaded Node.js modules (only used in Node.js environment)
@@ -60,6 +62,29 @@ async function loadBrowserBuffers(wasmPath: string, zkeyPath: string): Promise<[
   return [new Uint8Array(wasmBuf), new Uint8Array(zkeyBuf)];
 }
 
+/**
+ * BCS-encode a vector<vector<u8>> for Sui transaction arguments.
+ * Each inner vector length and the outer length are encoded as ULEB128 (single byte for < 128).
+ */
+function encodeBcsVectorOfVectors(arrays: Uint8Array[]): Uint8Array {
+  const parts: Uint8Array[] = [];
+  // Outer length (ULEB128, single byte since arrays.length < 128)
+  parts.push(new Uint8Array([arrays.length]));
+  for (const arr of arrays) {
+    // Inner length (ULEB128, single byte since arr.length < 128)
+    parts.push(new Uint8Array([arr.length]));
+    parts.push(arr);
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    result.set(p, offset);
+    offset += p.length;
+  }
+  return result;
+}
+
 // ============ Unshield Proof Functions ============
 
 /** Get default paths to unshield circuit artifacts */
@@ -90,9 +115,9 @@ function getUnshieldCircuitPaths() {
 }
 
 /**
- * Build circuit input for unshield proof (2-input support with change)
+ * Build circuit input for unshield proof
  */
-function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput {
+function buildUnshieldCircuitInput(unshieldInput: UnshieldInput): UnshieldCircuitInput {
   const {
     keypair,
     inputNotes,
@@ -129,6 +154,12 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
 
   const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
+  // Compute nullifiers: Poseidon(nullifying_key, leaf_index), 0 for dummy notes (amount === 0)
+  const nullifierValues: bigint[] = paddedInputs.map((note, i) =>
+    note.amount === 0n ? 0n : computeNullifier(keypair.nullifyingKey, paddedIndices[i])
+  );
+  const nullifiers = nullifierValues.map(v => v.toString());
+
   const circuitInput: UnshieldCircuitInput = {
     // Private inputs
     spending_key: keypair.spendingKey.toString(),
@@ -141,6 +172,8 @@ function buildUnshieldInput(unshieldInput: UnshieldInput): UnshieldCircuitInput 
 
     change_random: changeNote.random.toString(),
     change_amount: changeNote.amount.toString(),
+
+    nullifiers,
 
     // Public inputs
     unshield_amount: unshieldAmount.toString(),
@@ -168,15 +201,17 @@ function convertUnshieldProofToSui(
 }
 
 /**
- * Generate unshield proof and convert to Sui format (with change support)
+ * Generate unshield proof and convert to Sui format (with change support).
+ * Returns the ZK proof and the nullifiers separately — nullifiers must be
+ * passed explicitly to the contract (as vector<vector<u8>>) alongside the proof.
  */
 export async function generateUnshieldProof(
   unshieldInput: UnshieldInput,
-): Promise<SuiProof> {
+): Promise<{ proof: SuiProof; nullifiers: Uint8Array }> {
   const { wasmPath, zkeyPath } = getUnshieldCircuitPaths();
 
-  // 1. Build circuit input
-  const circuitInput = buildUnshieldInput(unshieldInput);
+  // 1. Build circuit input (includes precomputed nullifiers as private inputs)
+  const circuitInput = buildUnshieldCircuitInput(unshieldInput);
 
   // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
@@ -190,8 +225,14 @@ export async function generateUnshieldProof(
     zkey
   );
 
-  // 4. Convert to Sui format
-  return convertUnshieldProofToSui(proof, publicSignals);
+  // 4. Serialize nullifiers as LE32 bytes and BCS-encode as vector<vector<u8>>
+  const nullifierArrays = circuitInput.nullifiers.map((v: string) => {
+    const n = BigInt(v);
+    return n === 0n ? new Uint8Array(32) : bigIntToLE32(n);
+  });
+  const nullifiers = encodeBcsVectorOfVectors(nullifierArrays);
+
+  return { proof: convertUnshieldProofToSui(proof, publicSignals), nullifiers };
 }
 
 // ============ Transfer Proof Functions ============
@@ -227,7 +268,7 @@ function getTransferCircuitPaths() {
  * Build circuit input for transfer proof (2-input, 2-output)
  * Updated to match new transfer.circom interface with separate transfer/change outputs
  */
-function buildTransferInput(transferInput: TransferInput): TransferCircuitInput {
+function buildTransferCircuitInput(transferInput: TransferInput): TransferCircuitInput {
   const {
     keypair,
     inputNotes,
@@ -265,6 +306,12 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
 
   const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
+  // Compute nullifiers: Poseidon(nullifying_key, leaf_index), 0 for dummy notes (amount === 0)
+  const nullifierValues: bigint[] = paddedInputs.map((note, i) =>
+    note.amount === 0n ? 0n : computeNullifier(keypair.nullifyingKey, paddedIndices[i])
+  );
+  const nullifiers = nullifierValues.map(v => v.toString());
+
   const circuitInput: TransferCircuitInput = {
     // Private inputs
     spending_key: keypair.spendingKey.toString(),
@@ -281,6 +328,8 @@ function buildTransferInput(transferInput: TransferInput): TransferCircuitInput 
 
     change_random: changeNote.random.toString(),
     change_amount: changeNote.amount.toString(),
+
+    nullifiers,
 
     // Public inputs
     token: token.toString(),
@@ -304,15 +353,17 @@ function convertTransferProofToSui(
 }
 
 /**
- * Generate transfer proof and convert to Sui format
+ * Generate transfer proof and convert to Sui format.
+ * Returns the ZK proof and the nullifiers separately — nullifiers must be
+ * passed explicitly to the contract (as vector<vector<u8>>) alongside the proof.
  */
 export async function generateTransferProof(
   transferInput: TransferInput,
-): Promise<SuiProof> {
+): Promise<{ proof: SuiProof; nullifiers: Uint8Array }> {
   const { wasmPath, zkeyPath } = getTransferCircuitPaths();
 
-  // 1. Build circuit input
-  const circuitInput = buildTransferInput(transferInput);
+  // 1. Build circuit input (includes precomputed nullifiers as private inputs)
+  const circuitInput = buildTransferCircuitInput(transferInput);
 
   // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
@@ -326,8 +377,14 @@ export async function generateTransferProof(
     zkey
   );
 
-  // 4. Convert to Sui format
-  return convertTransferProofToSui(proof, publicSignals);
+  // 4. Serialize nullifiers as LE32 bytes and BCS-encode as vector<vector<u8>>
+  const nullifierArrays = circuitInput.nullifiers.map((v: string) => {
+    const n = BigInt(v);
+    return n === 0n ? new Uint8Array(32) : bigIntToLE32(n);
+  });
+  const nullifiers = encodeBcsVectorOfVectors(nullifierArrays);
+
+  return { proof: convertTransferProofToSui(proof, publicSignals), nullifiers };
 }
 
 // ============ Swap Proof Functions ============
@@ -360,9 +417,10 @@ function getSwapCircuitPaths() {
 }
 
 /**
- * Build circuit input for swap proof
+ * Build circuit input for swap proof.
+ * Returns the circuit input along with padded inputs/indices (used to compute nullifiers).
  */
-function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
+function buildSwapCircuitInput(swapInput: SwapInput): SwapCircuitInput {
   const {
     keypair,
     inputNotes,
@@ -383,6 +441,12 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 
   const merkleRoot = computeAndVerifyMerkleRoot(paddedInputs, paddedPaths, paddedIndices);
 
+  // Compute nullifiers: Poseidon(nullifying_key, leaf_index), 0 for dummy notes (amount === 0)
+  const nullifierValues: bigint[] = paddedInputs.map((note, i) =>
+    note.amount === 0n ? 0n : computeNullifier(keypair.nullifyingKey, paddedIndices[i])
+  );
+  const nullifiers = nullifierValues.map(v => v.toString());
+
   const circuitInput: SwapCircuitInput = {
     // Private inputs
     spending_key: keypair.spendingKey.toString(),
@@ -397,6 +461,8 @@ function buildSwapInput(swapInput: SwapInput): SwapCircuitInput {
 
     change_random: changeNote.random.toString(),
     change_amount: changeNote.amount.toString(),
+
+    nullifiers,
 
     // Public inputs
     token_in: tokenIn.toString(),
@@ -423,15 +489,17 @@ function convertSwapProofToSui(
 }
 
 /**
- * Generate a swap proof and convert to Sui format
+ * Generate a swap proof and convert to Sui format.
+ * Returns the ZK proof and the nullifiers separately — nullifiers must be
+ * passed explicitly to the contract (as vector<vector<u8>>) alongside the proof.
  */
 export async function generateSwapProof(
   swapInput: SwapInput,
-): Promise<SuiProof> {
+): Promise<{ proof: SuiProof; nullifiers: Uint8Array }> {
   const { wasmPath, zkeyPath } = getSwapCircuitPaths();
 
-  // 1. Build circuit input
-  const circuitInput = buildSwapInput(swapInput);
+  // 1. Build circuit input (includes precomputed nullifiers as private inputs)
+  const circuitInput = buildSwapCircuitInput(swapInput);
 
   // 2. Prepare resources (get content or paths based on environment)
   const [wasm, zkey] = isNodeEnvironment()
@@ -445,6 +513,12 @@ export async function generateSwapProof(
     zkey
   );
 
-  // 4. Convert to Sui format
-  return convertSwapProofToSui(proof, publicSignals);
+  // 4. Serialize nullifiers as LE32 bytes and BCS-encode as vector<vector<u8>>
+  const nullifierArrays = circuitInput.nullifiers.map((v: string) => {
+    const n = BigInt(v);
+    return n === 0n ? new Uint8Array(32) : bigIntToLE32(n);
+  });
+  const nullifiers = encodeBcsVectorOfVectors(nullifierArrays);
+
+  return { proof: convertSwapProofToSui(proof, publicSignals), nullifiers };
 }

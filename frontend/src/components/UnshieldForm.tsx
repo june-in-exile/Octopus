@@ -128,9 +128,9 @@ export function UnshieldForm({
         token
       );
 
-      // 3. Generate ZK proof (returns Sui format directly)
+      // 3. Generate ZK proof
       setState("generating-proof");
-      const proof = await generateUnshieldProof({
+      const { proof, nullifiers } = await generateUnshieldProof({
         keypair,
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
@@ -155,6 +155,7 @@ export function UnshieldForm({
           tx.object(tokenConfig.poolId),
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure(nullifiers),
           tx.pure.address(recipient),
           tx.pure.vector("u8", Array.from(encryptedChangeNote)),
         ],

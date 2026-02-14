@@ -126,9 +126,9 @@ export function TransferForm({
         token
       );
 
-      // 3. Generate ZK proof (returns Sui format directly)
+      // 3. Generate ZK proof
       setState("generating-proof");
-      const proof = await generateTransferProof({
+      const { proof, nullifiers } = await generateTransferProof({
         keypair,
         inputNotes: notesWithProofs.map((n) => n.note),
         inputLeafIndices: notesWithProofs.map((n) => n.leafIndex),
@@ -159,6 +159,7 @@ export function TransferForm({
           tx.object(tokenConfig.poolId),
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure(nullifiers),
           tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize([encryptedRecipientNote, encryptedChangeNote]).toBytes()),
         ],
       });

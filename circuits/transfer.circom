@@ -42,12 +42,15 @@ template Transfer(levels) {
     signal input change_random;          // Random blinding factor for change
     signal input change_amount;          // Change amount
 
+    // Nullifiers (precomputed off-chain, constrained by circuit)
+    signal input nullifiers[2];          // Poseidon(nullifying_key, leaf_index) for each input note
+
     // ============ Public Inputs ============
     signal input token;                  // Token identifier (address hash)
     signal input merkle_root;            // Expected Merkle root
 
     // ============ Public Outputs ============
-    signal output input_nullifiers[2];   // Nullifiers for input notes
+    signal output nullifiers_hash;       // Poseidon hash of both nullifiers
     signal output recipient_commitment;  // Commitments for recipient
     signal output change_commitment;     // Commitments for change
 
@@ -71,8 +74,12 @@ template Transfer(levels) {
     signal sender_mpk <== Poseidon(2)([spending_key, nullifying_key]);
 
     // ============ Step 4: Verify Input Notes ============
-    // Verify commitment inclusion and calculate nullifier for each note
-    input_nullifiers <== VerifyNote(levels, 2)(sender_mpk, nullifying_key, token, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    // Verify commitment inclusion and constrain the provided nullifiers
+    signal expected_nullifiers[2] <== VerifyNote(levels, 2)(sender_mpk, nullifying_key, token, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    for (var i = 0; i < 2; i++) {
+        nullifiers[i] === expected_nullifiers[i];
+    }
+    nullifiers_hash <== Poseidon(2)([nullifiers[0], nullifiers[1]]);
 
     // ============ Step 5: Verify Output Commitments ============
     // Output note commitment = Poseidon(recipient_NSK, token, amount)

@@ -4,6 +4,7 @@ module octopus::pool {
     use sui::balance::{Self, Balance};
     use sui::coin::{Self, Coin};
     use sui::groth16;
+    use sui::poseidon;
     use sui::event;
     use sui::clock::Clock;
     use octopus::merkle_tree::{Self, MerkleTree};
@@ -257,29 +258,42 @@ module octopus::pool {
     /// 4. Balance conservation: sum(input_amounts) = unshield_amount + change_amount
     /// 5. Correct change commitment computation (if change exists)
     ///
-    /// Public signals format (192 bytes total):
+    /// Public signals format (160 bytes total):
     /// Public outputs (computed by circuit):
-    /// - input_nullifiers[0] (32 bytes): First nullifier
-    /// - input_nullifiers[1] (32 bytes): Second nullifier (0 if dummy note)
+    /// - nullifiers_hash (32 bytes): Poseidon(nullifier1, nullifier2)
     /// - change_commitment (32 bytes): Commitment for change note (0 if no change)
     /// Public inputs (provided by user):
     /// - unshield_amount (32 bytes): Amount to withdraw (as field element)
     /// - token (32 bytes): Token type identifier
     /// - merkle_root (32 bytes): Merkle tree root
+    ///
+    /// Nullifiers are passed explicitly (not embedded in public inputs) to keep them private.
     public fun unshield<T>(
         pool: &mut PrivacyPool<T>,
         proof_bytes: vector<u8>,
         public_inputs_bytes: vector<u8>,
+        nullifiers: vector<vector<u8>>,
         recipient: address,
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
     ) {
-        // Validate public inputs length (6 field elements × 32 bytes = 192 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 192, E_INVALID_PUBLIC_INPUTS);
+        // Validate public inputs length (5 field elements × 32 bytes = 160 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 160, E_INVALID_PUBLIC_INPUTS);
+        assert!(vector::length(&nullifiers) == 2, E_INVALID_PUBLIC_INPUTS);
 
-        // 1. Parse public inputs [input_nullifiers[2], change_commitment, unshield_amount, token, merkle_root]
-        let (nullifier1, nullifier2, change_commitment, unshield_amount_bytes, _token, merkle_root) =
+        // 1. Parse public inputs [nullifiers_hash, change_commitment, unshield_amount, token, merkle_root]
+        let (nullifiers_hash, change_commitment, unshield_amount_bytes, _token, merkle_root) =
             parse_unshield_public_inputs(&public_inputs_bytes);
+
+        let nullifier1 = *vector::borrow(&nullifiers, 0);
+        let nullifier2 = *vector::borrow(&nullifiers, 1);
+
+        // 2. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
+        let n1_u256 = field_element_to_u256(&nullifier1);
+        let n2_u256 = field_element_to_u256(&nullifier2);
+        let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
+        let computed_hash_bytes = u256_to_field_element(computed_hash);
+        assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
 
         // 2. Convert unshield_amount from field element to u64
         let amount = field_element_to_u64(&unshield_amount_bytes);
@@ -356,26 +370,40 @@ module octopus::pool {
     /// 4. Correct commitment computation for transfer and change outputs
     /// 5. Balance conservation: sum(input_amounts) = recipient_amount + change_amount
     ///
-    /// Public inputs format (192 bytes total):
-    /// - token (32 bytes): Token type identifier
-    /// - merkle_root (32 bytes): Merkle tree root
-    /// - input_nullifiers[2] (64 bytes): Nullifiers for both input notes
+    /// Public inputs format (160 bytes total):
+    /// - nullifiers_hash (32 bytes): Poseidon(nullifier1, nullifier2)
     /// - recipient_commitment (32 bytes): Commitment for transfer to recipient
     /// - change_commitment (32 bytes): Commitment for change back to sender
+    /// - token (32 bytes): Token type identifier
+    /// - merkle_root (32 bytes): Merkle tree root
+    ///
+    /// Nullifiers are passed explicitly (not embedded in public inputs) to keep them private.
     public fun transfer<T>(
         pool: &mut PrivacyPool<T>,
         proof_bytes: vector<u8>,
         public_inputs_bytes: vector<u8>,
+        nullifiers: vector<vector<u8>>,
         encrypted_notes: vector<vector<u8>>,
         _ctx: &mut TxContext,
     ) {
-        // Validate public inputs length (6 field elements × 32 bytes = 192 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 192, E_INVALID_PUBLIC_INPUTS);
+        // Validate public inputs length (5 field elements × 32 bytes = 160 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 160, E_INVALID_PUBLIC_INPUTS);
+        assert!(vector::length(&nullifiers) == 2, E_INVALID_PUBLIC_INPUTS);
         assert!(vector::length(&encrypted_notes) == 2, E_INVALID_PUBLIC_INPUTS);
 
-        // 1. Parse public inputs [nullifier1, nullifier2, recipient_commitment, change_commitment, token, merkle_root]
-        let (nullifier1, nullifier2, recipient_commitment, change_commitment, _token, merkle_root) =
+        // 1. Parse public inputs [nullifiers_hash, recipient_commitment, change_commitment, token, merkle_root]
+        let (nullifiers_hash, recipient_commitment, change_commitment, _token, merkle_root) =
             parse_transfer_public_inputs(&public_inputs_bytes);
+
+        let nullifier1 = *vector::borrow(&nullifiers, 0);
+        let nullifier2 = *vector::borrow(&nullifiers, 1);
+
+        // 2. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
+        let n1_u256 = field_element_to_u256(&nullifier1);
+        let n2_u256 = field_element_to_u256(&nullifier2);
+        let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
+        let computed_hash_bytes = u256_to_field_element(computed_hash);
+        assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
 
         // 2. Verify merkle root is valid (current or in history)
         assert!(is_valid_root(pool, &merkle_root), E_INVALID_ROOT);
@@ -443,20 +471,28 @@ module octopus::pool {
     /// Users prove ownership of input notes via ZK proof, swap through DEX at market price,
     /// and receive output as a new private note.
     ///
+    /// Nullifiers are passed explicitly (not embedded in public inputs) to keep them private.
+    /// The circuit commits to them via nullifiers_hash = Poseidon(nullifier1, nullifier2),
+    /// which the contract verifies on-chain using sui::poseidon::poseidon_bn254.
+    ///
+    /// Public inputs format (256 bytes, 8 field elements):
+    /// [nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root]
+    ///
     /// Flow:
-    /// 1. Verify ZK proof (proves ownership of input notes and swap parameters)
-    /// 2. Extract input tokens from pool_in
-    /// 3. Call external DEX (DeepBook V3) to execute swap
-    /// 4. Shield output tokens into pool_out
-    /// 5. Return change to pool_in if applicable
+    /// 1. Verify nullifiers match nullifiers_hash from proof (Poseidon commitment)
+    /// 2. Verify merkle root validity
+    /// 3. Check nullifiers not spent (double-spend prevention)
+    /// 4. Verify Groth16 ZK proof
+    /// 5. Execute swap via DeepBook V3
+    /// 6. Shield output and change notes
     ///
     /// # Arguments
     /// * `pool_in` - Privacy pool for input token
     /// * `pool_out` - Privacy pool for output token
     /// * `deepbook_pool` - DeepBook pool for swapping
     /// * `proof_bytes` - Groth16 proof (128 bytes)
-    /// * `public_inputs_bytes` - Public inputs (256 bytes)
-    /// * `amount_in` - Exact amount to swap
+    /// * `public_inputs_bytes` - Public inputs (256 bytes, 8 field elements)
+    /// * `nullifiers` - Explicit nullifiers [nullifier1, nullifier2] (each 32 bytes LE)
     /// * `min_amount_out` - Minimum output (slippage protection)
     /// * `deep_in` - DEEP tokens for DeepBook fees
     /// * `clock` - Clock object for timing
@@ -469,6 +505,7 @@ module octopus::pool {
         deepbook_pool: &mut DeepBookPool<TokenIn, TokenOut>,
         proof_bytes: vector<u8>,
         public_inputs_bytes: vector<u8>,
+        nullifiers: vector<vector<u8>>,
         min_amount_out: u64,
         deep_in: Coin<DEEP>,
         clock: &Clock,
@@ -476,21 +513,33 @@ module octopus::pool {
         encrypted_change_note: vector<u8>,
         ctx: &mut TxContext,
     ) {
-        // Validate public inputs length (9 field elements × 32 bytes = 288 bytes)
-        assert!(vector::length(&public_inputs_bytes) == 288, E_INVALID_PUBLIC_INPUTS);
-        
-        // 1. Parse public inputs  [input_nullifiers[2], swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root]
-        let (nullifier1, nullifier2, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, _amount_out_bytes, merkle_root) =
+        // Validate public inputs length (8 field elements × 32 bytes = 256 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
+        assert!(vector::length(&nullifiers) == 2, E_INVALID_PUBLIC_INPUTS);
+
+        // 1. Parse public inputs [nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root]
+        let (nullifiers_hash, swap_commitment, change_commitment, _token_in, _token_out, amount_in_bytes, _amount_out_bytes, merkle_root) =
             parse_swap_public_inputs(&public_inputs_bytes);
 
-        // 2. Verify merkle root is valid (current or in history)
+        let nullifier1 = *vector::borrow(&nullifiers, 0);
+        let nullifier2 = *vector::borrow(&nullifiers, 1);
+
+        // 2. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
+        // nullifiers_hash = Poseidon(nullifier1, nullifier2) as committed in the circuit
+        let n1_u256 = field_element_to_u256(&nullifier1);
+        let n2_u256 = field_element_to_u256(&nullifier2);
+        let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
+        let computed_hash_bytes = u256_to_field_element(computed_hash);
+        assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
+
+        // 3. Verify merkle root is valid (current or in history)
         assert!(is_valid_root(pool_in, &merkle_root), E_INVALID_ROOT);
 
-        // 3. Check both nullifiers have not been spent (prevent double-spend)
+        // 4. Check both nullifiers have not been spent (prevent double-spend)
         assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier1), E_DOUBLE_SPEND);
         assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier2), E_DOUBLE_SPEND);
 
-        // 4. Verify Groth16 ZK proof
+        // 5. Verify Groth16 ZK proof
         let pvk = groth16::prepare_verifying_key(&groth16::bn254(), &pool_in.swap_vk_bytes);
         let public_inputs = groth16::public_proof_inputs_from_bytes(public_inputs_bytes);
         let proof_points = groth16::proof_points_from_bytes(proof_bytes);
@@ -652,15 +701,6 @@ module octopus::pool {
         false
     }
 
-    /// Convert 32-byte field element to u64
-    /// Takes the least significant 8 bytes and converts to u64 (little-endian)
-    fun field_element_to_u64(bytes: &vector<u8>): u64 {
-        use sui::bcs;
-        
-        let mut b = bcs::new(*bytes);
-        bcs::peel_u64(&mut b)
-    }
-
     /// Check if a commitment is zero (all bytes are 0)
     fun is_zero_commitment(commitment: &vector<u8>): bool {
         let len = vector::length(commitment);
@@ -675,45 +715,64 @@ module octopus::pool {
     }
 
     /// Parse unshield public inputs from concatenated bytes (for unshield with 2-input support).
-    /// Returns (nullifier1, nullifier2, change_commitment, unshield_amount, token, merkle_root) each as 32-byte vectors.
-    fun parse_unshield_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+    /// Returns (nullifiers_hash, change_commitment, unshield_amount, token, merkle_root) each as 32-byte vectors.
+    fun parse_unshield_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         (
-            extract_field(bytes, 0),    // nullifier1
-            extract_field(bytes, 32),   // nullifier2
-            extract_field(bytes, 64),   // change_commitment
-            extract_field(bytes, 96),   // unshield_amount
-            extract_field(bytes, 128),  // token
-            extract_field(bytes, 160),  // merkle_root
+            extract_field(bytes, 0),    // nullifiers_hash
+            extract_field(bytes, 32),   // change_commitment
+            extract_field(bytes, 64),   // unshield_amount
+            extract_field(bytes, 96),   // token
+            extract_field(bytes, 128),  // merkle_root
         )
     }
 
     /// Parse transfer public inputs from concatenated bytes (for transfer).
-    /// Returns (nullifier1, nullifier2, recipient_commitment, change_commitment, token, merkle_root) each as 32-byte vectors.
-    fun parse_transfer_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+    /// Returns (nullifiers_hash, recipient_commitment, change_commitment, token, merkle_root) each as 32-byte vectors.
+    fun parse_transfer_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         (
-            extract_field(bytes, 0),    // nullifier1
-            extract_field(bytes, 32),   // nullifier2
-            extract_field(bytes, 64),   // recipient_commitment
-            extract_field(bytes, 96),   // change_commitment
-            extract_field(bytes, 128),  // token
-            extract_field(bytes, 160),  // merkle_root
+            extract_field(bytes, 0),    // nullifiers_hash
+            extract_field(bytes, 32),   // recipient_commitment
+            extract_field(bytes, 64),   // change_commitment
+            extract_field(bytes, 96),   // token
+            extract_field(bytes, 128),  // merkle_root
         )
     }
 
     /// Parse swap public inputs from concatenated bytes (for swap).
-    /// Returns (nullifier1, nullifier2, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root) each as 32-byte vectors.
-    fun parse_swap_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
+    /// Returns (nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, amount_out, merkle_root) each as 32-byte vectors.
+    fun parse_swap_public_inputs(bytes: &vector<u8>): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
         (
-            extract_field(bytes, 0),    // nullifier1
-            extract_field(bytes, 32),   // nullifier2
-            extract_field(bytes, 64),   // swap_commitment
-            extract_field(bytes, 96),   // change_commitment
-            extract_field(bytes, 128),  // token_in
-            extract_field(bytes, 160),  // token_out
-            extract_field(bytes, 192),  // amount_in
-            extract_field(bytes, 224),  // amount_out
-            extract_field(bytes, 256),  // merkle_root
+            extract_field(bytes, 0),    // nullifiers_hash
+            extract_field(bytes, 32),   // swap_commitment
+            extract_field(bytes, 64),   // change_commitment
+            extract_field(bytes, 96),   // token_in
+            extract_field(bytes, 128),  // token_out
+            extract_field(bytes, 160),  // amount_in
+            extract_field(bytes, 192),  // amount_out
+            extract_field(bytes, 224),  // merkle_root
         )
+    }
+
+    /// Convert 32-byte field element to u64
+    /// Takes the least significant 8 bytes and converts to u64 (little-endian)
+    fun field_element_to_u64(bytes: &vector<u8>): u64 {
+        use sui::bcs;
+        
+        let mut b = bcs::new(*bytes);
+        bcs::peel_u64(&mut b)
+    }
+
+    /// Convert a 32-byte little-endian field element to u256
+    fun field_element_to_u256(bytes: &vector<u8>): u256 {
+        use sui::bcs;
+        let mut b = bcs::new(*bytes);
+        bcs::peel_u256(&mut b)
+    }
+
+    /// Convert a u256 to a 32-byte little-endian field element
+    fun u256_to_field_element(value: u256): vector<u8> {
+        use sui::bcs;
+        bcs::to_bytes(&value)
     }
 
     // ============ Test Helpers ============

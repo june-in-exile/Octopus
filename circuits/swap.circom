@@ -41,6 +41,9 @@ template Swap(levels) {
     signal input change_random;          // Random blinding factor for change
     signal input change_amount;          // Change amount
 
+    // Nullifiers (precomputed off-chain, constrained by circuit)
+    signal input nullifiers[2];          // Poseidon(nullifying_key, leaf_index) for each input note
+
     // ============ Public Inputs ============
     signal input token_in;               // Input token type (e.g., SUI)
     signal input token_out;              // Output token type (e.g., USDC)
@@ -49,7 +52,7 @@ template Swap(levels) {
     signal input merkle_root;            // Expected Merkle root
 
     // ============ Public Outputs ============
-    signal output input_nullifiers[2];   // Nullifiers for both input notes
+    signal output nullifiers_hash;       // Poseidon hash of both nullifiers
     signal output swap_commitment;       // Commitment for output note (token_out)
     signal output change_commitment;     // Commitment for change note (token_in)
 
@@ -73,8 +76,12 @@ template Swap(levels) {
     signal mpk <== Poseidon(2)([spending_key, nullifying_key]);
 
     // ============ Step 4: Verify Input Notes ============
-    // Verify commitment inclusion and calculate nullifier for each note
-    input_nullifiers <== VerifyNote(levels, 2)(mpk, nullifying_key, token_in, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    // Verify commitment inclusion and constrain the provided nullifiers
+    signal expected_nullifiers[2] <== VerifyNote(levels, 2)(mpk, nullifying_key, token_in, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    for (var i = 0; i < 2; i++) {
+        nullifiers[i] === expected_nullifiers[i];
+    }
+    nullifiers_hash <== Poseidon(2)([nullifiers[0], nullifiers[1]]);
 
     // ============ Step 5: Verify Swap Commitment ============
     // Swap note commitment = Poseidon(NSK, token_out, amount_out)

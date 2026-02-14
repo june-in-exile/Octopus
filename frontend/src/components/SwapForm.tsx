@@ -252,9 +252,9 @@ export function SwapForm({
         tokenOut,
       )
 
-      // 3. Generate ZK proof (returns Sui format directly)
+      // 3. Generate ZK proof (returns proof + nullifiers separately)
       setState("generating-proof");
-      const proof = await generateSwapProof({
+      const { proof, nullifiers } = await generateSwapProof({
         keypair,
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
@@ -299,6 +299,7 @@ export function SwapForm({
           tx.object(deepbookPoolId),
           tx.pure.vector("u8", Array.from(proof.proofBytes)),
           tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+          tx.pure(nullifiers),
           tx.pure.u64((amountOutBase * BigInt(10000 - slippage)) / 10000n),
           tx.object(selectedDeepCoin!),
           tx.object(CLOCK_OBJECT_ID),

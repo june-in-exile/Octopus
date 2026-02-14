@@ -102,6 +102,8 @@ export interface UnshieldCircuitInput {
   change_random: string;            // Random for change note (private input)
   change_amount: string;            // Change amount (private input)
 
+  nullifiers: string[];             // [2] - Precomputed nullifiers (constrained by circuit)
+
   // Public inputs
   unshield_amount: string;          // Amount to unshield
   token: string;                    // Token type to unshield
@@ -152,6 +154,8 @@ export interface TransferCircuitInput {
   change_amount: string;            // Change amount back to sender
   change_random: string;            // Random for change commitment
 
+  nullifiers: string[];             // [2] - Precomputed nullifiers (constrained by circuit)
+
   // Public inputs
   token: string;                    // Token type to transfer
   merkle_root: string;              // Merkle root to verify against
@@ -198,6 +202,9 @@ export interface SwapCircuitInput {
   // Private inputs - Change note
   change_random: string;
   change_amount: string;
+
+  // Private inputs - Nullifiers (precomputed, constrained by circuit)
+  nullifiers: string[];
 
   // Public inputs
   token_in: string;
