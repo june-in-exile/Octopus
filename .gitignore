@@ -10,6 +10,7 @@ node_modules/
 
 # Claude Code
 .claude/
+.playwright-mcp/
 
 # Environment
 .env

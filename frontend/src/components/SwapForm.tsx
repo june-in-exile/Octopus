@@ -319,22 +319,47 @@ export function SwapForm({
       setState("submitting");
       const tx = new Transaction();
 
-      tx.moveCall({
-        target: `${packageId}::pool::swap`,
-        typeArguments: [tokenInConfig.type, tokenOutConfig.type],
-        arguments: [
-          tx.object(tokenInConfig.poolId),
-          tx.object(tokenOutConfig.poolId),
-          tx.object(deepbookPoolId),
-          tx.pure.vector("u8", Array.from(proof.proofBytes)),
-          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure(nullifiers),
-          tx.object(selectedDeepCoin!),
-          tx.object(CLOCK_OBJECT_ID),
-          tx.pure.vector("u8", Array.from(encryptedOutputNote)),
-          tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-        ],
-      });
+      // isBid = tokenIn is the quote token (e.g. DBUSDC → SUI)
+      const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+
+      if (isBid) {
+        // Bid: quote → base. Contract function swap_bid<Base, Quote>.
+        // Type args must be [baseType, quoteType] to match DeepBookPool<Base, Quote>.
+        tx.moveCall({
+          target: `${packageId}::pool::swap_bid`,
+          typeArguments: [tokenOutConfig.type, tokenInConfig.type], // [Base, Quote]
+          arguments: [
+            tx.object(tokenInConfig.poolId),   // pool_in = quote (DBUSDC) pool
+            tx.object(tokenOutConfig.poolId),  // pool_out = base (SUI) pool
+            tx.object(deepbookPoolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.object(selectedDeepCoin!),
+            tx.object(CLOCK_OBJECT_ID),
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+      } else {
+        // Ask: base → quote (e.g. SUI → DBUSDC)
+        tx.moveCall({
+          target: `${packageId}::pool::swap`,
+          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+          arguments: [
+            tx.object(tokenInConfig.poolId),
+            tx.object(tokenOutConfig.poolId),
+            tx.object(deepbookPoolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.object(selectedDeepCoin!),
+            tx.object(CLOCK_OBJECT_ID),
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+      }
       
       console.log("tx:", tx);
 
