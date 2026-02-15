@@ -285,21 +285,21 @@ module octopus::pool {
         let (nullifiers_hash, change_commitment, unshield_amount_bytes, _token, merkle_root) =
             parse_unshield_public_inputs(&public_inputs_bytes);
 
+        // 2. Verify merkle root is valid (current or in history) — checked early to fail fast
+        assert!(is_valid_root(pool, &merkle_root), E_INVALID_ROOT);
+
         let nullifier1 = *vector::borrow(&nullifiers, 0);
         let nullifier2 = *vector::borrow(&nullifiers, 1);
 
-        // 2. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
+        // 3. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
         let n1_u256 = field_element_to_u256(&nullifier1);
         let n2_u256 = field_element_to_u256(&nullifier2);
         let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
         let computed_hash_bytes = u256_to_field_element(computed_hash);
         assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
 
-        // 2. Convert unshield_amount from field element to u64
+        // Convert unshield_amount from field element to u64
         let amount = field_element_to_u64(&unshield_amount_bytes);
-
-        // 3. Verify merkle root is valid (current or in history)
-        assert!(is_valid_root(pool, &merkle_root), E_INVALID_ROOT);
 
         // 4. Check both nullifiers have not been spent (prevent double-spend)
         assert!(!nullifier::is_spent(&pool.nullifiers, nullifier1), E_DOUBLE_SPEND);
@@ -889,6 +889,93 @@ module octopus::pool {
     }
 
     // ============ Test Helpers ============
+
+    /// Swap for testing only: skips proof verification and uses a 1:1 mock swap.
+    /// Public inputs format (256 bytes): [token_in, token_out, merkle_root, nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment]
+    #[test_only]
+    public fun swap_for_testing<TokenIn, TokenOut>(
+        pool_in: &mut PrivacyPool<TokenIn>,
+        pool_out: &mut PrivacyPool<TokenOut>,
+        _proof_bytes: vector<u8>,
+        public_inputs_bytes: vector<u8>,
+        amount_in: u64,
+        min_amount_out: u64,
+        deep_in: Coin<DEEP>,
+        _clock: &Clock,
+        encrypted_output_note: vector<u8>,
+        encrypted_change_note: vector<u8>,
+        ctx: &mut TxContext,
+    ) {
+        // Validate public inputs length (8 field elements × 32 bytes = 256 bytes)
+        assert!(vector::length(&public_inputs_bytes) == 256, E_INVALID_PUBLIC_INPUTS);
+
+        // Parse public inputs: [token_in(32), token_out(32), root(32), nullifier1(32), nullifier2(32), swap_data_hash(32), output_commitment(32), change_commitment(32)]
+        let merkle_root = extract_field(&public_inputs_bytes, 64);
+        let nullifier1 = extract_field(&public_inputs_bytes, 96);
+        let nullifier2 = extract_field(&public_inputs_bytes, 128);
+        let output_commitment = extract_field(&public_inputs_bytes, 192);
+        let change_commitment = extract_field(&public_inputs_bytes, 224);
+
+        // Check merkle root is valid
+        assert!(is_valid_root(pool_in, &merkle_root), E_INVALID_ROOT);
+
+        // Check nullifiers not spent
+        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier1), E_DOUBLE_SPEND);
+        assert!(!nullifier::is_spent(&pool_in.nullifiers, nullifier2), E_DOUBLE_SPEND);
+
+        // Check sufficient balance
+        assert!(balance::value(&pool_in.balance) >= amount_in, E_INSUFFICIENT_BALANCE);
+
+        // Mock 1:1 swap: remove amount_in from pool_in, add amount_in to pool_out
+        let coin_in = coin::take(&mut pool_in.balance, amount_in, ctx);
+        coin::burn_for_testing(coin_in);
+
+        let amount_out = amount_in;
+        assert!(amount_out >= min_amount_out, E_PRICE_TOO_LOW);
+        balance::join(&mut pool_out.balance, balance::create_for_testing<TokenOut>(amount_out));
+
+        // Destroy DEEP (unused in mock)
+        coin::burn_for_testing(deep_in);
+
+        // Mark nullifiers spent (skip dummy zero nullifier2)
+        let mut used_nullifiers = vector::empty<vector<u8>>();
+        nullifier::mark_spent(&mut pool_in.nullifiers, nullifier1);
+        vector::push_back(&mut used_nullifiers, nullifier1);
+        if (!is_zero_commitment(&nullifier2)) {
+            nullifier::mark_spent(&mut pool_in.nullifiers, nullifier2);
+            vector::push_back(&mut used_nullifiers, nullifier2);
+        };
+
+        // Insert output commitment into pool_out
+        save_historical_root(pool_out);
+        let swap_position = merkle_tree::get_next_index(&pool_out.merkle_tree);
+        merkle_tree::insert(&mut pool_out.merkle_tree, output_commitment);
+
+        // Insert change commitment into pool_in (only if non-zero)
+        if (!is_zero_commitment(&change_commitment)) {
+            save_historical_root(pool_in);
+            let change_position = merkle_tree::get_next_index(&pool_in.merkle_tree);
+            merkle_tree::insert(&mut pool_in.merkle_tree, change_commitment);
+            event::emit(ShieldEvent {
+                pool_id: object::id(pool_in),
+                position: change_position,
+                commitment: change_commitment,
+                encrypted_note: encrypted_change_note,
+            });
+        };
+
+        event::emit(SwapEvent {
+            pool_in_id: object::id(pool_in),
+            pool_out_id: object::id(pool_out),
+            amount_in,
+            amount_out,
+            input_nullifiers: used_nullifiers,
+            swap_position,
+            swap_commitment: output_commitment,
+            encrypted_output_note,
+        });
+    }
+
     #[test_only]
     public fun destroy_for_testing<T>(pool: PrivacyPool<T>) {
         let PrivacyPool {

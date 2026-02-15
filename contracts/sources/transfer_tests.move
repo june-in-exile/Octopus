@@ -138,11 +138,13 @@ module octopus::transfer_tests {
             let invalid_public_inputs = x"2fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c6265298202350c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926589b6f5789efc87da100ca0b91394f7454370d77d4f64569e64bca988b98be2c";
 
             let encrypted_notes = vector[x"0102030405060708", x"090a0b0c0d0e0f10"];
+            let nullifiers = vector[TEST_NULLIFIER_1, TEST_NULLIFIER_2];
 
             pool::transfer(
                 &mut pool,
                 TEST_TRANSFER_PROOF,
                 invalid_public_inputs,
+                nullifiers,
                 encrypted_notes,
                 ctx
             );
@@ -178,11 +180,13 @@ module octopus::transfer_tests {
 
             // Invalid: only 1 encrypted note instead of 2
             let encrypted_notes = vector[x"0102030405060708"];
+            let nullifiers = vector[TEST_NULLIFIER_1, TEST_NULLIFIER_2];
 
             pool::transfer(
                 &mut pool,
                 TEST_TRANSFER_PROOF,
                 public_inputs,
+                nullifiers,
                 encrypted_notes,
                 ctx
             );

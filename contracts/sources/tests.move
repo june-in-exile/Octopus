@@ -2,7 +2,6 @@
 #[test_only]
 module octopus::tests {
     use sui::test_scenario::{Self as ts};
-    use std::type_name;
     use octopus::merkle_tree::{Self};
     use octopus::nullifier::{Self};
 
