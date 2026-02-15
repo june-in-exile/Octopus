@@ -570,6 +570,7 @@ module octopus::pool {
         // base_out contains any unswapped remainder (partial fills possible)
         // quote_out is the received output token
         let amount_out = coin::value(&quote_out);
+        assert!(amount_out >= min_amount_out, E_PRICE_TOO_LOW);
 
         // Return any remaining base tokens to pool_in
         balance::join(&mut pool_in.balance, coin::into_balance(base_out));
@@ -693,6 +694,7 @@ module octopus::pool {
         );
 
         let amount_out = coin::value(&base_out);
+        assert!(amount_out >= min_amount_out, E_PRICE_TOO_LOW);
 
         // Return any unswapped quote remainder to pool_in
         balance::join(&mut pool_in.balance, coin::into_balance(quote_out));

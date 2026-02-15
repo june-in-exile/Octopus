@@ -38,7 +38,6 @@ export function verifyNotesAndComputeRoots(
   notesWithProofs: OwnedNote[],
   masterPublicKey: bigint
 ): bigint[] {
-  console.log("=== Note Verification ===");
   const computedRoots: bigint[] = [];
 
   for (let i = 0; i < notesWithProofs.length; i++) {
@@ -53,18 +52,6 @@ export function verifyNotesAndComputeRoots(
       notesWithProofs[i].pathElements!
     );
     computedRoots.push(root);
-
-    console.log(`Input Note ${i}:`, {
-      token: note.token.toString(),
-      value: note.amount.toString(),
-      nsk: note.nsk.toString(),
-      random: note.random.toString(),
-      expectedNSK: expectedNSK.toString(),
-      nskMatches,
-      leafIndex: notesWithProofs[i].leafIndex,
-      commitment: note.commitment.toString(),
-      merkleRoot: root.toString(),
-    });
 
     if (!nskMatches) {
       throw new Error(
@@ -119,11 +106,6 @@ export async function verifyOnChainRoot(
     // Use SDK's tested utility function for LE byte conversion
     const onChainRoot = bytesToBigIntLE(rootBytes);
 
-    console.log(`[${stage}] On-chain root (hex):`, onChainRoot.toString(16));
-    console.log(`[${stage}] Local root (hex):`, localRoot.toString(16));
-    console.log(`[${stage}] On-chain Merkle Root:`, onChainRoot.toString());
-    console.log(`[${stage}] Local Merkle Root:`, localRoot.toString());
-
     if (onChainRoot !== localRoot) {
       throw new Error(
         `Your notes have outdated Merkle proofs! (detected at ${stage})\n` +
@@ -133,7 +115,5 @@ export async function verifyOnChainRoot(
         `Please refresh your notes and try again.`
       );
     }
-
-    console.log(`✓ [${stage}] Merkle proof validation passed!`);
   }
 }

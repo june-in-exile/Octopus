@@ -361,15 +361,12 @@ export function SwapForm({
         });
       }
       
-      console.log("tx:", tx);
-
       const result = await signAndExecute({ transaction: tx });
       
-      console.log("result:", result);
-
       // 7. Success!
       setState("success");
-      let successMessage = `Swapped ${amountIn} ${tokenInSymbol} → ${amountOut} ${tokenOutSymbol}`;
+      const actualAmountOut = formatTokenAmount(swapNote.amount, tokenOutConfig.decimals);
+      let successMessage = `Swapped ${amountIn} ${tokenInSymbol} → ${actualAmountOut} ${tokenOutSymbol}`;
       if (changeNote.amount > 0n) {
         successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenInConfig.decimals)} ${tokenInSymbol})`;
       }
