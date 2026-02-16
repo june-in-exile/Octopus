@@ -227,6 +227,7 @@ export function ShieldForm({
             step={1 / 10 ** tokenConfig.decimals}
             min={0}
             disabled={isProcessing}
+            onMax={balance !== null ? () => setAmount(formatTokenAmount(balance, tokenConfig.decimals)) : undefined}
           />
         </div>
 
