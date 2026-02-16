@@ -5,6 +5,8 @@
  * Fetches cached commitments and builds the tree only when proofs are needed.
  */
 
+import type { OwnedNote } from "@/hooks/useNotes";
+import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import { getWorkerManager } from "./workerManager";
 import { generateCacheKey } from "./notesCache";
 
@@ -14,14 +16,14 @@ import { generateCacheKey } from "./notesCache";
  *
  * @param spendingKey - User's spending key
  * @param poolId - Pool ID
- * @param selectedLeafIndices - Leaf indices of notes to generate proofs for
+ * @param leafIndices - Leaf indices of notes to generate proofs for
  * @returns Map of leaf index to path elements (Merkle proof)
  * @throws Error if cached commitments are unavailable
  */
-export async function fetchMerkleProofs(
+async function fetchMerkleProofs(
   spendingKey: bigint,
   poolId: string,
-  selectedLeafIndices: number[]
+  leafIndices: number[]
 ): Promise<Map<number, bigint[]>> {
   try {
     const worker = getWorkerManager();
@@ -40,7 +42,7 @@ export async function fetchMerkleProofs(
     // Validate that all required leaf indices exist in the cache
     const maxLeafIndex = Math.max(...commitments.map(c => c.leafIndex));
     const minLeafIndex = Math.min(...commitments.map(c => c.leafIndex));
-    const missingIndices = selectedLeafIndices.filter(idx =>
+    const missingIndices = leafIndices.filter(idx =>
       idx < minLeafIndex || idx > maxLeafIndex ||
       !commitments.some(c => c.leafIndex === idx)
     );
@@ -48,14 +50,14 @@ export async function fetchMerkleProofs(
     if (missingIndices.length > 0) {
       throw new Error(
         `Stale cache detected! Your notes are outdated. Missing commitments for leaf indices: ${missingIndices.join(', ')}. ` +
-        `Cache has commitments ${minLeafIndex}-${maxLeafIndex}, but you need ${selectedLeafIndices.join(', ')}. ` +
+        `Cache has commitments ${minLeafIndex}-${maxLeafIndex}, but you need ${leafIndices.join(', ')}. ` +
         `Please click "Refresh Notes" to sync with the latest on-chain state.`
       );
     }
 
     // 2. Build tree and get proofs for selected notes only
     const startProof = Date.now();
-    const proofs = await worker.generateMerkleProofs(selectedLeafIndices, commitments);
+    const proofs = await worker.generateMerkleProofs(leafIndices, commitments);
 
     return proofs;
   } catch (error) {
@@ -69,4 +71,26 @@ export async function fetchMerkleProofs(
     }
     throw error;
   }
+}
+
+export async function fetchAndAttachMerkleProofs(
+  selectedNotes: OwnedNote[],
+  keypair: OctopusKeypair,
+  poolId: string
+): Promise<OwnedNote[]> {
+  const leafIndices = selectedNotes.map(n => n.leafIndex);
+
+  const merkleProofs = await fetchMerkleProofs(
+    keypair.spendingKey,
+    poolId,
+    leafIndices
+  );
+
+  return selectedNotes.map(n => {
+    const pathElements = merkleProofs.get(n.leafIndex);
+    if (!pathElements || pathElements.length === 0) {
+      throw new Error(`Failed to generate Merkle proof for note at leaf index ${n.leafIndex}`);
+    }
+    return { ...n, pathElements };
+  });
 }

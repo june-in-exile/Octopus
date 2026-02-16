@@ -15,7 +15,7 @@ import {
   truncateAddress,
 } from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { selectNotesWithProofs } from "@/lib/noteSelectionWithProofs";
+import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";

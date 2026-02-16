@@ -19,7 +19,6 @@ import type {
   ClearCacheResponse,
   GetCacheInfoResponse,
 } from "@/workers/types";
-import { generateCacheKey } from "./notesCache";
 
 type PendingRequest = {
   resolve: (value: any) => void;
