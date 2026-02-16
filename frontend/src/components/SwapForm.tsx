@@ -82,6 +82,8 @@ export function SwapForm({
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
   const [isTargetAmount, setIsTargetAmount] = useState(false);
+  const [activeInput, setActiveInput] = useState<"from" | "to">("from");
+  const [isEstimatingReverse, setIsEstimatingReverse] = useState(false);
   const [slippage, setSlippage] = useState(50); // 0.5% in bps
   const [exchangeRate, setExchangeRate] = useState<number | null>(null);
   const [isEstimating, setIsEstimating] = useState(false);
@@ -143,11 +145,13 @@ export function SwapForm({
     setAmountIn(amountOut);
     setAmountOut("");
     setIsTargetAmount(false);
+    setActiveInput("from");
   };
 
-  // Estimate output amount when input changes
+  // Estimate output amount when input changes (forward: FROM → TO)
   useEffect(() => {
     const estimateOutput = async () => {
+      if (activeInput === "to") return;
       setIsTargetAmount(false);
       if (!amountIn || parseFloat(amountIn) <= 0) {
         setEstimationWarning(null);
@@ -209,8 +213,10 @@ export function SwapForm({
           // Keep default lotSize/minSize of 1n if fetch fails
         }
 
-        // Align amountIn to nearest lot size (round down) so DeepBook doesn't silently truncate
-        const amountInBigInt = currentLotSize > 1n
+        // Align amountIn to nearest lot size (round down) so DeepBook doesn't silently truncate.
+        // For bid (USDC→SUI), amountInRaw is in quote units — lotSize is in base (SUI) units,
+        // so alignment must be skipped to avoid dividing a small USDC amount by a large SUI lot size (→ 0).
+        const amountInBigInt = (!isBid && currentLotSize > 1n)
           ? (amountInRaw / currentLotSize) * currentLotSize
           : amountInRaw;
 
@@ -248,7 +254,109 @@ export function SwapForm({
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenInSymbol, tokenOutSymbol, client]);
+  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, activeInput]);
+
+  // Estimate required input amount when output changes (reverse: TO → FROM)
+  useEffect(() => {
+    if (activeInput !== "to") return;
+
+    const estimateInput = async () => {
+      if (!amountOut || parseFloat(amountOut) <= 0) {
+        setAmountIn("");
+        setExchangeRate(null);
+        setPriceImpact(0);
+        setEstimationWarning(null);
+        return;
+      }
+
+      setIsEstimatingReverse(true);
+      try {
+        const amountOutFloat = parseFloat(amountOut);
+
+        if (tokenInSymbol === tokenOutSymbol) {
+          setAmountIn(amountOut);
+          return;
+        }
+
+        const deepbookPoolId = network === "mainnet"
+          ? NETWORK_CONFIG.mainnet.suiusdcPoolId
+          : NETWORK_CONFIG.testnet.suidbusdcPoolId;
+        if (!deepbookPoolId || deepbookPoolId === "0x...") return;
+
+        const tokenInCfg = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+        const tokenOutCfg = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+        if (!tokenInCfg || !tokenOutCfg) return;
+
+        const tokenInDecimals = tokenInCfg.decimals ?? 9;
+        const tokenOutDecimals = tokenOutCfg.decimals ?? 9;
+        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+        const baseType = isBid ? tokenOutCfg.type : tokenInCfg.type;
+        const quoteType = isBid ? tokenInCfg.type : tokenOutCfg.type;
+        const networkKey = network === "mainnet" ? "mainnet" as const : "testnet" as const;
+
+        // Fetch lot size
+        let currentLotSize = lotSize;
+        try {
+          const params = await getPoolBookParams(client, deepbookPoolId, baseType, quoteType, networkKey);
+          currentLotSize = params.lotSize;
+          setLotSize(params.lotSize);
+          setMinSize(params.minSize);
+        } catch { /* keep existing lotSize */ }
+
+        const alignToLot = (raw: bigint) =>
+          !isBid && currentLotSize > 1n ? (raw / currentLotSize) * currentLotSize : raw;
+
+        // Step 1: Get exchange rate — bootstrap with 1 unit if not yet available
+        let currentRate = exchangeRate;
+        if (!currentRate) {
+          const probeRaw = alignToLot(BigInt(Math.pow(10, tokenInDecimals)));
+          if (probeRaw > 0n) {
+            const probeEst = await estimateDeepBookSwap(client, deepbookPoolId, probeRaw, isBid, baseType, quoteType, networkKey);
+            const probeOut = Number(probeEst.amountOut) / Math.pow(10, tokenOutDecimals);
+            if (probeOut > 0) currentRate = probeOut;
+          }
+        }
+        if (!currentRate || currentRate <= 0) return;
+
+        // Step 2: Approximate amountIn = amountOut / rate
+        const approxInRaw = alignToLot(
+          BigInt(Math.floor((amountOutFloat / currentRate) * Math.pow(10, tokenInDecimals)))
+        );
+        if (approxInRaw <= 0n) return;
+
+        // Step 3: Run forward estimation to refine and get price impact
+        const refined = await estimateDeepBookSwap(client, deepbookPoolId, approxInRaw, isBid, baseType, quoteType, networkKey);
+        const refinedOutFloat = Number(refined.amountOut) / Math.pow(10, tokenOutDecimals);
+
+        // Step 4: Scale proportionally to hit the target output
+        let finalInRaw = approxInRaw;
+        if (refinedOutFloat > 0) {
+          const scaled = BigInt(Math.floor(Number(approxInRaw) * (amountOutFloat / refinedOutFloat)));
+          finalInRaw = alignToLot(scaled);
+        }
+        if (finalInRaw <= 0n) return;
+
+        const finalInFloat = Number(finalInRaw) / Math.pow(10, tokenInDecimals);
+        setAmountIn(finalInFloat.toFixed(tokenInDecimals));
+
+        const approxInFloat = Number(approxInRaw) / Math.pow(10, tokenInDecimals);
+        setExchangeRate(approxInFloat > 0 ? refinedOutFloat / approxInFloat : null);
+        setPriceImpact(refined.priceImpact);
+        setEstimationWarning(
+          refined.isApproximate
+            ? "Insufficient order book depth — estimated from mid price. Actual fill price may vary."
+            : null
+        );
+      } catch (err) {
+        console.error("Failed to estimate input:", err);
+      } finally {
+        setIsEstimatingReverse(false);
+      }
+    };
+
+    const debounce = setTimeout(estimateInput, 500);
+    return () => clearTimeout(debounce);
+  }, [amountOut, activeInput, tokenInSymbol, tokenOutSymbol, client]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -272,12 +380,6 @@ export function SwapForm({
 
     const tokenInDecimals = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig]?.decimals ?? 9;
     const amountInSmallest = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, tokenInDecimals)));
-    const effectiveMin = minSize * lotSize;
-    if (amountInSmallest < effectiveMin) {
-      const minDisplay = Number(effectiveMin) / Math.pow(10, tokenInDecimals);
-      setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook minimum order size)`);
-      return;
-    }
 
     if (!amountOut || parseFloat(amountOut) <= 0) {
       setError("Cannot estimate output amount");
@@ -293,12 +395,34 @@ export function SwapForm({
       throw new Error(`Token config not found for ${tokenOutSymbol}`);
     }
 
-    const amountInBase = lotSize > 1n
+    // lotSize is in base asset (SUI) units — only align for ask (SUI→USDC), not bid (USDC→SUI)
+    const isBidSubmit = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    const amountInBase = (!isBidSubmit && lotSize > 1n)
       ? (amountInSmallest / lotSize) * lotSize
       : amountInSmallest;
     const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
     // Slippage-adjusted minimum: this is what the ZKP commits to and the note is spendable for
     const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
+
+    // Validate minimum order size (minSize is always in base asset / SUI units)
+    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    if (!isBid) {
+      // Ask (SUI→USDC): amountIn is base asset, compare directly
+      if (amountInSmallest < minSize) {
+        const minDisplay = Number(minSize) / Math.pow(10, tokenInDecimals);
+        setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook minimum order size)`);
+        return;
+      }
+    } else {
+      // Bid (USDC→SUI): minSize is in SUI output terms, validate estimated output
+      const suiDecimals = tokenOutConfig.decimals;
+      const estimatedBaseOut = parseTokenAmount(amountOut, suiDecimals);
+      if (estimatedBaseOut < minSize) {
+        const minDisplay = Number(minSize) / Math.pow(10, suiDecimals);
+        setError(`Estimated SUI output must be at least ${minDisplay} SUI (DeepBook minimum order size)`);
+        return;
+      }
+    }
 
     try {
       // 1. Select notes and fetch proofs
@@ -433,9 +557,12 @@ export function SwapForm({
   const unspentNotes = notes.filter((n) => !n.spent);
 
   const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
-  const lotSizeStep = lotSize > 1n
-    ? Number(lotSize) / Math.pow(10, tokenInConfig?.decimals ?? 9)
-    : 0.000000001;
+  // lotSize is in base asset (SUI) units; don't apply it as step for bid (USDC input)
+  const isBidForStep = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+  const tokenInDecimals = tokenInConfig?.decimals ?? 9;
+  const lotSizeStep = (!isBidForStep && lotSize > 1n)
+    ? Number(lotSize) / Math.pow(10, tokenInDecimals)
+    : Math.pow(10, -tokenInDecimals);
   const maxAmountIn = unspentNotes
     .filter((n) => tokenInConfig && n.note.token === getTokenIdFromCoinType(tokenInConfig.type))
     .reduce((sum, n) => sum + n.note.amount, 0n);
@@ -505,27 +632,45 @@ export function SwapForm({
             </select>
           </div>
           <NumberInput
-            value={amountIn}
-            onChange={setAmountIn}
-            placeholder="0.0"
+            value={isEstimatingReverse ? "" : amountIn}
+            onChange={(val) => {
+              setAmountIn(val);
+              setActiveInput("from");
+            }}
+            placeholder={isEstimatingReverse ? "Estimating..." : "0.0"}
             step={lotSizeStep}
             min={0}
-            disabled={isProcessing}
+            disabled={isEstimatingReverse || isProcessing}
             onMax={handleMaxIn}
           />
           {amountIn && (() => {
             const decimals = tokenInConfig?.decimals ?? 9;
             const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
-            const effectiveMin = minSize * lotSize;
-            if (effectiveMin > 1n && raw < effectiveMin) {
-              const minDisplay = (Number(effectiveMin) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
+            const isBidInline = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+            // For bid (USDC→SUI): minSize is in SUI output terms — warn using estimated output
+            if (isBidInline && minSize > 1n && !isEstimating && amountOut && parseFloat(amountOut) > 0) {
+              const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+              const suiDecimals = tokenOutConfig?.decimals ?? 9;
+              const estimatedBaseOut = parseTokenAmount(amountOut, suiDecimals);
+              if (estimatedBaseOut < minSize) {
+                const minDisplay = (Number(minSize) / Math.pow(10, suiDecimals)).toFixed(suiDecimals).replace(/\.?0+$/, '');
+                return (
+                  <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                    ⚠ Estimated SUI output below minimum: {minDisplay} SUI required
+                  </p>
+                );
+              }
+            }
+            // minSize is in base asset (SUI) units; only show inline warning for ask direction
+            if (!isBidInline && minSize > 1n && raw < minSize) {
+              const minDisplay = (Number(minSize) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
               return (
                 <p className="mt-1 text-[10px] text-yellow-400 font-mono">
                   ⚠ Minimum swap amount is {minDisplay} {tokenInSymbol}
                 </p>
               );
             }
-            if (lotSize > 1n) {
+            if (!isBidInline && lotSize > 1n) {
               const aligned = (raw / lotSize) * lotSize;
               if (raw !== aligned) {
                 const alignedDisplay = (Number(aligned) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
@@ -582,7 +727,14 @@ export function SwapForm({
             value={isEstimating ? "" : amountOut}
             onChange={(val) => {
               setAmountOut(val);
-              setIsTargetAmount(val !== "" && parseFloat(val) > 0);
+              if (val !== "" && parseFloat(val) > 0) {
+                setIsTargetAmount(true);
+                setActiveInput("to");
+              } else {
+                setIsTargetAmount(false);
+                setActiveInput("from");
+                setAmountIn("");
+              }
             }}
             placeholder={isEstimating ? "Estimating..." : "0.0"}
             step={0.000000001}
