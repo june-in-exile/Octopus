@@ -1,4 +1,4 @@
-import { SuiClient } from "@mysten/sui/client";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 
@@ -32,7 +32,7 @@ const FLOAT_SCALING = 1_000_000_000n;
  * mid_price = (best_bid + best_ask) / 2, scaled by FLOAT_SCALING (1e9).
  */
 async function estimateFromMidPrice(
-  client: SuiClient,
+  client: SuiJsonRpcClient,
   poolId: string,
   amountIn: bigint,
   isBid: boolean,
@@ -98,7 +98,7 @@ async function estimateFromMidPrice(
  * @returns Swap estimation with output amount, price impact, and fees
  */
 export async function estimateDeepBookSwap(
-  client: SuiClient,
+  client: SuiJsonRpcClient,
   poolId: string,
   amountIn: bigint,
   isBid: boolean,
