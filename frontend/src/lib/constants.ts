@@ -6,27 +6,30 @@
 export const NETWORK = "testnet" as "testnet" | "mainnet" | "devnet" | "localnet";
 
 // Per-network contract addresses (all baked into the bundle at build time)
+const trimEnv = (value: string | undefined): string | null =>
+  value?.trim() || null;
+
 export const NETWORK_CONFIG = {
   mainnet: {
-    packageId: process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID || null, // For function calls (published-at)
-    originalPackageId: process.env.NEXT_PUBLIC_MAINNET_ORIGINAL_PACKAGE_ID || null, // For event queries (original-id)
-    suiPoolId: process.env.NEXT_PUBLIC_MAINNET_SUI_POOL_ID || null,
-    usdcPoolId: process.env.NEXT_PUBLIC_MAINNET_USDC_POOL_ID || null,
-    usdcCoinType: process.env.NEXT_PUBLIC_MAINNET_USDC_TYPE || null,
-    deepCoinType: process.env.NEXT_PUBLIC_MAINNET_DEEP_TYPE || null,
-    suiusdcPoolId: process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || null,
+    packageId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID), // For function calls (published-at)
+    originalPackageId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_ORIGINAL_PACKAGE_ID), // For event queries (original-id)
+    suiPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_SUI_POOL_ID),
+    usdcPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_USDC_POOL_ID),
+    usdcCoinType: trimEnv(process.env.NEXT_PUBLIC_MAINNET_USDC_TYPE),
+    deepCoinType: trimEnv(process.env.NEXT_PUBLIC_MAINNET_DEEP_TYPE),
+    suiusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC),
     graphqlUrl: "https://graphql.mainnet.sui.io/graphql",
   },
   testnet: {
-    packageId: process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID || null, // For function calls (published-at)
-    originalPackageId: process.env.NEXT_PUBLIC_TESTNET_ORIGINAL_PACKAGE_ID || null, // For event queries (original-id)
-    suiPoolId: process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID || null,
-    usdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null,
-    dbusdcPoolId: process.env.NEXT_PUBLIC_TESTNET_DBUSDC_POOL_ID || null,
-    usdcCoinType: process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE || null,
-    dbusdcCoinType: process.env.NEXT_PUBLIC_TESTNET_DBUSDC_TYPE || null,
-    deepCoinType: process.env.NEXT_PUBLIC_TESTNET_DEEP_TYPE || null,
-    suidbusdcPoolId: process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC || null,
+    packageId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID), // For function calls (published-at)
+    originalPackageId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_ORIGINAL_PACKAGE_ID), // For event queries (original-id)
+    suiPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID),
+    usdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID),
+    dbusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DBUSDC_POOL_ID),
+    usdcCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE),
+    dbusdcCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DBUSDC_TYPE),
+    deepCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DEEP_TYPE),
+    suidbusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC),
     graphqlUrl: "https://graphql.testnet.sui.io/graphql",
   },
 } as const;
