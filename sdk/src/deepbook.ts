@@ -1,6 +1,10 @@
-import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
+
+interface SuiClientLike {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  devInspectTransactionBlock(input: { transactionBlock: any; sender: string }): Promise<any>;
+}
 
 /**
  * Swap estimation result
@@ -32,7 +36,7 @@ const FLOAT_SCALING = 1_000_000_000n;
  * mid_price = (best_bid + best_ask) / 2, scaled by FLOAT_SCALING (1e9).
  */
 async function estimateFromMidPrice(
-  client: SuiJsonRpcClient,
+  client: SuiClientLike,
   poolId: string,
   amountIn: bigint,
   isBid: boolean,
@@ -98,7 +102,7 @@ async function estimateFromMidPrice(
  * @returns Swap estimation with output amount, price impact, and fees
  */
 export async function estimateDeepBookSwap(
-  client: SuiJsonRpcClient,
+  client: SuiClientLike,
   poolId: string,
   amountIn: bigint,
   isBid: boolean,
