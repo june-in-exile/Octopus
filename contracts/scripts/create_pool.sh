@@ -34,7 +34,7 @@ if [ "$COIN_TYPE" != "sui" ] && [ "$COIN_TYPE" != "usdc" ] && [ "$COIN_TYPE" != 
     exit 1
 fi
 
-if [ "$COIN_TYPE" = "dbusdc" ] || [ "$COIN_TYPE" = "all" ]; then
+if [ "$COIN_TYPE" = "dbusdc" ]; then
     if [ "$NETWORK" != "testnet" ]; then
         echo "Error: DBUSDC pool is only supported on testnet"
         exit 1
@@ -228,7 +228,9 @@ case "$COIN_TYPE" in
     all)
         create_pool sui "$SUI_TYPE"
         create_pool usdc "$USDC_TYPE"
-        create_pool dbusdc "$DBUSDC_TYPE"
+        if [ "$NETWORK" = "testnet" ]; then
+            create_pool dbusdc "$DBUSDC_TYPE"
+        fi
         ;;
 esac
 
