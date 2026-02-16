@@ -235,14 +235,18 @@ export function SwapForm({
         const amountOutFloat = Number(estimation.amountOut) /
           Math.pow(10, tokenOutDecimals);
 
+        if (estimation.isApproximate) {
+          setAmountOut("");
+          setExchangeRate(null);
+          setPriceImpact(0);
+          setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+          return;
+        }
+
         setAmountOut(amountOutFloat.toFixed(tokenOutDecimals));
         setExchangeRate(amountInFloat > 0 ? amountOutFloat / amountInFloat : null);
         setPriceImpact(estimation.priceImpact);
-        setEstimationWarning(
-          estimation.isApproximate
-            ? "Insufficient order book depth — estimated from mid price. Actual fill price may vary."
-            : null
-        );
+        setEstimationWarning(null);
       } catch (err) {
         console.error("Failed to estimate output:", err);
         setAmountOut("0");
@@ -312,6 +316,13 @@ export function SwapForm({
           const probeRaw = alignToLot(BigInt(Math.pow(10, tokenInDecimals)));
           if (probeRaw > 0n) {
             const probeEst = await estimateDeepBookSwap(client, deepbookPoolId, probeRaw, isBid, baseType, quoteType, networkKey);
+            if (probeEst.isApproximate) {
+              setAmountIn("");
+              setExchangeRate(null);
+              setPriceImpact(0);
+              setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+              return;
+            }
             const probeOut = Number(probeEst.amountOut) / Math.pow(10, tokenOutDecimals);
             if (probeOut > 0) currentRate = probeOut;
           }
@@ -326,6 +337,13 @@ export function SwapForm({
 
         // Step 3: Run forward estimation to refine and get price impact
         const refined = await estimateDeepBookSwap(client, deepbookPoolId, approxInRaw, isBid, baseType, quoteType, networkKey);
+        if (refined.isApproximate) {
+          setAmountIn("");
+          setExchangeRate(null);
+          setPriceImpact(0);
+          setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+          return;
+        }
         const refinedOutFloat = Number(refined.amountOut) / Math.pow(10, tokenOutDecimals);
 
         // Step 4: Scale proportionally to hit the target output
@@ -342,11 +360,7 @@ export function SwapForm({
         const approxInFloat = Number(approxInRaw) / Math.pow(10, tokenInDecimals);
         setExchangeRate(approxInFloat > 0 ? refinedOutFloat / approxInFloat : null);
         setPriceImpact(refined.priceImpact);
-        setEstimationWarning(
-          refined.isApproximate
-            ? "Insufficient order book depth — estimated from mid price. Actual fill price may vary."
-            : null
-        );
+        setEstimationWarning(null);
       } catch (err) {
         console.error("Failed to estimate input:", err);
       } finally {
@@ -527,9 +541,9 @@ export function SwapForm({
           ],
         });
       }
-      
+
       const result = await signAndExecute({ transaction: tx });
-      
+
       // 7. Success!
       setState("success");
       const actualAmountOut = formatTokenAmount(swapNote.amount, tokenOutConfig.decimals);
