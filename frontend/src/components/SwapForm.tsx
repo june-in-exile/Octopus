@@ -80,6 +80,7 @@ export function SwapForm({
   }, [selectedToken]);
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
+  const [isTargetAmount, setIsTargetAmount] = useState(false);
   const [slippage, setSlippage] = useState(50); // 0.5% in bps
   const [isEstimating, setIsEstimating] = useState(false);
   const [state, setState] = useState<SwapState>("idle");
@@ -137,11 +138,13 @@ export function SwapForm({
     setTokenOutSymbol(tokenInSymbol);
     setAmountIn(amountOut);
     setAmountOut("");
+    setIsTargetAmount(false);
   };
 
   // Estimate output amount when input changes
   useEffect(() => {
     const estimateOutput = async () => {
+      setIsTargetAmount(false);
       if (!amountIn || parseFloat(amountIn) <= 0) {
         setEstimationWarning(null);
         setAmountOut("");
@@ -481,7 +484,7 @@ export function SwapForm({
         {/* Token Out */}
         <div>
           <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            To (Estimated)
+            {isTargetAmount ? "To (Target)" : "To (Estimated)"}
           </label>
           <div className="flex gap-2">
             <select
@@ -489,6 +492,7 @@ export function SwapForm({
               onChange={(e) => {
                 const newTokenOut = e.target.value as "SUI" | "USDC" | "DBUSDC";
                 setTokenOutSymbol(newTokenOut);
+                setIsTargetAmount(false);
                 if (newTokenOut === tokenInSymbol) {
                   setTokenInSymbol(tokenOutSymbol);
                 }
@@ -500,11 +504,17 @@ export function SwapForm({
                 <option key={token} value={token}>{token}</option>
               ))}
             </select>
-            <input
-              type="text"
-              value={isEstimating ? "Estimating..." : amountOut}
-              readOnly
-              className="input flex-1 bg-black/30"
+            <NumberInput
+              value={isEstimating ? "" : amountOut}
+              onChange={(val) => {
+                setAmountOut(val);
+                setIsTargetAmount(val !== "" && parseFloat(val) > 0);
+              }}
+              placeholder={isEstimating ? "Estimating..." : "0.0"}
+              step={0.000000001}
+              min={0}
+              disabled={isEstimating || isProcessing}
+              className="flex-1"
             />
           </div>
           {isEstimating && (
