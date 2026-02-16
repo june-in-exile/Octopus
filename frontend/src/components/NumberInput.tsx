@@ -27,9 +27,8 @@ export function NumberInput({
 }: NumberInputProps) {
   const handleIncrement = () => {
     const currentValue = parseFloat(value) || 0;
-    const snapped = Math.floor(currentValue / step) * step;
-    const isAligned = Math.abs(currentValue - snapped) < step * 1e-9;
-    const newValue = isAligned ? currentValue + step : snapped + step;
+    const currentSteps = Math.round(currentValue / step);
+    const newValue = (currentSteps + 1) * step;
     if (max === undefined || newValue <= max) {
       onChange(newValue.toFixed(9));
     }
@@ -37,9 +36,8 @@ export function NumberInput({
 
   const handleDecrement = () => {
     const currentValue = parseFloat(value) || 0;
-    const snapped = Math.floor(currentValue / step) * step;
-    const isAligned = Math.abs(currentValue - snapped) < step * 1e-9;
-    const newValue = Math.max(min, isAligned ? currentValue - step : snapped);
+    const currentSteps = Math.round(currentValue / step);
+    const newValue = Math.max(min, (currentSteps - 1) * step);
     onChange(newValue.toFixed(9));
   };
 
