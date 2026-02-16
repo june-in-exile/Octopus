@@ -8,13 +8,15 @@ Start every interaction with 'June' (the username). For example: 'Hi June, the j
 
 Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
 
+When modifying features, do not leave deprecated versions; remove them directly.
+
 Sync all modifications with the existing documentation. If a change conflicts with files like README.md, CLAUDE.md, or GEMINI.md, ensure the documentation is updated accordingly.
 
 ## 1. Project Overview
 
 **Octopus** is a privacy protocol for the Sui blockchain that enables on-chain transaction obfuscation. It implements a UTXO-based privacy pool using Groth16 ZK-SNARKs, allowing users to shield, transfer, swap, and unshield tokens privately.
 
-The project is a "Highly Functional MVP" with core features like private transfers fully working and DeFi (DEX) integration nearly complete.
+The project is a **Production-Ready MVP** with all core features fully working: shield, unshield, private transfers, and private swaps via DeepBook V3. Both testnet and mainnet are deployed and active.
 
 **Key Technologies:**
 
@@ -66,7 +68,7 @@ sui move build
 sui move test
 ```
 
-*Expect around 27 tests to pass.*
+*Expect around 28 tests to pass.*
 
 ### 3. Build SDK (Required for Frontend)
 
@@ -142,19 +144,37 @@ nullifier = Poseidon(nullifying_key, leaf_index)
 * Verifies proof, spends input notes, executes swap via DeepBook pool, creates output and change notes.
 * For testing without a real DeepBook pool, use `pool::swap_for_testing` (skips proof verification, uses 1:1 mock swap).
 
+## Deployment Info
+
+### Mainnet
+
+```txt
+Package ID:  0x76c4ce9b941bc9d2988b07a38d8a72147c8275b95007ebb84c97b762c5a5d37e
+SUI Pool:    0x375608b40591a0c2ab275dcc1f6b9341a16e1c3b04603d44515535d41ccfdd06
+USDC Pool:   0x1cc65740f79fa1dace7d7b11b8c29a37b7c1750ac840ad17d36c3794e5165313
+```
+
+### Testnet
+
+```txt
+Package ID:  0x13bde5f943246578a98ce1da85350b2a8bc2304a2581ec8cf1eea9fb266724ce
+SUI Pool:    0x33d00746b1053c4bb94d4513003ade8b82a9790b486246b7628d56a8600baf25
+USDC Pool:   0x4a9bcb0999beebc31dd133f6be78780283a50168a0034af97a50f5987174d002
+DBUSDC Pool: 0x3b74a9b4850ea59e9dc5f75ea4138731ce6cab275cd7bfc1b36fc1bef0d38e28 (testnet-only)
+```
+
 ### Milestones
 
 Detailed implementation plans are available in the [milestones/](milestones/) directory:
 
-1. **[Private Transfers](milestones/01-private-transfers.md)** (Optimize)
-   * Extends utility beyond entry/exit
+1. **[Private Transfers](milestones/01-private-transfers.md)** ✅ Complete
+   * 2-input, 2-output private transfer circuit
    * Foundation for all other features
-   * 2-input, 2-output transfer circuit
 
-2. **[DeFi Integration](milestones/02-defi-integration.md)** (Fixing)
-   * Private swaps through DeepBook
-   * Increases transaction volume and anonymity set
-   * Requires Private Transfers first
+2. **[DeFi Integration](milestones/02-defi-integration.md)** ✅ Complete
+   * Private swaps via DeepBook V3
+   * Bi-directional estimation, lot size enforcement, slippage protection
+   * Active on mainnet (SUI ↔ USDC) and testnet (SUI ↔ DBUSDC)
 
 3. **[Relayer Network](milestones/03-relayer-network.md)** (Future)
    * Improves privacy by hiding transaction origin
@@ -166,4 +186,4 @@ Detailed implementation plans are available in the [milestones/](milestones/) di
    * View keys for selective disclosure
    * Tax reporting tools
 
-See [milestones/README.md](docs/README.md) for details.
+See [docs/](docs/) for detailed milestone documentation.

@@ -28,22 +28,25 @@ template Unshield(levels) {
     signal input nullifying_key;         // Secret key for nullifier generation (256-bit)
 
     // Input note (note being spent/unshielded)
-    signal input input_randoms[2];      // Random blinding factor
+    signal input input_randoms[2];       // Random blinding factor
     signal input input_amounts[2];       // Note amounts (can be 0 for dummy)
-    signal input input_leaf_indices[2]; // Leaf positions in tree
+    signal input input_leaf_indices[2];  // Leaf positions in tree
     signal input input_path_elements[2][levels];  // Merkle proof siblings
 
     // Change note (if input > unshield_amount, return change)
-    signal input change_amount;           // Change amount
     signal input change_random;          // Random blinding factor for change
+    signal input change_amount;          // Change amount
+
+    // Nullifiers (precomputed off-chain, constrained by circuit)
+    signal input nullifiers[2];          // Poseidon(nullifying_key, leaf_index) for each input note
 
     // ============ Public Inputs ============
-    signal input unshield_amount;         // Amount to unshield to public address
+    signal input unshield_amount;        // Amount to unshield to public address
     signal input token;                  // Token identifier (address hash)
     signal input merkle_root;            // Expected Merkle root
 
     // ============ Public Outputs ============
-    signal output input_nullifiers[2];   // Nullifiers for input notes
+    signal output nullifiers_hash;       // Poseidon hash of both nullifiers
     signal output change_commitment;     // Commitment for change note (0 if no change)
 
     // ============ Step 1: Range Check ============
@@ -66,8 +69,12 @@ template Unshield(levels) {
     signal mpk <== Poseidon(2)([spending_key, nullifying_key]);
 
     // ============ Step 4: Verify Input Notes ============
-    // Verify commitment inclusion and calculate nullifier for each note
-    input_nullifiers <== VerifyNote(levels, 2)(mpk, nullifying_key, token, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    // Verify commitment inclusion and constrain the provided nullifiers
+    signal expected_nullifiers[2] <== VerifyNote(levels, 2)(mpk, nullifying_key, token, input_randoms, input_amounts, input_leaf_indices, input_path_elements, merkle_root);
+    for (var i = 0; i < 2; i++) {
+        nullifiers[i] === expected_nullifiers[i];
+    }
+    nullifiers_hash <== Poseidon(2)([nullifiers[0], nullifiers[1]]);
 
     // ============ Step 5: Compute Change Commitment ============
     signal change_nsk <== Poseidon(2)([mpk, change_random]);

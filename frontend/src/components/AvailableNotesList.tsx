@@ -125,7 +125,7 @@ export function AvailableNotesList({ notes, loading, error, tokenConfig, lastSca
           {sortedNotes.map((note, i) => (
             <div key={i} className="flex justify-between font-mono p-1.5 bg-black/30 clip-corner">
               <span className="text-gray-500">NOTE #{(i + 1).toString().padStart(2, '0')}:</span>
-              <span className="text-cyber-blue">{formatTokenAmount(note.note.amount, tokenConfig.decimals)} {tokenConfig.symbol}</span>
+              <span className="text-cyber-blue">{formatTokenAmount(note.displayAmount ?? note.note.amount, tokenConfig.decimals)} {tokenConfig.symbol}</span>
             </div>
           ))}
         </div>

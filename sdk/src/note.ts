@@ -16,6 +16,14 @@ export interface SelectableNote {
 }
 
 /**
+ * Format amount for error messages (MIST → SUI with proper formatting)
+ */
+function formatAmountForError(mist: bigint): string {
+    const sui = Number(mist) / 1e9;
+    return `${mist} MIST (${sui.toFixed(9)} SUI)`;
+}
+
+/**
  * Select notes to cover the required amount.
  *
  * Strategy:
@@ -75,13 +83,14 @@ export function selectNotes(
     if (totalBalance >= amount) {
         throw new Error(
             `Cannot select notes for transfer. The circuit supports maximum 2 input notes, ` +
-            `but your amount (${amount}) requires 3 or more notes. ` +
-            `Available balance: ${totalBalance} across ${validNotes.length} notes. ` +
+            `but your amount (${formatAmountForError(amount)}) requires 3 or more notes. ` +
+            `Available balance: ${formatAmountForError(totalBalance)} across ${validNotes.length} notes. ` +
             `Solution: Consolidate your notes first by doing smaller transfers, or wait for multi-input circuit support.`
         );
     }
 
     throw new Error(
-        `Insufficient balance for transfer. Required: ${amount}, Available: ${totalBalance}`
+        `Insufficient balance for transfer. Required: ${formatAmountForError(amount)}, ` +
+        `Available: ${formatAmountForError(totalBalance)}`
     );
 }

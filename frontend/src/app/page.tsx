@@ -14,18 +14,19 @@ import { SwapForm } from "@/components/SwapForm";
 import { useLocalKeypair } from "@/hooks/useLocalKeypair";
 import { useNotes } from "@/hooks/useNotes";
 import { usePoolInfo } from "@/hooks/usePoolInfo";
+import { useBalance } from "@/hooks/useBalance";
 import type { TokenConfig } from "@/lib/constants";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import { getWorkerManager } from "@/lib/workerManager";
 import { initPoseidon } from "@/lib/poseidon";
 
 type TabType = "shield" | "unshield" | "transfer" | "swap";
-type TokenSymbol = "SUI" | "USDC";
+type TokenSymbol = "SUI" | "USDC" | "DBUSDC";
 
 export default function Home() {
   const account = useCurrentAccount();
   const { network } = useSuiClientContext();
-  const { packageId, tokens, graphqlUrl, isConfigured } = useNetworkConfig();
+  const { packageId, originalPackageId, tokens, graphqlUrl, isConfigured } = useNetworkConfig();
   const isMainnet = network === "mainnet";
   const [activeTab, setActiveTab] = useState<TabType>("shield");
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>("SUI");
@@ -59,19 +60,21 @@ export default function Home() {
     error: notesError,
     refresh: refreshNotes,
     forceFullRefresh: forceFullRefreshNotes,
-    markNoteSpent,
     lastScanStats,
   } = useNotes(keypair, isLoading, tokenConfig?.poolId ?? "", tokenConfig?.type ?? "");
+
+  // Fetch wallet balance for ShieldForm
+  const { balance: walletBalance, loading: isLoadingBalance } = useBalance(account, tokenConfig);
 
   // Pool note counts — scanned once at startup for all pools, updated after operations
   const [workerNoteCounts, setWorkerNoteCounts] = useState<Record<string, number>>({});
 
   const refreshAllPoolCounts = useCallback(async () => {
-    if (!tokens || !packageId || !graphqlUrl) return;
+    if (!tokens || !packageId || !originalPackageId || !graphqlUrl) return;
     const worker = getWorkerManager();
     const results = await Promise.allSettled(
       Object.values(tokens).map(async (token) => {
-        const count = await worker.countPoolNotes(graphqlUrl, packageId, token.poolId);
+        const count = await worker.countPoolNotes(graphqlUrl, originalPackageId, token.poolId);
         return { poolId: token.poolId, count };
       })
     );
@@ -82,7 +85,7 @@ export default function Home() {
       }
     }
     setWorkerNoteCounts((prev) => ({ ...prev, ...updates }));
-  }, [tokens, packageId, graphqlUrl]);
+  }, [tokens, packageId, originalPackageId, graphqlUrl]);
 
   // Scan all pools at startup
   useEffect(() => {
@@ -94,17 +97,13 @@ export default function Home() {
 
   // Calculate balance and note count from loaded notesamount
   const unspentNotes = notes.filter((n) => !n.spent);
-  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + n.note.amount, 0n);
+  const shieldedBalance = unspentNotes.reduce((sum, n) => sum + (n.displayAmount ?? n.note.amount), 0n);
   const noteCount = unspentNotes.length;
   
   const handleOperationSuccess = async () => {
     // Refresh notes and pool info from blockchain after successful operation
-    // Add delay to allow blockchain events to be indexed
     await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    // Use forceFullRefresh to clear cache and do a full scan
-    // This ensures we query from the beginning and catch the new event
-    // even if the GraphQL indexer has a slight delay
+    
     forceFullRefreshNotes();
     refreshPoolInfo();
     refreshAllPoolCounts();
@@ -268,7 +267,7 @@ export default function Home() {
                 <div className="card">
                   <div className="flex items-center gap-3 px-4 py-3">
                     <span className="text-[10px] text-gray-500 font-mono uppercase tracking-wider">Token:</span>
-                    {(["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
+                    {(tokens ? Object.keys(tokens) as TokenSymbol[] : ["SUI", "USDC"] as TokenSymbol[]).map((sym) => (
                       <button
                         key={sym}
                         onClick={() => setSelectedToken(sym)}
@@ -306,16 +305,14 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setActiveTab("swap")}
-                      className={`tab-button flex-1 ${activeTab === "swap"
+                      className={`tab-button flex-1 flex flex-col items-center gap-0.5 ${activeTab === "swap"
                         ? "text-cyber-blue active"
-                        : isMainnet
-                          ? "text-gray-500 hover:text-gray-300"
-                          : "text-gray-600 opacity-60"
+                        : "text-gray-500 hover:text-gray-300"
                         }`}
                     >
-                      ⇌ SWAP
+                      <span>⇌ SWAP</span>
                       {!isMainnet && (
-                        <span className="ml-1 text-[8px] text-amber-500/70 font-mono">MAINNET</span>
+                        <span className="text-[8px] text-green-500/70 font-mono">TEST MODE</span>
                       )}
                     </button>
                     <button
@@ -338,7 +335,13 @@ export default function Home() {
                     ) : (
                       <>
                         {activeTab === "shield" && (
-                          <ShieldForm keypair={keypair} tokenConfig={tokenConfig} onSuccess={handleOperationSuccess} />
+                          <ShieldForm
+                            keypair={keypair}
+                            tokenConfig={tokenConfig}
+                            balance={walletBalance}
+                            loading={isLoadingBalance}
+                            onSuccess={handleOperationSuccess}
+                          />
                         )}
                         {activeTab === "transfer" && (
                           <TransferForm
@@ -348,7 +351,6 @@ export default function Home() {
                             notes={notes}
                             loading={isLoadingNotes}
                             onSuccess={handleOperationSuccess}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                         {activeTab === "swap" && (
@@ -356,10 +358,8 @@ export default function Home() {
                             keypair={keypair}
                             notes={notes}
                             loading={isLoadingNotes}
-                            error={notesError}
+                            selectedToken={selectedToken}
                             onSuccess={handleOperationSuccess}
-                            onRefresh={refreshNotes}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                         {activeTab === "unshield" && (
@@ -370,7 +370,6 @@ export default function Home() {
                             notes={notes}
                             loading={isLoadingNotes}
                             onSuccess={handleOperationSuccess}
-                            markNoteSpent={markNoteSpent}
                           />
                         )}
                       </>

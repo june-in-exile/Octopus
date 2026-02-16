@@ -14,16 +14,16 @@ Octopus enables private token operations on Sui by implementing a UTXO-based pri
   - Shield = Sending (Commitment, Encrypted Note) Into Pool & Depositing
   - No ZKP required.
 - **Unshield**: Withdraw tokens with ZK proof verification and automatic change handling
-  - Sending (ZKP, Input Nullifier, Output Note) Into Pool & Withdrawing
+  - Sending (ZKP, Input Nullifiers, Output Note) Into Pool & Withdrawing
   - ZKP proves
-    1. you own the Note
-    2. the calculations for the withdrawal amount, change, and nullifier are correct.
+    1. you own the Note(s) (1 or 2 input notes supported)
+    2. the calculations for the withdrawal amount, change, and nullifiers are correct.
 - **Transfer**: Send tokens privately to other users within the pool
-  - Sending (ZKP, Input Nullifiers, Output Note) Into Pool
+  - Sending (ZKP, Input Nullifiers, Output Notes) Into Pool
   - ZKP proves
-    1. you own the Notes
+    1. you own the Notes (2-input, 2-output UTXO model)
     2. total input amount = total output amount
-- **Swap**: Exchange tokens privately through integrated DEXs 🚧 **85% Complete** (DeepBook V3 Mainnet only)
+- **Swap**: Exchange tokens privately through integrated DEXs (DeepBook V3 Mainnet only)
 
 ## Design & References
 
@@ -34,17 +34,22 @@ Octopus builds upon proven privacy protocols while introducing innovations for t
 - **Sui Blockchain Integration**: First privacy protocol on Sui, leveraging Move language for on-chain proof verification
 - **Private DEX Swaps**: ZK circuit integration with DeepBook for privacy-preserving token exchanges
 - **Modern Cryptographic Stack**: ChaCha20-Poly1305 AEAD encryption with HKDF-SHA256 key derivation
-- **Automatic Change Handling**: Built-in change note creation in unshield operations to prevent fund loss
+- **Automatic Change Handling**: Built-in change note creation in unshield/transfer/swap operations to prevent fund loss
 
 ### Cryptographic Primitives
 
 ![Cryptographic Primitives Overview](frontend/public//technical.svg)
 
 ```
+nullifying_key = Poseidon(spending_key, 1)
 MPK = Poseidon(spending_key, nullifying_key)   // Master Public Key
 NSK = Poseidon(MPK, random)                    // Note Secret Key
-commitment = Poseidon(NSK, token, value)       // Note Commitment
+commitment = Poseidon(NSK, token, amount)      // Note Commitment
 nullifier = Poseidon(nullifying_key, leaf_index) // Prevents double-spend
+
+// Viewing Keys
+viewing_private_key = X25519(SHA256(spending_key))
+viewing_public_key = X25519.publicKey(viewing_private_key)
 ```
 
 - **`Spending Key`**: A private key that proves ownership of a note and authorizes spending it. It must be kept secret.
@@ -82,7 +87,7 @@ sui move build
 sui move test
 ```
 
-Expected output: **27 tests passing**
+Expected output: **28 tests passing**
 
 Reference [contracts/README.md](contracts/README.md) for deployment guides.
 
@@ -98,6 +103,13 @@ This generates the SDK TypeScript library that the frontend depends on.
 
 ### 4. Run Frontend (Web UI)
 
+> **Environment Setup**: The frontend reads contract addresses from a `.env.local` file.
+> Create a symlink to the root `.env` before running:
+>
+> ```bash
+> ln -s ../.env frontend/.env.local
+> ```
+
 ```bash
 cd frontend
 npm install
@@ -112,82 +124,76 @@ Open <http://localhost:3000> to access the web interface.
 - **Note scanning**: Background worker scans blockchain for your encrypted notes
 - **Real-time balances**: Automatically computed from unspent notes
 - **Shield/Unshield**: Deposit and withdraw with ZK proofs
-- **Private transfers**: Send tokens to other users (2-input, 2-output) ✨
-- **Swap UI**: Token exchange interface (awaiting DEX integration) 🚧
+- **Private transfers**: Send tokens to other users (2-input, 2-output)
+- **Swap UI**: Token exchange interface with DeepBook V3 integration
 
 ## Circuit Details
 
 ### Unshield Circuit (`unshield.circom`)
 
-| Property | Value |
-|----------|-------|
-| Constraints | ~11,000 |
-| Public Inputs | 1 (unshield_amount) |
-| Public Outputs | 3 (nullifier, merkle_root, change_commitment) |
-| Private Inputs | 8 (keys, note data, Merkle path, change_random) |
-| Merkle Depth | 16 levels |
+| Property       | Value                                                                  |
+| -------------- | ---------------------------------------------------------------------- |
+| Public Inputs  | `unshield_amount`, `token`, `merkle_root`                              |
+| Public Outputs | `nullifiers_hash`, `change_commitment`                                 |
+| Private Inputs | keys, 2 input notes, Merkle paths, change random/amount, nullifiers    |
+| Input Model    | 2-input (1 real + 1 dummy, or 2 real notes)                            |
+| Merkle Depth   | 16 levels                                                              |
 
 The circuit proves:
 
 1. Knowledge of spending_key and nullifying_key (ownership)
-2. Input note exists in Merkle tree
+2. Input notes exist in Merkle tree
 3. Correct nullifier derivation (prevents double-spend)
-4. Balance conservation: `input_value = unshield_amount + change_value`
-5. Correct change commitment computation (if change exists)
+4. Balance conservation: `sum(inputs) = unshield_amount + change_amount`
+5. Correct change commitment computation
 
 ### Transfer Circuit (`transfer.circom`)
 
-| Property | Value |
-|----------|-------|
-| Constraints | 21,649 |
-| Public Inputs | 5 (merkle_root, nullifier_1, nullifier_2, commitment_1, commitment_2) |
-| Private Inputs | 14 (2 input notes, 2 output notes, Merkle paths) |
-| Transaction Model | 2-input, 2-output UTXO |
+| Property          | Value                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| Public Inputs     | `token`, `merkle_root`                                                                            |
+| Public Outputs    | `nullifiers_hash`, `recipient_commitment`, `change_commitment`                                    |
+| Private Inputs    | keys, 2 input notes, Merkle paths, recipient MPK/amount/random, change amount/random, nullifiers  |
+| Transaction Model | 2-input, 2-output UTXO                                                                            |
 
 The circuit proves:
 
 1. Ownership of 2 input notes (or 1 note + 1 dummy)
 2. Input notes exist in Merkle tree
 3. Correct nullifier derivation for spent notes
-4. Balance conservation: `input_1 + input_2 = output_1 + output_2`
+4. Balance conservation: `input_1 + input_2 = recipient_amount + change_amount`
 5. Valid output commitments for recipient and change notes
 
-### Swap Circuit (`swap.circom`) 🚧 **In Progress**
+### Swap Circuit (`swap.circom`)
 
 > ⚠️ **DeepBook V3 is only available on Mainnet.** Swap functionality is currently limited to Mainnet deployments.
 
-| Property | Value |
-|----------|-------|
-| Constraints | 22,553 |
-| Public Inputs | 3 (token_in, token_out, merkle_root) |
-| Public Outputs | 5 (nullifiers[2], swap_data_hash, output_commitment, change_commitment) |
-| Private Inputs | 12 (keys, input notes, swap params, output/change randoms) |
-| Total public signal bytes | 256 (8 × 32) |
+| Property       | Value                                                                             |
+| -------------- | --------------------------------------------------------------------------------- |
+| Public Inputs  | `token_in`, `token_out`, `amount_in`, `min_amount_out`, `merkle_root`             |
+| Public Outputs | `nullifiers_hash`, `swap_commitment`, `change_commitment`                         |
+| Private Inputs | keys, 2 input notes, Merkle paths, swap random, change random/amount, nullifiers  |
+| Input Model    | 2-input (same token type as `token_in`)                                           |
 
 The circuit proves:
 
 1. Ownership and validity of input notes
-2. Correct swap execution with slippage protection
-3. Valid output notes (swapped tokens + change)
+2. Correct swap execution with slippage protection (`min_amount_out`)
+3. Valid output notes (swapped tokens + change in original token)
 
 ## Implementation Status
 
 ### ✅ Fully Implemented
 
-- **Shield/Unshield**: Deposit and withdraw with ZK proofs
+- **Shield/Unshield**: Deposit and withdraw with ZK proofs (2-input support)
 - **Private Transfers**: 2-input, 2-output UTXO model with recipient + change notes
+- **Private Swaps**: Circuit + SDK + DeepBook V3 integration (ask & bid directions)
 - **Note Encryption**: ChaCha20-Poly1305 + ECDH for secure note storage
 - **Multi-Keypair Management**: Store and switch between multiple privacy identities
 - **Background Note Scanning**: Web Workers + GraphQL for non-blocking note discovery
 - **Merkle Tree**: Incremental tree with 65,536 note capacity
 - **Nullifier Registry**: On-chain double-spend prevention
-
-### 🚧 In Progress (85% Complete)
-
-- **Private Swaps**: Circuit and SDK complete, awaiting DeepBook integration
-  - Mock 1:1 swap working in test environment
-  - Production swap function scaffolded in contracts
-  - Frontend UI complete with slippage protection
+- **Historical Roots**: 100-root circular buffer for concurrent transactions
 
 ### 📋 Planned (Future Milestones)
 
@@ -210,8 +216,8 @@ The circuit proves:
 
 ## Project Status
 
-**Current Branch**: `fix/private-transfer`
-**Last Updated**: February 3, 2026
+**Current Branch**: `dev`
+**Last Updated**: February 2026
 **Overall Status**: 🟢 Highly Functional MVP
 
 ### Progress by Milestone
@@ -219,8 +225,8 @@ The circuit proves:
 | Milestone | Status | Completion |
 | --------- | ------ | ---------- |
 | **Core Privacy (Shield/Unshield)** | ✅ Complete | 100% |
-| **Milestone 1: Private Transfers** | ✅ Working | 95% |
-| **Milestone 2: DeFi Integration (Swaps)** | 🚧 In Progress | 85% |
+| **Milestone 1: Private Transfers** | ✅ Complete | 100% |
+| **Milestone 2: DeFi Integration (Swaps)** | ✅ Complete | 100% |
 | **Milestone 3: Relayer Network** | ⏳ Planned | 0% |
 | **Milestone 4: Compliance Features** | ⏳ Planned | 0% |
 

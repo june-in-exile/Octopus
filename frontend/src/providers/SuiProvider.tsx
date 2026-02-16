@@ -1,6 +1,6 @@
 "use client";
 
-import { getFullnodeUrl } from "@mysten/sui/client";
+import { getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import {
   SuiClientProvider,
   WalletProvider,
@@ -15,8 +15,8 @@ import { NetworkConfigProvider } from "@/providers/NetworkConfigProvider";
 import "@mysten/dapp-kit/dist/index.css";
 
 const { networkConfig } = createNetworkConfig({
-  testnet: { url: getFullnodeUrl("testnet") },
-  mainnet: { url: getFullnodeUrl("mainnet") },
+  testnet: { url: getJsonRpcFullnodeUrl("testnet"), network: "testnet" as const },
+  mainnet: { url: getJsonRpcFullnodeUrl("mainnet"), network: "mainnet" as const },
 });
 
 // Custom dark theme matching Octopus design

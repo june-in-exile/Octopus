@@ -1,37 +1,5 @@
-// DEX Integration (DeepBook price fetching - legacy Cetus exports deprecated)
-// Note: Cetus integration has been replaced with DeepBook
-// export {
-//   getCetusPool,
-//   estimateCetusSwap,
-//   findCetusPool,
-//   getCetusPrice,
-//   CETUS_TESTNET_POOLS,
-//   type CetusPoolConfig,
-//   type SwapEstimation,
-// } from "./dex.js";
-
-// DeepBook V3 Integration
-export {
-  estimateDeepBookSwap,
-  getDeepBookPrice,
-  getDeepBookPool,
-  type DeepBookPoolConfig,
-} from "./dex/deepbook.js";
-
-// DEX Adapter Interface
-export {
-  type DexAdapter,
-} from "./dex/adapter.js";
-
 // Byte conversion, math, and proof compression utilities
 export * from "./utils/index.js";
-
-// Proof generation
-export {
-  convertUnshieldProofToSui,
-  convertTransferProofToSui,
-  convertSwapProofToSui,
-} from "./converter.js";
 
 // Cryptographic utilities
 export {
@@ -54,6 +22,13 @@ export {
   quickCheckNote,
 } from "./crypto.js";
 
+// DeepBook V3 Integration
+export {
+  estimateDeepBookSwap,
+  getPoolBookParams,
+  type PoolBookParams,
+} from "./deepbook.js";
+
 // Merkle tree utilities
 export {
   ClientMerkleTree,
@@ -72,15 +47,10 @@ export {
   generateSwapProof,
 } from "./prover.js";
 
-// Sui interactions
+// Swap utilities
 export {
-  buildShieldTransaction,
-  buildUnshieldTransaction,
-  buildTransferTransaction,
-  buildSwapTransaction,
-  TESTNET_CONFIG,
-  type SuiConfig,
-} from "./transaction.js";
+  createSwapOutputs,
+} from "./swap.js";
 
 // Transfer utilities
 export {

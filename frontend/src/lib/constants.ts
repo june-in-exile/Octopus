@@ -6,34 +6,58 @@
 export const NETWORK = "testnet" as "testnet" | "mainnet" | "devnet" | "localnet";
 
 // Per-network contract addresses (all baked into the bundle at build time)
+const trimEnv = (value: string | undefined): string | null =>
+  value?.trim() || null;
+
 export const NETWORK_CONFIG = {
-  testnet: {
-    packageId: process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID || null,
-    suiPoolId: process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID || null,
-    usdcPoolId: process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID || null,
-    usdcCoinType: process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE || null,
-    graphqlUrl: "https://graphql.testnet.sui.io/graphql",
-  },
   mainnet: {
-    packageId: process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID || null,
-    suiPoolId: process.env.NEXT_PUBLIC_MAINNET_SUI_POOL_ID || null,
-    usdcPoolId: process.env.NEXT_PUBLIC_MAINNET_USDC_POOL_ID || null,
-    usdcCoinType: process.env.NEXT_PUBLIC_MAINNET_USDC_TYPE || null,
+    packageId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_PACKAGE_ID), // For function calls (published-at)
+    originalPackageId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_ORIGINAL_PACKAGE_ID), // For event queries (original-id)
+    suiPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_SUI_POOL_ID),
+    usdcPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_USDC_POOL_ID),
+    usdcCoinType: trimEnv(process.env.NEXT_PUBLIC_MAINNET_USDC_TYPE),
+    deepCoinType: trimEnv(process.env.NEXT_PUBLIC_MAINNET_DEEP_TYPE),
+    suiusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC),
     graphqlUrl: "https://graphql.mainnet.sui.io/graphql",
   },
+  testnet: {
+    packageId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_PACKAGE_ID), // For function calls (published-at)
+    originalPackageId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_ORIGINAL_PACKAGE_ID), // For event queries (original-id)
+    suiPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_SUI_POOL_ID),
+    usdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_USDC_POOL_ID),
+    dbusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DBUSDC_POOL_ID),
+    usdcCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_USDC_TYPE),
+    dbusdcCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DBUSDC_TYPE),
+    deepCoinType: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DEEP_TYPE),
+    suidbusdcPoolId: trimEnv(process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC),
+    graphqlUrl: "https://graphql.testnet.sui.io/graphql",
+  },
 } as const;
 
-// Static token type (same across networks)
+// Sui Clock shared object
+export const CLOCK_OBJECT_ID = "0x6";
+
+// Static token type
 export const SUI_COIN_TYPE = "0x2::sui::SUI";
 
-// LocalStorage keys
-export const STORAGE_KEYS = {
-  KEYPAIR: "octopus_keypair",
-  NOTES: "octopus_notes",
-} as const;
+// DeepBook pool mappings (network-specific)
+const getDeepBookPoolId = (tokenPair: string) => {
+  if (NETWORK === "mainnet") {
+    // Mainnet uses SUI/USDC pool
+    if (tokenPair === "SUI_USDC" || tokenPair === "USDC_SUI") {
+      return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
+    }
+  } else {
+    // Testnet uses SUI/DBUSDC pool
+    if (tokenPair === "SUI_DBUSDC" || tokenPair === "DBUSDC_SUI") {
+      return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC || "0x...";
+    }
+  }
+  return "0x...";
+};
 
-// DeepBook V3 configuration
-export const DEEPBOOK_PACKAGE_ID = "0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809";
+// Estimated DEEP fee for swap operations (~0.01 DEEP)
+export const ESTIMATED_DEEP_FEE = 10_000n; // 0.01 DEEP in smallest units (6 decimals)
 
 // Token configurations
 export interface TokenConfig {
@@ -42,16 +66,3 @@ export interface TokenConfig {
   decimals: number;
   poolId: string;
 }
-
-// DeepBook pool mappings (SUI/USDC pair - network-specific)
-const getDeepBookPoolId = () => {
-  if (NETWORK === "mainnet") {
-    return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
-  }
-  return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_USDC || "0x...";
-};
-
-export const DEEPBOOK_POOLS: Record<string, string> = {
-  SUI_USDC: getDeepBookPoolId(),
-  USDC_SUI: getDeepBookPoolId(), // Same pool, reverse direction
-};

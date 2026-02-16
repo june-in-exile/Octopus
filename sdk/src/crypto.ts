@@ -151,17 +151,19 @@ export function computeZeroHashes(): bigint[] {
 
 /**
  * Compute Merkle root from a commitment and its proof path
+ * Uses BigInt internally for consistent bit operations across all edge cases
  */
 export function computeMerkleRoot(
   commitment: bigint,
   pathElements: bigint[],
-  pathIndices: number
+  pathIndices: number | bigint
 ): bigint {
   let current = commitment;
+  const indices = BigInt(pathIndices);
 
   for (let i = 0; i < pathElements.length; i++) {
-    const isRight = (pathIndices >> i) & 1;
-    if (isRight) {
+    const isRight = (indices >> BigInt(i)) & 1n;
+    if (isRight === 1n) {
       current = poseidonHash([pathElements[i], current]);
     } else {
       current = poseidonHash([current, pathElements[i]]);

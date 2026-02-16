@@ -12,8 +12,7 @@ Octopus is a privacy protocol for the Sui blockchain that enables on-chain trans
 - **Key Management**: Derive keypairs using Poseidon hash functions on the BN254 curve
 - **Note Encryption**: ECDH + ChaCha20-Poly1305 encryption for private notes
 - **Merkle Trees**: Client-side Merkle tree construction and proof generation
-- **Sui Integration**: Transaction builders for all privacy operations
-- **DEX Integration**: Price fetching and swap estimation for DeepBook
+- **DEX Integration**: Swap estimation for DeepBook V3
 - **Cross-Platform**: Works in both Node.js and browser environments
 
 ## Installation
@@ -61,8 +60,11 @@ console.log('Master Public Key:', keypair.masterPublicKey);
 
 ### Shield Tokens (Deposit)
 
+The shield transaction is built directly using `@mysten/sui` — no proof is required.
+
 ```typescript
-import { createNote, encryptNoteExplicit, buildShieldTransaction, exportViewingPublicKey, bigIntToBE32 } from '@octopus/sdk';
+import { createNote, encryptNoteExplicit, exportViewingPublicKey, bigIntToBE32 } from '@octopus/sdk';
+import { Transaction } from '@mysten/sui/transactions';
 
 // Create a note for 1000 tokens
 const note = createNote(
@@ -77,17 +79,19 @@ const myViewingPublicKey = exportViewingPublicKey(keypair.spendingKey);
 // Encrypt the note for yourself
 const encryptedNote = encryptNoteExplicit(note, myViewingPublicKey);
 
-// Build shield transaction
-const tx = buildShieldTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  coinObjectId,
-  bigIntToBE32(note.commitment),
-  encryptedNote
-);
+// Build shield transaction manually
+const tx = new Transaction();
+tx.moveCall({
+  target: `${packageId}::pool::shield`,
+  typeArguments: ['0x2::sui::SUI'],
+  arguments: [
+    tx.object(poolId),
+    tx.object(coinObjectId),
+    tx.pure(bigIntToBE32(note.commitment)),
+    tx.pure(encryptedNote),
+  ],
+});
 
-// Sign and execute with Sui wallet
 const result = await suiClient.signAndExecuteTransaction({ transaction: tx });
 ```
 
@@ -95,31 +99,52 @@ const result = await suiClient.signAndExecuteTransaction({ transaction: tx });
 
 ```typescript
 import {
+  createUnshieldOutputs,
   generateUnshieldProof,
-  convertUnshieldProofToSui,
-  buildUnshieldTransaction
+  selectNotes,
 } from '@octopus/sdk';
+import { Transaction } from '@mysten/sui/transactions';
+
+// Select notes to cover the withdrawal amount
+const selectedNotes = selectNotes(myNotes, 1000n);
+const inputTotal = selectedNotes.reduce((s, n) => s + n.note.amount, 0n);
+
+// Create change note
+const changeNote = createUnshieldOutputs(
+  keypair.masterPublicKey,
+  1000n,
+  inputTotal,
+  1n // token type
+);
 
 // Generate ZK proof
-const unshieldInput = {
-  note: myNote,
-  leafIndex: 42,
-  pathElements: merkleProof,
-  keypair: myKeypair
-};
+const { proof, nullifiers } = await generateUnshieldProof({
+  keypair,
+  inputNotes: selectedNotes.map(n => n.note),
+  inputLeafIndices: selectedNotes.map(n => n.leafIndex),
+  inputPathElements: selectedNotes.map(n => n.pathElements),
+  unshieldAmount: 1000n,
+  changeNote,
+  token: 1n,
+});
 
-const { proof, publicSignals } = await generateUnshieldProof(unshieldInput);
-const suiProof = convertUnshieldProofToSui(proof, publicSignals);
+// Encrypt change note for yourself
+const encryptedChangeNote = encryptNoteExplicit(changeNote, exportViewingPublicKey(keypair.spendingKey));
 
-// Build unshield transaction
-const tx = buildUnshieldTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  suiProof,
-  1000n, // amount to withdraw
-  recipientAddress
-);
+// Build unshield transaction manually
+const tx = new Transaction();
+tx.moveCall({
+  target: `${packageId}::pool::unshield`,
+  typeArguments: ['0x2::sui::SUI'],
+  arguments: [
+    tx.object(poolId),
+    tx.pure(proof.proofBytes),
+    tx.pure(proof.publicInputsBytes),
+    tx.pure(nullifiers),
+    tx.pure(recipientAddress),
+    tx.pure(encryptedChangeNote),
+  ],
+});
 
 const result = await suiClient.signAndExecuteTransaction({ transaction: tx });
 ```
@@ -131,56 +156,60 @@ import {
   selectNotes,
   createTransferOutputs,
   generateTransferProof,
-  convertTransferProofToSui,
-  buildTransferTransaction,
   encryptNoteExplicit,
-  exportViewingPublicKey
+  exportViewingPublicKey,
 } from '@octopus/sdk';
+import { Transaction } from '@mysten/sui/transactions';
 
-// Recipient shares their viewing public key (received out-of-band)
+// Recipient shares their viewing public key and MPK (received out-of-band)
 const recipientViewingPublicKey = "a1b2c3d4..."; // 64-char hex string
+const recipientMpk = BigInt("123456789...");
 
 // Select input notes to cover the amount
-const inputNotes = selectNotes(myNotes, 500n);
+const selectedNotes = selectNotes(myNotes, 500n);
+const inputTotal = selectedNotes.reduce((s, n) => s + n.note.amount, 0n);
 
 // Create output notes (recipient + change)
 const [recipientNote, changeNote] = createTransferOutputs(
   recipientMpk,
-  senderKeypair.masterPublicKey,
+  keypair.masterPublicKey,
   500n, // amount to send
-  inputNotes.reduce((sum, n) => sum + n.note.value, 0n), // total input
+  inputTotal,
   1n // token type
 );
 
 // Generate transfer proof
-const transferInput = {
-  keypair: senderKeypair,
-  inputNotes: inputNotes.map(n => n.note),
-  inputLeafIndices: inputNotes.map(n => n.leafIndex),
-  inputPathElements: inputNotes.map(n => n.pathElements!),
-  outputNotes: [recipientNote, changeNote],
-  token: 1n
-};
-
-const { proof, publicSignals } = await generateTransferProof(transferInput);
-const suiProof = convertTransferProofToSui(proof, publicSignals);
+const { proof, nullifiers } = await generateTransferProof({
+  keypair,
+  inputNotes: selectedNotes.map(n => n.note),
+  inputLeafIndices: selectedNotes.map(n => n.leafIndex),
+  inputPathElements: selectedNotes.map(n => n.pathElements),
+  recipientMpk,
+  recipientNote,
+  changeNote,
+  token: 1n,
+});
 
 // Encrypt output notes with explicit viewing keys
-const myViewingPublicKey = exportViewingPublicKey(senderKeypair.spendingKey);
-
+const myViewingPublicKey = exportViewingPublicKey(keypair.spendingKey);
 const encryptedNotes = [
   encryptNoteExplicit(recipientNote, recipientViewingPublicKey),
-  encryptNoteExplicit(changeNote, myViewingPublicKey)
+  encryptNoteExplicit(changeNote, myViewingPublicKey),
 ];
 
-// Build transfer transaction
-const tx = buildTransferTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  suiProof,
-  encryptedNotes
-);
+// Build transfer transaction manually
+const tx = new Transaction();
+tx.moveCall({
+  target: `${packageId}::pool::transfer`,
+  typeArguments: ['0x2::sui::SUI'],
+  arguments: [
+    tx.object(poolId),
+    tx.pure(proof.proofBytes),
+    tx.pure(proof.publicInputsBytes),
+    tx.pure(nullifiers),
+    tx.pure(encryptedNotes),
+  ],
+});
 
 const result = await suiClient.signAndExecuteTransaction({ transaction: tx });
 ```
@@ -211,14 +240,14 @@ Derive keypair from a master spending key.
 }
 ```
 
-#### `createNote(recipientMpk: bigint, token: bigint, value: bigint, random?: bigint): Note`
+#### `createNote(recipientMpk: bigint, token: bigint, amount: bigint, random?: bigint): Note`
 
 Create a new shielded note (UTXO).
 
 **Formula:**
 
 - NSK = Poseidon(MPK, random)
-- commitment = Poseidon(NSK, token, value)
+- commitment = Poseidon(NSK, token, amount)
 
 #### `computeNullifier(nullifyingKey: bigint, leafIndex: number): bigint`
 
@@ -232,43 +261,41 @@ Encrypt note data using ECDH + ChaCha20-Poly1305.
 
 **Format:** ephemeral_pk (32) || nonce (12) || ciphertext (128 + 16 tag)
 
+#### `encryptNoteExplicit(note: Note, recipientViewingPk: Uint8Array | string): Uint8Array`
+
+Encrypt note with an explicitly provided viewing public key (hex string or raw bytes).
+
 #### `decryptNote(encryptedData: Uint8Array, mySpendingKey: bigint, myMpk: bigint): Note | null`
 
 Decrypt and verify note ownership. Returns `null` if the note doesn't belong to the user.
 
 ### Proof Generation
 
-#### `generateUnshieldProof(input: UnshieldInput, config?: ProverConfig): Promise<{proof, publicSignals}>`
+All proof generation functions return `{ proof: SuiProof, nullifiers: Uint8Array }`.
+The `nullifiers` are BCS-encoded as `vector<vector<u8>>` and must be passed as a separate argument to the contract (they are private in the circuit but required on-chain for double-spend prevention).
 
-Generate Groth16 proof for unshielding a note.
+#### `generateUnshieldProof(input: UnshieldInput): Promise<{ proof: SuiProof, nullifiers: Uint8Array }>`
+
+Generate Groth16 proof for unshielding notes.
 
 **Input:**
 
 ```typescript
 {
-  note: Note;
-  leafIndex: number;
-  pathElements: bigint[]; // Length must be 16
   keypair: OctopusKeypair;
+  inputNotes: Note[];           // 1 or 2 notes (padded automatically)
+  inputLeafIndices: number[];
+  inputPathElements: bigint[][];
+  unshieldAmount: bigint;
+  changeNote: Note;             // Pre-created change note
+  token: bigint;
 }
 ```
 
-**Public Inputs:** merkle_root, nullifier
+**Proof public inputs:** `unshield_amount`, `token`, `merkle_root`
+**Proof public outputs:** `nullifiers_hash`, `change_commitment`
 
-#### `convertUnshieldProofToSui(proof, publicSignals): SuiUnshieldProof`
-
-Convert snarkjs proof to Sui-compatible Arkworks compressed format.
-
-**Returns:**
-
-```typescript
-{
-  proofBytes: Uint8Array;      // 128 bytes: A || B || C
-  publicInputsBytes: Uint8Array; // 64 bytes: root || nullifier
-}
-```
-
-#### `generateTransferProof(input: TransferInput, config?: ProverConfig): Promise<{proof, publicSignals}>`
+#### `generateTransferProof(input: TransferInput): Promise<{ proof: SuiProof, nullifiers: Uint8Array }>`
 
 Generate Groth16 proof for a private 2-input, 2-output transfer.
 
@@ -277,68 +304,64 @@ Generate Groth16 proof for a private 2-input, 2-output transfer.
 ```typescript
 {
   keypair: OctopusKeypair;
-  inputNotes: Note[];          // 1 or 2 notes (padded automatically)
+  inputNotes: Note[];           // 1 or 2 notes (padded automatically)
   inputLeafIndices: number[];
   inputPathElements: bigint[][];
-  outputNotes: Note[];         // Exactly 2 notes [recipient, change]
+  recipientMpk: bigint;
+  recipientNote: Note;          // Pre-created recipient note
+  changeNote: Note;             // Pre-created change note
   token: bigint;
 }
 ```
 
-**Public Inputs:** merkle_root, nullifier1, nullifier2, commitment1, commitment2
+**Proof public inputs:** `token`, `merkle_root`
+**Proof public outputs:** `nullifiers_hash`, `recipient_commitment`, `change_commitment`
 
-#### `convertTransferProofToSui(proof, publicSignals): SuiTransferProof`
-
-Convert transfer proof to Sui format.
-
-**Returns:**
-
-```typescript
-{
-  proofBytes: Uint8Array;      // 128 bytes
-  publicInputsBytes: Uint8Array; // 160 bytes
-}
-```
-
-#### `generateSwapProof(input: SwapInput, config?: ProverConfig): Promise<{proof, publicSignals}>`
+#### `generateSwapProof(input: SwapInput): Promise<{ proof: SuiProof, nullifiers: Uint8Array }>`
 
 Generate Groth16 proof for a private token swap.
 
-**Public Inputs:** merkle_root, nullifier1, nullifier2, output_commitment, change_commitment, swap_data_hash
+**Input:**
 
-### Transaction Builders
+```typescript
+{
+  keypair: OctopusKeypair;
+  inputNotes: Note[];           // 1 or 2 notes in token_in
+  inputLeafIndices: number[];
+  inputPathElements: bigint[][];
+  swapNote: Note;               // Pre-created swap output note (token_out, min_amount_out)
+  changeNote: Note;             // Pre-created change note (token_in)
+}
+```
 
-#### `buildShieldTransaction(packageId, poolId, coinType, coinObjectId, commitment, encryptedNote): Transaction`
+**Proof public inputs:** `token_in`, `token_out`, `amount_in`, `min_amount_out`, `merkle_root`
+**Proof public outputs:** `nullifiers_hash`, `swap_commitment`, `change_commitment`
 
-Build a shield (deposit) transaction.
+### Output Note Creation
 
-#### `buildUnshieldTransaction(packageId, poolId, coinType, proof, amount, recipient): Transaction`
+#### `createUnshieldOutputs(mpk, unshieldAmount, inputTotal, token): Note`
 
-Build an unshield (withdrawal) transaction.
+Create the change note for an unshield operation.
 
-#### `buildTransferTransaction(packageId, poolId, coinType, proof, encryptedNotes): Transaction`
+#### `createTransferOutputs(recipientMpk, senderMpk, amount, inputTotal, token): [Note, Note]`
 
-Build a private transfer transaction.
+Create output notes for a transfer `[recipient, change]`.
 
-#### `buildSwapTransaction(packageId, poolInId, poolOutId, coinTypeIn, coinTypeOut, proof, amountIn, minAmountOut, encryptedOutputNote, encryptedChangeNote): Transaction`
+#### `createSwapOutputs(mpk, amountIn, minAmountOut, inputTotal, tokenIn, tokenOut): [Note, Note]`
 
-Build a private swap transaction.
+Create output notes for a swap `[swapNote, changeNote]`.
 
 ### Wallet Utilities
 
 #### `selectNotes(availableNotes: SelectableNote[], amount: bigint): SelectableNote[]`
 
-Select notes to cover the required amount (1 or 2 notes). This function is used for transfers, unshields, and swaps.
+Select notes to cover the required amount (1 or 2 notes).
 
 **Strategy:**
 
 1. Find single note ≥ amount (most efficient)
 2. Find smallest pair that covers amount (minimize change)
 3. Throw error if insufficient balance or circuit limitation
-
-#### `createTransferOutputs(recipientMpk, senderMpk, amount, inputTotal, token): [Note, Note]`
-
-Create output notes for transfer [recipient, change].
 
 ### Merkle Tree
 
@@ -352,15 +375,11 @@ Client-side Merkle tree for tracking deposits.
 const tree = new ClientMerkleTree();
 
 tree.insert(commitment: bigint): number  // Returns leaf index
-tree.getProof(leafIndex: number): bigint[]  // Returns Merkle proof path
+tree.getProof(leafIndex: number): bigint[]  // Returns Merkle proof path (length 16)
 tree.root: bigint  // Current Merkle root
 ```
 
 ### DEX Integration
-
-#### `getDeepBookPrice(pool: DeepBookPoolConfig): Promise<number>`
-
-Get current price from DeepBook pool.
 
 #### `estimateDeepBookSwap(pool: DeepBookPoolConfig, amountIn: bigint, slippageBps: number): Promise<SwapEstimation>`
 
@@ -396,15 +415,15 @@ Estimate swap output with slippage protection.
 
 **Poseidon Hash:** BN254-friendly hash function used for:
 
-- Key derivation: MPK = Poseidon(spending_key, nullifying_key)
-- Note secret keys: NSK = Poseidon(MPK, random)
-- Commitments: commitment = Poseidon(NSK, token, value)
-- Nullifiers: nullifier = Poseidon(nullifying_key, leaf_index)
-- Merkle tree: node = Poseidon(left, right)
+- Key derivation: `nullifyingKey = Poseidon(spendingKey, 1)`, `MPK = Poseidon(spendingKey, nullifyingKey)`
+- Note secret keys: `NSK = Poseidon(MPK, random)`
+- Commitments: `commitment = Poseidon(nsk, token, amount)`
+- Nullifiers: `nullifier = Poseidon(nullifyingKey, leafIndex)`
+- Merkle tree: `node = Poseidon(left, right)`
 
 **Field Elements:** All values are reduced modulo the BN254 scalar field:
 
-```
+```text
 21888242871839275222246405745257275088548364400416034343698204186575808495617
 ```
 
@@ -417,20 +436,19 @@ Octopus uses a UTXO (Unspent Transaction Output) model similar to Bitcoin:
 3. **Unshield**: Spends a note and withdraws tokens to a public address
 4. **Swap**: Spends input notes, performs DEX swap, creates output notes
 
+### Nullifier Handling
+
+Nullifiers are **private inputs** to the ZK circuit — they are not revealed in the proof's public signals. Instead, the circuit outputs a `nullifiers_hash = Poseidon(nullifier1, nullifier2)`. The actual nullifiers must be passed **separately** to the contract as `vector<vector<u8>>` (BCS-encoded). The contract verifies: `Poseidon(nullifier1, nullifier2) === nullifiers_hash` before marking them spent.
+
 ### Privacy Guarantees
 
-**Anonymity Set:** All deposits with the same token type share the same anonymity set. The more deposits, the stronger the privacy.
+**Anonymity Set:** All deposits with the same token type share the same anonymity set.
 
 **Unlinkability:** Transfers use nullifiers instead of commitments, breaking the link between inputs and outputs.
 
 **Encryption:** All note data is encrypted using ECDH, only readable by the recipient.
 
-**Zero-Knowledge:** Proofs reveal nothing about:
-
-- Note values (except for unshield amount)
-- Note owners
-- Transaction graphs
-- Token amounts being transferred
+**Zero-Knowledge:** Proofs reveal nothing about note values (except unshield amount), note owners, or transaction graphs.
 
 ### Security Model
 
@@ -448,13 +466,11 @@ Octopus uses a UTXO (Unspent Transaction Output) model similar to Bitcoin:
 
 ## Viewing Key Management
 
-### Overview
-
 Viewing keys enable secure note encryption without exposing the spending key. Users share their **viewing public key** with senders, who use it to encrypt notes. Only the recipient (with the spending-key-derived viewing private key) can decrypt.
 
 ### Key Hierarchy
 
-```
+```text
 Random Spending Key (256-bit)
     ↓
 ┌───────────────────┴────────────────────┐
@@ -504,13 +520,10 @@ const viewingPk = importViewingPublicKey(recipientViewingKey);
 
 ### Encrypting Notes for Recipients
 
-#### Production Method (Recommended)
-
 ```typescript
 import {
   createNote,
   encryptNoteExplicit,
-  importViewingPublicKey
 } from '@octopus/sdk';
 
 // 1. Recipient shares both MPK and viewing public key
@@ -533,51 +546,12 @@ const encrypted = encryptNoteExplicit(
 );
 ```
 
-#### Alternative (Direct Usage)
-
-```typescript
-import { encryptNote, importViewingPublicKey } from '@octopus/sdk';
-
-const viewingPk = importViewingPublicKey(recipientViewingKeyHex);
-const encrypted = encryptNote(note, viewingPk);
-```
-
-### Recipient Management Pattern
-
-```typescript
-interface RecipientProfile {
-  mpk: bigint;                     // For creating notes
-  viewingPublicKey: string;        // For encrypting notes
-  label?: string;                  // Optional nickname
-}
-
-// Save recipients to localStorage
-const recipients: RecipientProfile[] = [
-  {
-    mpk: BigInt("123456789..."),
-    viewingPublicKey: "a1b2c3d4...",
-    label: "Alice"
-  },
-  {
-    mpk: BigInt("987654321..."),
-    viewingPublicKey: "e5f6g7h8...",
-    label: "Bob"
-  }
-];
-
-// Use saved recipient for transfer
-const recipient = recipients[0];
-const note = createNote(recipient.mpk, tokenId, amount);
-const encrypted = encryptNoteExplicit(note, recipient.viewingPublicKey);
-```
-
 ### Security Best Practices
 
 ✅ **DO:**
 
 - Share viewing public keys through secure channels (encrypted messaging, QR codes)
 - Validate viewing key format before importing
-- Store viewing public keys separately from MPKs
 - Use explicit viewing keys for all cross-user transfers
 
 ⚠️ **DON'T:**
@@ -586,14 +560,7 @@ const encrypted = encryptNoteExplicit(note, recipient.viewingPublicKey);
 - Assume viewing public keys are the same as MPKs
 - Skip validation when importing user-provided keys
 
-### Viewing Key Use Cases
-
-1. **Private Transfers:** Encrypt notes for specific recipients
-2. **View-Only Wallets:** Share viewing key for read-only access (future)
-3. **Compliance:** Selective disclosure to auditors (Milestone 4)
-4. **Tax Reporting:** Export transaction history without spending authority
-
-### API Reference
+### Viewing Key API Reference
 
 ```typescript
 // Export viewing public key from spending key
@@ -615,161 +582,13 @@ function encryptNoteExplicit(
 function deriveViewingPublicKey(spendingKey: bigint): Uint8Array;
 ```
 
-## Examples
-
-### Complete Shield → Transfer → Unshield Flow
-
-```typescript
-import {
-  initPoseidon,
-  generateKeypair,
-  createNote,
-  encryptNoteExplicit,
-  exportViewingPublicKey,
-  ClientMerkleTree,
-  selectNotes,
-  createTransferOutputs,
-  generateUnshieldProof,
-  generateTransferProof,
-  convertUnshieldProofToSui,
-  convertTransferProofToSui,
-  buildShieldTransaction,
-  buildTransferTransaction,
-  buildUnshieldTransaction,
-  bigIntToBE32
-} from '@octopus/sdk';
-
-// 1. Initialize
-await initPoseidon();
-
-// 2. Generate keypairs
-const alice = generateKeypair();
-const bob = generateKeypair();
-
-// Export viewing public keys
-const aliceViewingPubKey = exportViewingPublicKey(alice.spendingKey);
-const bobViewingPubKey = exportViewingPublicKey(bob.spendingKey);
-
-// 3. Alice shields 1000 tokens
-const aliceNote = createNote(alice.masterPublicKey, 1n, 1000n);
-const encryptedAliceNote = encryptNoteExplicit(aliceNote, aliceViewingPubKey);
-
-const shieldTx = buildShieldTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  aliceCoinId,
-  bigIntToBE32(aliceNote.commitment),
-  encryptedAliceNote
-);
-
-// Execute shield transaction...
-// Track commitment in local Merkle tree
-const tree = new ClientMerkleTree();
-const aliceLeafIndex = tree.insert(aliceNote.commitment);
-
-// 4. Alice transfers 600 tokens to Bob
-const [bobNote, aliceChangeNote] = createTransferOutputs(
-  bob.masterPublicKey,
-  alice.masterPublicKey,
-  600n,
-  1000n,
-  1n
-);
-
-const transferInput = {
-  keypair: alice,
-  inputNotes: [aliceNote],
-  inputLeafIndices: [aliceLeafIndex],
-  inputPathElements: [tree.getProof(aliceLeafIndex)],
-  outputNotes: [bobNote, aliceChangeNote],
-  token: 1n
-};
-
-const { proof: transferProof, publicSignals: transferSignals } =
-  await generateTransferProof(transferInput);
-const suiTransferProof = convertTransferProofToSui(transferProof, transferSignals);
-
-// Encrypt with explicit viewing keys
-const encryptedNotes = [
-  encryptNoteExplicit(bobNote, bobViewingPubKey),
-  encryptNoteExplicit(aliceChangeNote, aliceViewingPubKey)
-];
-
-const transferTx = buildTransferTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  suiTransferProof,
-  encryptedNotes
-);
-
-// Execute transfer transaction...
-// Update Merkle tree
-const bobLeafIndex = tree.insert(bobNote.commitment);
-const aliceChangeLeafIndex = tree.insert(aliceChangeNote.commitment);
-
-// 5. Bob unshields 600 tokens
-const unshieldInput = {
-  note: bobNote,
-  leafIndex: bobLeafIndex,
-  pathElements: tree.getProof(bobLeafIndex),
-  keypair: bob
-};
-
-const { proof: unshieldProof, publicSignals: unshieldSignals } =
-  await generateUnshieldProof(unshieldInput);
-const suiUnshieldProof = convertUnshieldProofToSui(unshieldProof, unshieldSignals);
-
-const unshieldTx = buildUnshieldTransaction(
-  packageId,
-  poolId,
-  '0x2::sui::SUI',
-  suiUnshieldProof,
-  600n,
-  bobAddress
-);
-
-// Execute unshield transaction...
-```
-
-### Batch Note Decryption (Wallet Scanning)
-
-```typescript
-import { decryptNote } from '@octopus/sdk';
-
-// Fetch all encrypted notes from on-chain events
-const encryptedNotes = await fetchEncryptedNotesFromChain();
-
-// Try to decrypt each note
-const myNotes = [];
-for (const { encryptedData, leafIndex } of encryptedNotes) {
-  const note = decryptNote(
-    encryptedData,
-    myKeypair.spendingKey,
-    myKeypair.masterPublicKey
-  );
-
-  if (note) {
-    // This note belongs to me!
-    myNotes.push({
-      note,
-      leafIndex,
-      // Fetch Merkle proof when needed for spending
-    });
-  }
-}
-
-console.log(`Found ${myNotes.length} notes owned by me`);
-```
-
 ## Configuration
 
 ### Browser Environment
 
 Place circuit artifacts in your `public/` directory:
 
-```
+```text
 public/
   circuits/
     unshield_js/
@@ -792,7 +611,7 @@ The SDK will fetch these files automatically.
 
 Place circuit artifacts relative to the SDK package:
 
-```
+```text
 project/
   node_modules/
     @octopus/sdk/
@@ -810,7 +629,7 @@ project/
 Override default paths using `ProverConfig`:
 
 ```typescript
-const { proof, publicSignals } = await generateUnshieldProof(input, {
+const { proof, nullifiers } = await generateUnshieldProof(input, {
   wasmPath: '/custom/path/unshield.wasm',
   zkeyPath: '/custom/path/unshield_final.zkey'
 });
@@ -827,17 +646,6 @@ On a modern CPU (M1 Mac):
 - **Swap**: ~8-10 seconds
 
 **Recommendation:** Show loading indicators during proof generation.
-
-### Circuit Sizes
-
-- **Unshield**: ~250K constraints
-- **Transfer**: ~550K constraints
-- **Swap**: ~800K constraints
-
-**Recommendation:**
-
-- For browser environments, use Web Workers to avoid blocking the UI
-- Consider server-side proof generation for production applications
 
 ### Merkle Tree Sync
 
@@ -860,45 +668,6 @@ On a modern CPU (M1 Mac):
 - Use hardware wallets or secure enclaves in production
 - Consider key derivation from mnemonic phrases (BIP39/BIP44)
 
-### Viewing Keys
-
-**Current Implementation:**
-
-The SDK now uses explicit viewing key sharing as the standard approach:
-
-- Recipients export their viewing public key using `exportViewingPublicKey(spendingKey)`
-- Senders encrypt notes using `encryptNoteExplicit(note, recipientViewingPubKey)`
-- Viewing public keys are shared out-of-band (QR codes, secure messaging, etc.)
-
-**Best Practices:**
-
-- Always use explicit viewing keys for cross-user transfers
-- Store viewing keypairs separately from spending keys
-- Validate viewing key format with `isValidViewingPublicKey()` before importing
-- Share viewing public keys through secure channels only
-
-### Random Number Generation
-
-All random values use `crypto.getRandomValues()` which is cryptographically secure in both Node.js and browsers.
-
-### Circuit Validation
-
-⚠️ Always validate circuit outputs before submitting transactions:
-
-```typescript
-// Verify Merkle root matches on-chain state
-const onChainRoot = await fetchLatestRoot();
-if (merkleRoot !== onChainRoot) {
-  throw new Error('Merkle root mismatch - refresh your proofs');
-}
-
-// Verify nullifiers haven't been spent
-const isSpent = await checkNullifierSpent(nullifier);
-if (isSpent) {
-  throw new Error('Note already spent (double-spend detected)');
-}
-```
-
 ### Double-Spend Prevention
 
 The SDK does **NOT** automatically check for double-spends. Your application must:
@@ -915,8 +684,15 @@ For swap operations, always set reasonable slippage tolerance:
 const slippageBps = 50; // 0.5%
 const estimation = await estimateDeepBookSwap(pool, amountIn, slippageBps);
 
-// Use minAmountOut in swap proof
-const minAmountOut = estimation.minAmountOut;
+// Use minAmountOut in swap outputs
+const [swapNote, changeNote] = createSwapOutputs(
+  keypair.masterPublicKey,
+  amountIn,
+  estimation.minAmountOut,
+  inputTotal,
+  tokenIn,
+  tokenOut
+);
 ```
 
 ## TypeScript Support
@@ -930,9 +706,10 @@ import type {
   UnshieldInput,
   TransferInput,
   SwapInput,
-  SuiUnshieldProof,
-  SuiTransferProof,
-  SuiSwapProof,
+  SuiProof,
+  RecipientProfile,
+  RecipientProfileStored,
+  SelectableNote,
   // ... and more
 } from '@octopus/sdk';
 ```
@@ -965,22 +742,6 @@ Outputs to `dist/` directory with both CommonJS and ESM support.
 ## License
 
 MIT
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-
-1. All tests pass
-2. Code follows existing style conventions
-3. Add tests for new features
-4. Update documentation for API changes
-
-## Support
-
-For issues and questions:
-
-- GitHub Issues: [octopus-privacy/issues](https://github.com/octopus-privacy/octopus/issues)
-- Documentation: See [../docs](../docs) for detailed protocol specification
 
 ## Acknowledgments
 

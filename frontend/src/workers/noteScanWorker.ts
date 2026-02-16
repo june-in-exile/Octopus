@@ -13,7 +13,7 @@ import {
   bytesToBigIntLE_BN254,
 } from "@june_zk/octopus-sdk";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
-import { graphql } from "@mysten/sui/graphql/schemas/latest";
+import { graphql } from "@mysten/sui/graphql/schema";
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -199,6 +199,462 @@ class ClientMerkleTree {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shared note-scanning types
+// ---------------------------------------------------------------------------
+
+type OwnedNote = {
+  note: SerializedNote;
+  leafIndex: number;
+  nullifier: string;
+  txDigest: string;
+  /** Actual amount received (from SwapEvent.amount_out). Only set for swap output notes.
+   *  The note.amount holds min_amount_out (what the ZKP commits to, used for proof generation).
+   *  displayAmount holds the real DeepBook output for UI display. */
+  displayAmount?: string;
+};
+
+type CollectedCommitment = {
+  commitment: bigint;
+  leafIndex: number;
+};
+
+type PoolEvents = {
+  shieldNodes: any[];
+  transferNodes: any[];
+  unshieldNodes: any[];
+  swapNodes: any[];
+  /** Cursor to resume from on the next incremental scan */
+  endCursor: string | null;
+};
+
+type FilteredPoolEvents = {
+  shieldEvents: any[];
+  transferEvents: any[];
+  unshieldEvents: any[];
+  swapOutputEvents: any[];  // events whose pool_out_id matches
+  swapInputEvents: any[];   // events whose pool_in_id matches (for nullifier counting)
+  transferOutputNotesCount: number;
+};
+
+type DecryptContext = {
+  spendingKey: bigint;
+  masterPublicKey: bigint;
+  nullifyingKey: bigint;
+  poolId: string;
+};
+
+// ---------------------------------------------------------------------------
+// Module-level helpers (used by both scan_notes and other cases)
+// ---------------------------------------------------------------------------
+
+function decodeEncryptedNote(encryptedNote: string | number[]): number[] | null {
+  if (typeof encryptedNote === 'string') return decodeBase64(encryptedNote);
+  if (Array.isArray(encryptedNote)) return encryptedNote;
+  return null;
+}
+
+function parseCommitment(commitment: string | number[]): bigint {
+  const bytes = typeof commitment === 'string'
+    ? Array.from(Buffer.from(commitment, 'base64'))
+    : commitment;
+  return bytesToBigIntLE_BN254(bytes);
+}
+
+function isNonZeroNullifier(n: any): boolean {
+  if (Array.isArray(n)) return n.some((b: number) => b !== 0);
+  return n !== null && n !== undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Event fetching & filtering
+// ---------------------------------------------------------------------------
+
+async function fetchAllPoolEvents(
+  client: SuiGraphQLClient,
+  packageId: string,
+  startCursor: string | null,
+): Promise<PoolEvents> {
+  const [shieldResult, transferResult, unshieldResult, swapResult] = await Promise.all([
+    queryAllEvents(client, `${packageId}::pool::ShieldEvent`, 'ShieldEvents', startCursor),
+    queryAllEvents(client, `${packageId}::pool::TransferEvent`, 'TransferEvents', startCursor),
+    queryAllEvents(client, `${packageId}::pool::UnshieldEvent`, 'UnshieldEvents', startCursor),
+    queryAllEvents(client, `${packageId}::pool::SwapEvent`, 'SwapEvents', startCursor),
+  ]);
+
+  return {
+    shieldNodes: shieldResult.nodes,
+    transferNodes: transferResult.nodes,
+    unshieldNodes: unshieldResult.nodes,
+    swapNodes: swapResult.nodes,
+    endCursor: transferResult.endCursor,
+  };
+}
+
+function filterEventsByPool(events: PoolEvents, poolId: string): FilteredPoolEvents {
+  const byPoolId = (nodes: any[]) =>
+    nodes.filter(n => (n.contents?.json as any)?.pool_id === poolId);
+
+  const shieldEvents = byPoolId(events.shieldNodes);
+  const transferEvents = byPoolId(events.transferNodes);
+  const unshieldEvents = byPoolId(events.unshieldNodes);
+  const swapOutputEvents = events.swapNodes.filter(
+    n => (n.contents?.json as any)?.pool_out_id === poolId,
+  );
+  const swapInputEvents = events.swapNodes.filter(
+    n => (n.contents?.json as any)?.pool_in_id === poolId,
+  );
+
+  const transferOutputNotesCount = transferEvents.reduce((sum, n) => {
+    const outputNotes = (n.contents?.json as any)?.output_notes ?? [];
+    return sum + outputNotes.length;
+  }, 0);
+
+  return { shieldEvents, transferEvents, unshieldEvents, swapOutputEvents, swapInputEvents, transferOutputNotesCount };
+}
+
+// ---------------------------------------------------------------------------
+// Nullifier counting
+// ---------------------------------------------------------------------------
+
+/** Count nullifiers by walking the on-chain NullifierRegistry dynamic fields. */
+async function queryOnChainNullifierCount(
+  client: SuiGraphQLClient,
+  poolId: string,
+): Promise<number> {
+  const poolQuery = await withTimeout(
+    client.query({
+      query: graphql(`
+        query NullifierCount($poolId: SuiAddress!) {
+          object(address: $poolId) {
+            asMoveObject {
+              contents { json }
+            }
+          }
+        }
+      `),
+      variables: { poolId },
+    }),
+    30000,
+    'Nullifier count query',
+  );
+
+  const poolData = poolQuery.data?.object?.asMoveObject?.contents?.json as any;
+  const registryId = poolData?.nullifiers?.id;
+  if (!registryId) throw new Error('Nullifiers registry ID not found in pool data');
+
+  let count = 0;
+  let hasNextPage = true;
+  let cursor: string | null = null;
+  const MAX_NULLIFIERS = 1000;
+
+  while (hasNextPage && count < MAX_NULLIFIERS) {
+    const dfQuery: any = await withTimeout(
+      client.query({
+        query: graphql(`
+          query NullifierRegistryDynamicFields($registryId: SuiAddress!, $first: Int, $after: String) {
+            object(address: $registryId) {
+              dynamicFields(first: $first, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { name { type { repr } json } }
+              }
+            }
+          }
+        `),
+        variables: { registryId, first: 50, after: cursor },
+      }),
+      30000,
+      'Nullifier registry dynamic fields query',
+    );
+
+    const nodes = dfQuery.data?.object?.dynamicFields?.nodes ?? [];
+    // Only vector<u8> keys are nullifiers
+    count += nodes.filter((n: any) =>
+      (n.name?.type?.repr ?? '').includes('vector<u8>')
+    ).length;
+
+    hasNextPage = dfQuery.data?.object?.dynamicFields?.pageInfo?.hasNextPage ?? false;
+    cursor = dfQuery.data?.object?.dynamicFields?.pageInfo?.endCursor ?? null;
+  }
+
+  return count;
+}
+
+/** Event-based fallback nullifier count (used when on-chain query fails). */
+function computeEventBasedNullifierCount(filtered: FilteredPoolEvents): number {
+  const fromUnshield = filtered.unshieldEvents.length;
+
+  const fromTransfer = filtered.transferEvents.reduce((sum, event) => {
+    const nullifiers = (event.contents?.json as any)?.input_nullifiers ?? [];
+    return sum + nullifiers.filter(isNonZeroNullifier).length;
+  }, 0);
+
+  const fromSwap = filtered.swapInputEvents.reduce((sum, event) => {
+    const nullifiers = (event.contents?.json as any)?.input_nullifiers ?? [];
+    return sum + nullifiers.filter(isNonZeroNullifier).length;
+  }, 0);
+
+  return fromUnshield + fromTransfer + fromSwap;
+}
+
+/** Returns the nullifier count and whether the fallback path was used. */
+async function resolveNullifierCount(
+  client: SuiGraphQLClient,
+  poolId: string,
+  filtered: FilteredPoolEvents,
+): Promise<{ count: number; usedFallback: boolean }> {
+  const eventCount = computeEventBasedNullifierCount(filtered);
+
+  try {
+    const onChainCount = await queryOnChainNullifierCount(client, poolId);
+    // Guard against stale/empty on-chain registry
+    if (onChainCount === 0 && eventCount > 0) {
+      return { count: eventCount, usedFallback: true };
+    }
+    return { count: onChainCount, usedFallback: false };
+  } catch {
+    return { count: eventCount, usedFallback: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Note decryption helpers
+// ---------------------------------------------------------------------------
+
+function tryDecryptOwnedNote(
+  encryptedNoteBytes: number[],
+  rawCommitment: string | number[],
+  leafIndex: number,
+  txDigest: string,
+  ctx: DecryptContext,
+): OwnedNote | null {
+  if (!quickCheckNote(encryptedNoteBytes, ctx.spendingKey)) return null;
+
+  const note = decryptNote(encryptedNoteBytes, ctx.spendingKey, ctx.masterPublicKey);
+  if (!note) return null;
+
+  const onChainCommitment = parseCommitment(rawCommitment);
+  if (BigInt(note.commitment) !== onChainCommitment) return null;
+
+  return {
+    note,
+    leafIndex,
+    nullifier: computeNullifier(ctx.nullifyingKey, leafIndex),
+    txDigest,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-event-type processors
+// ---------------------------------------------------------------------------
+
+function processShieldEvents(
+  nodes: any[],
+  ctx: DecryptContext,
+): { ownedNotes: OwnedNote[]; commitments: CollectedCommitment[] } {
+  const ownedNotes: OwnedNote[] = [];
+  const commitments: CollectedCommitment[] = [];
+
+  for (const node of nodes) {
+    const data = node.contents?.json as any;
+    if (!data || (data.pool_id && data.pool_id !== ctx.poolId)) continue;
+
+    const leafIndex = Number(data.position);
+    try {
+      commitments.push({ commitment: parseCommitment(data.commitment), leafIndex });
+    } catch (err) {
+      throw new Error(`Failed to parse shield commitment at position ${leafIndex}: ${err instanceof Error ? err.message : err}`);
+    }
+
+    const encryptedBytes = decodeEncryptedNote(data.encrypted_note);
+    if (!encryptedBytes) continue;
+
+    const owned = tryDecryptOwnedNote(
+      encryptedBytes, data.commitment, leafIndex,
+      (node.transaction as any)?.digest ?? '', ctx,
+    );
+    if (owned) ownedNotes.push(owned);
+  }
+
+  return { ownedNotes, commitments };
+}
+
+function processTransferEvents(
+  nodes: any[],
+  ctx: DecryptContext,
+): { ownedNotes: OwnedNote[]; commitments: CollectedCommitment[] } {
+  const ownedNotes: OwnedNote[] = [];
+  const commitments: CollectedCommitment[] = [];
+
+  for (const node of nodes) {
+    const data = node.contents?.json as any;
+    if (!data || (data.pool_id && data.pool_id !== ctx.poolId)) continue;
+
+    const { output_notes, output_positions, output_commitments } = data;
+    const txDigest = (node.transaction as any)?.digest ?? '';
+
+    for (let i = 0; i < output_notes.length; i++) {
+      const leafIndex = Number(output_positions[i]);
+      try {
+        commitments.push({ commitment: parseCommitment(output_commitments[i]), leafIndex });
+      } catch (err) {
+        throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
+      }
+
+      const encryptedBytes = decodeEncryptedNote(output_notes[i]);
+      if (!encryptedBytes) continue;
+
+      const owned = tryDecryptOwnedNote(encryptedBytes, output_commitments[i], leafIndex, txDigest, ctx);
+      if (owned) ownedNotes.push(owned);
+    }
+  }
+
+  return { ownedNotes, commitments };
+}
+
+function processSwapEvents(
+  nodes: any[],
+  ctx: DecryptContext,
+): { ownedNotes: OwnedNote[]; commitments: CollectedCommitment[] } {
+  const ownedNotes: OwnedNote[] = [];
+  const commitments: CollectedCommitment[] = [];
+
+  for (const node of nodes) {
+    const data = node.contents?.json as any;
+    if (!data || data.pool_out_id !== ctx.poolId) continue;
+
+    const leafIndex = Number(data.swap_position);
+    try {
+      commitments.push({ commitment: parseCommitment(data.swap_commitment), leafIndex });
+    } catch (err) {
+      throw new Error(`Failed to parse swap commitment at position ${leafIndex}: ${err instanceof Error ? err.message : err}`);
+    }
+
+    const encryptedBytes = decodeEncryptedNote(data.encrypted_output_note);
+    if (!encryptedBytes) continue;
+
+    const owned = tryDecryptOwnedNote(
+      encryptedBytes, data.swap_commitment, leafIndex,
+      (node.transaction as any)?.digest ?? '', ctx,
+    );
+    if (!owned) continue;
+
+    // note.amount = min_amount_out (committed to ZKP, used for proof generation)
+    // displayAmount = actual DeepBook output (for UI display only)
+    const actualAmountOut = BigInt(data.amount_out ?? owned.note.amount);
+    ownedNotes.push({ ...owned, displayAmount: actualAmountOut.toString() });
+  }
+
+  return { ownedNotes, commitments };
+}
+
+// ---------------------------------------------------------------------------
+// Cache merge
+// ---------------------------------------------------------------------------
+
+function mergeWithCache(
+  newNotes: OwnedNote[],
+  newCommitments: CollectedCommitment[],
+  cachedData: CachedScanData | null,
+): { notes: OwnedNote[]; commitments: CollectedCommitment[] } {
+  if (!cachedData) {
+    return { notes: newNotes, commitments: newCommitments };
+  }
+
+  const cachedNotes: OwnedNote[] = cachedData.ownedNotes.map(n => ({
+    note: n.note,
+    leafIndex: n.leafIndex,
+    nullifier: n.nullifier,
+    txDigest: n.txDigest,
+    displayAmount: (n as any).displayAmount,
+  }));
+
+  const cachedCommitments: CollectedCommitment[] = cachedData.allCommitments.map(c => ({
+    commitment: BigInt(c.commitment),
+    leafIndex: c.leafIndex,
+  }));
+
+  return {
+    notes: [...cachedNotes, ...newNotes],
+    commitments: [...newCommitments, ...cachedCommitments],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Core scan orchestration
+// ---------------------------------------------------------------------------
+
+type ScanResult = {
+  notes: OwnedNote[];
+  commitments: CollectedCommitment[];
+  totalNotesInPool: number;
+  endCursor: string | null;
+};
+
+async function scanPoolNotes(
+  client: SuiGraphQLClient,
+  request: Extract<WorkerRequest, { type: 'scan_notes' }>,
+  cachedData: CachedScanData | null,
+  onProgress: (current: number, total: number, message: string, totalNotesInPool?: number) => void,
+): Promise<ScanResult> {
+  const startCursor = cachedData?.lastScannedCursor ?? null;
+
+  const events = await fetchAllPoolEvents(client, request.packageId, startCursor);
+  const filtered = filterEventsByPool(events, request.poolId);
+
+  const { count: nullifierCount, usedFallback } = await resolveNullifierCount(
+    client, request.poolId, filtered,
+  );
+
+  const totalCommitments =
+    filtered.shieldEvents.length +
+    filtered.transferOutputNotesCount +
+    filtered.swapOutputEvents.length;
+
+  const totalNotesInPool = totalCommitments - nullifierCount;
+
+  if (nullifierCount > totalCommitments) {
+    onProgress(30, 100, `Warning: Spent nullifiers (${nullifierCount}) exceeds total commitments (${totalCommitments})`);
+  }
+  if (totalNotesInPool < 0) {
+    onProgress(30, 100,
+      `Error: Invalid pool state - negative note count! shields=${filtered.shieldEvents.length}, transferOutputs=${filtered.transferOutputNotesCount}, nullifiers=${nullifierCount}`,
+    );
+  }
+
+  const totalEvents =
+    events.shieldNodes.length + events.transferNodes.length + events.swapNodes.length;
+  onProgress(30, 100,
+    `Found ${totalEvents} events, decrypting notes... (Pool: ${filtered.shieldEvents.length} shields + ${filtered.transferOutputNotesCount} transfer outputs + ${filtered.swapOutputEvents.length} swap outputs - ${nullifierCount} spent${usedFallback ? ' [fallback]' : ''} = ${totalNotesInPool} notes)`,
+    totalNotesInPool,
+  );
+
+  const ctx: DecryptContext = {
+    spendingKey: BigInt(request.spendingKey),
+    masterPublicKey: BigInt(request.masterPublicKey),
+    nullifyingKey: BigInt(request.nullifyingKey),
+    poolId: request.poolId,
+  };
+
+  const shieldResult = processShieldEvents(events.shieldNodes, ctx);
+  const transferResult = processTransferEvents(events.transferNodes, ctx);
+  const swapResult = processSwapEvents(events.swapNodes, ctx);
+
+  const newNotes = [...shieldResult.ownedNotes, ...transferResult.ownedNotes, ...swapResult.ownedNotes];
+  const newCommitments = [...shieldResult.commitments, ...transferResult.commitments, ...swapResult.commitments];
+
+  const merged = mergeWithCache(newNotes, newCommitments, cachedData);
+
+  const sortedCommitments = [...merged.commitments].sort((a, b) => a.leafIndex - b.leafIndex);
+
+  return {
+    notes: merged.notes,
+    commitments: sortedCommitments,
+    totalNotesInPool,
+    endCursor: events.endCursor,
+  };
+}
+
 /**
  * Query all pages of a specific event type
  */
@@ -325,435 +781,58 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         }
 
         const scanStartTime = Date.now();
-
-        // Create GraphQL client
-        const client = new SuiGraphQLClient({ url: request.graphqlUrl });
-
-        // Generate cache key from spending key
+        const network = request.graphqlUrl.includes("mainnet") ? "mainnet" : "testnet";
+        const client = new SuiGraphQLClient({ url: request.graphqlUrl, network });
         const cacheKey = await generateCacheKey(request.spendingKey);
-
-        // Try to load existing cache
         const cachedData = await loadScanCache(cacheKey, request.poolId);
-
-        const ownedNotes: Array<{
-          note: SerializedNote;
-          leafIndex: number;
-          nullifier: string;
-          txDigest: string;
-        }> = [];
-
-        // Collect all commitments for Merkle tree construction
-        const allCommitments: Array<{
-          commitment: bigint;
-          leafIndex: number;
-        }> = [];
-
-        if (cachedData) {
-          postMessage({
-            type: "progress",
-            id: request.id,
-            current: 0,
-            total: 100,
-            message: `Found cache (${cachedData.ownedNotes.length} notes). Scanning for new events...`,
-          } as WorkerResponse);
-        } else {
-          postMessage({
-            type: "progress",
-            id: request.id,
-            current: 0,
-            total: 100,
-            message: "Starting full scan of blockchain events...",
-          } as WorkerResponse);
-        }
-
-        // Parallel query of Shield, Transfer, and Unshield events
-        // If cache exists, start from last scanned cursor
-        const startCursor = cachedData?.lastScannedCursor || null;
-
-        const [shieldResult, transferResult, unshieldResult] = await Promise.all([
-          queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents', startCursor),
-          queryAllEvents(client, `${request.packageId}::pool::TransferEvent`, 'TransferEvents', startCursor),
-          queryAllEvents(client, `${request.packageId}::pool::UnshieldEvent`, 'UnshieldEvents', startCursor),
-        ]);
-
-        const allShieldNodes = shieldResult.nodes;
-        const allTransferNodes = transferResult.nodes;
-        const allUnshieldNodes = unshieldResult.nodes;
-        const finalEndCursor = transferResult.endCursor; // Use any result's cursor for cache
-
-        // Filter events by pool_id
-        const filterByPool = (nodes: any[]) =>
-          nodes.filter(node => (node.contents?.json as any)?.pool_id === request.poolId);
-
-        const shieldEventsInPool = filterByPool(allShieldNodes);
-        const transferEventsInPool = filterByPool(allTransferNodes);
-        const unshieldEventsInPool = filterByPool(allUnshieldNodes);
-
-        // Count total output notes from all transfer events
-        const transferOutputNotesCount = transferEventsInPool.reduce((sum, node) => {
-          const output_notes = (node.contents?.json as any)?.output_notes || [];
-          return sum + output_notes.length;
-        }, 0);
-
-        // Query nullifier count from the pool's NullifierRegistry dynamic fields
-        let nullifierCount = 0;
-        let usedFallback = false;
-
-        try {
-          const nullifierQuery = await withTimeout(
-            client.query({
-              query: graphql(`
-                query NullifierCount($poolId: SuiAddress!) {
-                  object(address: $poolId) {
-                    asMoveObject {
-                      contents {
-                        json
-                      }
-                      dynamicFields {
-                        pageInfo {
-                          hasNextPage
-                        }
-                        nodes {
-                          name {
-                            json
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              `),
-              variables: {
-                poolId: request.poolId,
-              },
-            }),
-            30000,
-            'Nullifier count query'
-          );
-
-          const poolData = nullifierQuery.data?.object?.asMoveObject?.contents?.json as any;
-          const nullifiersObjectId = poolData?.nullifiers?.id;
-
-          if (!nullifiersObjectId) {
-            throw new Error('Nullifiers registry ID not found in pool data');
-          }
-
-          // Query NullifierRegistry's dynamic fields to count nullifiers
-          let hasNextPage = true;
-          let cursor: string | null = null;
-          let pageCount = 0;
-
-          while (hasNextPage) {
-            pageCount++;
-            const dfQuery: any = await withTimeout(
-              client.query({
-                query: graphql(`
-                  query NullifierRegistryDynamicFields($registryId: SuiAddress!, $first: Int, $after: String) {
-                    object(address: $registryId) {
-                      dynamicFields(first: $first, after: $after) {
-                        pageInfo {
-                          hasNextPage
-                          endCursor
-                        }
-                        nodes {
-                          name {
-                            type {
-                              repr
-                            }
-                            json
-                          }
-                        }
-                      }
-                    }
-                  }
-                `),
-                variables: {
-                  registryId: nullifiersObjectId,
-                  first: 50,
-                  after: cursor,
-                },
-              }),
-              30000,
-              'Nullifier registry dynamic fields query'
-            );
-
-            const nodes = dfQuery.data?.object?.dynamicFields?.nodes || [];
-
-            // Filter for vector<u8> keys (nullifiers)
-            const nullifierNodes = nodes.filter((node: any) => {
-              const typeName = node.name?.type?.repr || '';
-              return typeName.includes('vector<u8>');
-            });
-
-            nullifierCount += nullifierNodes.length;
-
-            hasNextPage = dfQuery.data?.object?.dynamicFields?.pageInfo?.hasNextPage || false;
-            cursor = dfQuery.data?.object?.dynamicFields?.pageInfo?.endCursor || null;
-
-            if (nullifierCount >= 1000) {
-              break;
-            }
-          }
-        } catch (err) {
-          // Comprehensive fallback: count all spending events
-          usedFallback = true;
-
-          // Count from unshield events (1 nullifier each)
-          const spentFromUnshield = unshieldEventsInPool.length;
-
-          // Count from transfer events - parse actual input_nullifiers count
-          let spentFromTransfer = 0;
-          for (const transferEvent of transferEventsInPool) {
-            const inputNullifiers = (transferEvent.contents?.json as any)?.input_nullifiers || [];
-            // Filter out zero nullifiers (dummy inputs)
-            const nonZeroNullifiers = inputNullifiers.filter((n: any) => {
-              if (Array.isArray(n)) {
-                return n.some(byte => byte !== 0);
-              }
-              return n !== null && n !== undefined;
-            });
-            spentFromTransfer += nonZeroNullifiers.length;
-          }
-
-          // Note: swap events would also consume 2 nullifiers each
-          // const spentFromSwap = swapEventsInPool.length * 2;
-
-          nullifierCount = spentFromUnshield + spentFromTransfer;
-        }
-
-        // Always calculate event-based count for comparison/verification
-        let eventBasedNullifierCount = unshieldEventsInPool.length;
-
-        for (const transferEvent of transferEventsInPool) {
-          const eventData = transferEvent.contents?.json as any;
-          const inputNullifiers = eventData?.input_nullifiers || [];
-
-          // Filter out zero nullifiers (dummy inputs)
-          const nonZeroNullifiers = inputNullifiers.filter((n: any) => {
-            if (Array.isArray(n)) {
-              const hasNonZero = n.some(byte => byte !== 0);
-              return hasNonZero;
-            }
-            return n !== null && n !== undefined;
-          });
-
-          eventBasedNullifierCount += nonZeroNullifiers.length;
-        }
-
-        // If GraphQL returned 0 but we have spending events, use event-based count
-        if (!usedFallback && nullifierCount === 0 && eventBasedNullifierCount > 0) {
-          nullifierCount = eventBasedNullifierCount;
-          usedFallback = true;
-        }
-
-        const totalNotesInPool = shieldEventsInPool.length + transferOutputNotesCount - nullifierCount;
-
-        // Validation and sanity checks
-        const totalCommitments = shieldEventsInPool.length + transferOutputNotesCount;
-        if (nullifierCount > totalCommitments) {
-          postMessage({
-            type: "progress",
-            id: request.id,
-            current: 30,
-            total: 100,
-            message: `Warning: Spent nullifiers (${nullifierCount}) exceeds total commitments (${totalCommitments})`,
-          } as WorkerResponse);
-        }
-
-        if (totalNotesInPool < 0) {
-          postMessage({
-            type: "progress",
-            id: request.id,
-            current: 30,
-            total: 100,
-            message: `Error: Invalid pool state - negative note count! shields=${shieldEventsInPool.length}, transferOutputs=${transferOutputNotesCount}, nullifiers=${nullifierCount}`,
-          } as WorkerResponse);
-        }
 
         postMessage({
           type: "progress",
           id: request.id,
-          current: 30,
+          current: 0,
           total: 100,
-          message: `Found ${allShieldNodes.length + allTransferNodes.length} events, decrypting notes... (Pool: ${shieldEventsInPool.length} shields + ${transferOutputNotesCount} transfer outputs - ${nullifierCount} spent${usedFallback ? ' [fallback]' : ''} = ${totalNotesInPool} notes)`,
-          totalNotesInPool,
+          message: cachedData
+            ? `Found cache (${cachedData.ownedNotes.length} notes). Scanning for new events...`
+            : "Starting full scan of blockchain events...",
         } as WorkerResponse);
 
-        // Helper to decode encrypted note bytes
-        const decodeEncryptedNote = (encryptedNote: string | number[]): number[] | null => {
-          if (typeof encryptedNote === 'string') {
-            return decodeBase64(encryptedNote);
-          } else if (Array.isArray(encryptedNote)) {
-            return encryptedNote;
-          }
-          return null;
-        };
+        const scanResult = await scanPoolNotes(
+          client,
+          request,
+          cachedData,
+          (current, total, message, totalNotesInPool) => {
+            postMessage({ type: "progress", id: request.id, current, total, message, totalNotesInPool } as WorkerResponse);
+          },
+        );
 
-        // Helper to parse commitment
-        const parseCommitment = (commitment: string | number[]): bigint => {
-          const commitmentBytes = typeof commitment === 'string'
-            ? Array.from(Buffer.from(commitment, 'base64'))
-            : commitment;
-          return bytesToBigIntLE_BN254(commitmentBytes);
-        };
-
-        let shieldNotesDecrypted = 0;
-        let transferNotesDecrypted = 0;
-
-        // Process Shield events
-        for (const node of allShieldNodes) {
-          const eventData = node.contents?.json as any;
-          if (!eventData || (eventData.pool_id && eventData.pool_id !== request.poolId)) {
-            continue;
-          }
-
-          // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
-          try {
-            allCommitments.push({
-              commitment: parseCommitment(eventData.commitment),
-              leafIndex: Number(eventData.position),
-            });
-          } catch (err) {
-            throw new Error(`Failed to parse commitment at position ${eventData.position}: ${err instanceof Error ? err.message : err}`);
-          }
-
-          // Then check if note belongs to us (for ownedNotes only)
-          const encryptedNoteBytes = decodeEncryptedNote(eventData.encrypted_note);
-          if (!encryptedNoteBytes) continue;
-
-          // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
-          if (!quickCheckNote(encryptedNoteBytes, BigInt(request.spendingKey))) {
-            continue; // Tag doesn't match, skip decryption (but commitment already collected)
-          }
-
-          const note = decryptNote(
-            encryptedNoteBytes,
-            BigInt(request.spendingKey),
-            BigInt(request.masterPublicKey)
-          );
-
-          if (note) {
-            shieldNotesDecrypted++;
-            const leafIndex = Number(eventData.position);
-
-            ownedNotes.push({
-              note,
-              leafIndex,
-              nullifier: computeNullifier(BigInt(request.nullifyingKey), leafIndex),
-              txDigest: (node.transaction as any)?.digest || "",
-            });
-          }
-        }
-
-        // Process Transfer events
-        for (const node of allTransferNodes) {
-          const eventData = node.contents?.json as any;
-          if (!eventData || (eventData.pool_id && eventData.pool_id !== request.poolId)) {
-            continue;
-          }
-
-          const { output_notes, output_positions, output_commitments } = eventData;
-
-          for (let i = 0; i < output_notes.length; i++) {
-            // ALWAYS collect commitment first (Merkle tree needs ALL commitments, not just ours)
-            try {
-              allCommitments.push({
-                commitment: parseCommitment(output_commitments[i]),
-                leafIndex: Number(output_positions[i]),
-              });
-            } catch (err) {
-              throw new Error(`Failed to parse transfer commitment at index ${i}: ${err instanceof Error ? err.message : err}`);
-            }
-
-            // Then check if note belongs to us (for ownedNotes only)
-            const outputNoteBytes = decodeEncryptedNote(output_notes[i]);
-            if (!outputNoteBytes) continue;
-
-            // Fast filtering: skip full decryption if viewing tag doesn't match (all notes use v2 format with tag)
-            if (!quickCheckNote(outputNoteBytes, BigInt(request.spendingKey))) {
-              continue; // Tag doesn't match, skip decryption (but commitment already collected)
-            }
-
-            const note = decryptNote(
-              outputNoteBytes,
-              BigInt(request.spendingKey),
-              BigInt(request.masterPublicKey)
-            );
-
-            if (note) {
-              transferNotesDecrypted++;
-              const leafIndex = Number(output_positions[i]);
-
-              ownedNotes.push({
-                note,
-                leafIndex,
-                nullifier: computeNullifier(BigInt(request.nullifyingKey), leafIndex),
-                txDigest: (node.transaction as any)?.digest || "",
-              });
-            }
-          }
-        }
-
-        // Merge with cached data if cache exists
-        if (cachedData) {
-          // Add cached notes (prepend to maintain order)
-          const cachedNotes = cachedData.ownedNotes.map(cachedNote => ({
-            note: cachedNote.note,
-            leafIndex: cachedNote.leafIndex,
-            nullifier: cachedNote.nullifier,
-            txDigest: cachedNote.txDigest,
-          }));
-          ownedNotes.unshift(...cachedNotes);
-
-          // Add cached commitments
-          for (const cachedCommitment of cachedData.allCommitments) {
-            allCommitments.push({
-              commitment: BigInt(cachedCommitment.commitment),
-              leafIndex: cachedCommitment.leafIndex,
-            });
-          }
-        }
-
-        // Sort commitments for consistent tree building later
-        if (allCommitments.length > 0) {
-          allCommitments.sort((a, b) => a.leafIndex - b.leafIndex);
-        }
         postMessage({
           type: "progress",
           id: request.id,
           current: 100,
           total: 100,
-          message: `Scan complete! Found ${ownedNotes.length} notes.`,
+          message: `Scan complete! Found ${scanResult.notes.length} notes.`,
         } as WorkerResponse);
 
-        // Save to cache
-        const scanDuration = Date.now() - scanStartTime;
         await saveScanCache({
           userKey: cacheKey,
           poolId: request.poolId,
-          lastScannedCursor: finalEndCursor,
+          lastScannedCursor: scanResult.endCursor,
           lastScannedTimestamp: Date.now(),
-          ownedNotes: ownedNotes.map(n => ({
-            note: n.note,
-            leafIndex: n.leafIndex,
-            nullifier: n.nullifier,
-            txDigest: n.txDigest,
-          })),
-          allCommitments: allCommitments.map(c => ({
+          ownedNotes: scanResult.notes,
+          allCommitments: scanResult.commitments.map(c => ({
             commitment: c.commitment.toString(),
             leafIndex: c.leafIndex,
           })),
-          totalNotesInPool,
-          lastScanDuration: scanDuration,
+          totalNotesInPool: scanResult.totalNotesInPool,
+          lastScanDuration: Date.now() - scanStartTime,
         });
 
-        const response: WorkerResponse = {
+        postMessage({
           type: "scan_notes_result",
           id: request.id,
-          notes: ownedNotes,
-          totalNotesInPool, // Total notes in pool = Shield - Unshield
-        };
-        postMessage(response);
+          notes: scanResult.notes,
+          totalNotesInPool: scanResult.totalNotesInPool,
+        } as WorkerResponse);
         break;
       }
 
@@ -826,17 +905,20 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       }
 
       case "count_pool_notes": {
-        const client = new SuiGraphQLClient({ url: request.graphqlUrl });
+        const network = request.graphqlUrl.includes("mainnet") ? "mainnet" : "testnet";
+        const client = new SuiGraphQLClient({ url: request.graphqlUrl, network });
 
-        const [shieldResult, transferResult, unshieldResult] = await Promise.all([
+        const [shieldResult, transferResult, unshieldResult, swapResult] = await Promise.all([
           queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents'),
           queryAllEvents(client, `${request.packageId}::pool::TransferEvent`, 'TransferEvents'),
           queryAllEvents(client, `${request.packageId}::pool::UnshieldEvent`, 'UnshieldEvents'),
+          queryAllEvents(client, `${request.packageId}::pool::SwapEvent`, 'SwapEvents'),
         ]);
 
         const shieldNodes = shieldResult.nodes;
         const transferNodes = transferResult.nodes;
         const unshieldNodes = unshieldResult.nodes;
+        const swapNodes = swapResult.nodes;
 
         const filterByPool = (nodes: any[]) =>
           nodes.filter(node => (node.contents?.json as any)?.pool_id === request.poolId);
@@ -844,6 +926,10 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         const shieldEventsInPool = filterByPool(shieldNodes);
         const transferEventsInPool = filterByPool(transferNodes);
         const unshieldEventsInPool = filterByPool(unshieldNodes);
+        // SwapEvent uses pool_out_id for the output note's pool
+        const swapEventsInPool = swapNodes.filter(
+          node => (node.contents?.json as any)?.pool_out_id === request.poolId
+        );
 
         const transferOutputNotesCount = transferEventsInPool.reduce((sum, node) => {
           const output_notes = (node.contents?.json as any)?.output_notes || [];
@@ -857,7 +943,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
           transferEventsInPool
         );
 
-        const totalNotesInPool = shieldEventsInPool.length + transferOutputNotesCount - nullifierCount;
+        const totalNotesInPool = shieldEventsInPool.length + transferOutputNotesCount + swapEventsInPool.length - nullifierCount;
 
         const response: WorkerResponse = {
           type: "count_pool_notes_result",

@@ -1,81 +1,163 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
   useSuiClient,
   useSuiClientContext,
+  useSuiClientQuery,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
-import { cn, parseSui, formatSui } from "@/lib/utils";
-import { SUI_COIN_TYPE, DEEPBOOK_POOLS } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import {
+  cn,
+  parseTokenAmount,
+  formatSui,
+  getTokenIdFromCoinType,
+  formatTokenAmount,
+  truncateAddress,
+} from "@/lib/utils";
+import {
+  NETWORK_CONFIG,
+  CLOCK_OBJECT_ID,
+  ESTIMATED_DEEP_FEE,
+} from "@/lib/constants";
+import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
+import { NumberInput } from "@/components/NumberInput";
 import {
+  createSwapOutputs,
   generateSwapProof,
-  convertSwapProofToSui,
-  calculateMinOutput,
   estimateDeepBookSwap,
-  buildSwapTransaction,
-  selectNotes,
-  createNote,
-  randomFieldElement,
+  getPoolBookParams,
   encryptNote,
   deriveViewingPublicKey,
-  poseidonHash,
-  type SwapParams,
-  type SwapInput,
-  type SelectableNote,
 } from "@june_zk/octopus-sdk";
-import { initPoseidon } from "@/lib/poseidon";
-import { NumberInput } from "@/components/NumberInput";
-import { fetchMerkleProofs } from "@/lib/merkleProofFetcher";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
   notes: OwnedNote[];
   loading: boolean;
-  error: string | null;
+  selectedToken?: "SUI" | "USDC" | "DBUSDC";
   onSuccess?: () => void | Promise<void>;
-  onRefresh?: () => void | Promise<void>;
-  markNoteSpent?: (nullifier: bigint) => void;
 }
 
-export function SwapForm({ keypair, notes, loading: notesLoading, error: notesError, onSuccess, onRefresh, markNoteSpent }: SwapFormProps) {
-  const [amountIn, setAmountIn] = useState("");
-  const [amountOut, setAmountOut] = useState("");
-  const [tokenIn, setTokenIn] = useState<"SUI" | "USDC">("SUI");
-  const [tokenOut, setTokenOut] = useState<"SUI" | "USDC">("USDC");
-  const [slippage, setSlippage] = useState(50); // 0.5% in bps
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isEstimating, setIsEstimating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [priceImpact, setPriceImpact] = useState<number>(0);
+type SwapState =
+  | "idle"
+  | "fetching-merkle-proofs"
+  | "generating-proof"
+  | "submitting"
+  | "success"
+  | "error";
 
-  const { packageId, suiPoolId, tokens } = useNetworkConfig();
+export function SwapForm({
+  keypair,
+  notes,
+  loading: notesLoading,
+  selectedToken,
+  onSuccess,
+}: SwapFormProps) {
+  const { packageId, tokens: tokenConfig } = useNetworkConfig();
   const account = useCurrentAccount();
+
   const { network } = useSuiClientContext();
   const isMainnet = network === "mainnet";
+
+  // Determine available tokens based on network
+  const availableTokens = isMainnet ? ["SUI", "USDC"] as const : ["SUI", "DBUSDC"] as const;
+  const defaultTokenOut = isMainnet ? "USDC" : "DBUSDC";
+
+  const [tokenInSymbol, setTokenInSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(selectedToken ?? "SUI");
+  const [tokenOutSymbol, setTokenOutSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(
+    selectedToken && selectedToken !== "SUI" ? "SUI" : defaultTokenOut
+  );
+
+  useEffect(() => {
+    if (!selectedToken) return;
+    setTokenInSymbol(selectedToken);
+    setTokenOutSymbol(selectedToken === "SUI" ? defaultTokenOut : "SUI");
+  }, [selectedToken]);
+  const [amountIn, setAmountIn] = useState("");
+  const [amountOut, setAmountOut] = useState("");
+  const [isTargetAmount, setIsTargetAmount] = useState(false);
+  const [activeInput, setActiveInput] = useState<"from" | "to">("from");
+  const [isEstimatingReverse, setIsEstimatingReverse] = useState(false);
+  const [slippage, setSlippage] = useState(50); // 0.5% in bps
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
+  const [isEstimating, setIsEstimating] = useState(false);
+  const [state, setState] = useState<SwapState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  const [priceImpact, setPriceImpact] = useState<number>(0);
+  const [estimationWarning, setEstimationWarning] = useState<string | null>(null);
+  const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
+  const [lotSize, setLotSize] = useState<bigint>(1n);
+  const [minSize, setMinSize] = useState<bigint>(1n);
+
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
-  // Switch token pair
-  const handleSwitchTokens = () => {
-    setTokenIn(tokenOut);
-    setTokenOut(tokenIn);
-    setAmountIn(amountOut);
-    setAmountOut("");
+  const isProcessing = state !== "idle" && state !== "error" && state !== "success";
+
+  const getProgressMessage = () => {
+    switch (state) {
+      case "fetching-merkle-proofs":
+        return "// Building Merkle proofs";
+      case "generating-proof":
+        return "// Proof generation in progress (30-60s)";
+      case "submitting":
+        return "// Awaiting wallet confirmation";
+      default:
+        return "";
+    }
   };
 
-  // Estimate output amount when input changes
+  // Query DEEP tokens (only in production mode)
+  const { data: deepBalance } = useSuiClientQuery(
+    "getCoins",
+    {
+      owner: account?.address ?? "",
+      coinType: NETWORK_CONFIG[network === "mainnet" ? 'mainnet' : 'testnet'].deepCoinType,
+    },
+    {
+      enabled: !!account?.address,
+    }
+  );
+
+  // Auto-select DEEP coin with sufficient balance
+  useEffect(() => {
+    if (deepBalance?.data) {
+      const adequateCoin = deepBalance.data.find(
+        (coin) => BigInt(coin.balance) >= ESTIMATED_DEEP_FEE
+      );
+      setSelectedDeepCoin(adequateCoin?.coinObjectId || null);
+    } else {
+      setSelectedDeepCoin(null);
+    }
+  }, [deepBalance]);
+
+  // Switch token pair
+  const handleSwitchTokens = () => {
+    setTokenInSymbol(tokenOutSymbol);
+    setTokenOutSymbol(tokenInSymbol);
+    setAmountIn(amountOut);
+    setAmountOut("");
+    setIsTargetAmount(false);
+    setActiveInput("from");
+  };
+
+  // Estimate output amount when input changes (forward: FROM → TO)
   useEffect(() => {
     const estimateOutput = async () => {
+      if (activeInput === "to") return;
+      setIsTargetAmount(false);
       if (!amountIn || parseFloat(amountIn) <= 0) {
+        setEstimationWarning(null);
         setAmountOut("");
         setPriceImpact(0);
+        setExchangeRate(null);
         return;
       }
 
@@ -84,41 +166,87 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
         const amountInFloat = parseFloat(amountIn);
 
         // Check if swapping same token
-        if (tokenIn === tokenOut) {
+        if (tokenInSymbol === tokenOutSymbol) {
           setAmountOut(amountIn);
           setPriceImpact(0);
           setIsEstimating(false);
           return;
         }
 
-        // Get pool configuration
-        const poolKey = `${tokenIn}_${tokenOut}`;
-        const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
-
+        const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
         if (!deepbookPoolId || deepbookPoolId === "0x...") {
-          throw new Error(`DeepBook pool not configured for ${poolKey}`);
+          throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
         }
 
         // Convert to smallest units
-        const amountInBigInt = BigInt(
-          Math.floor(amountInFloat * Math.pow(10, tokens![tokenIn].decimals))
+        const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+        const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+        const tokenInDecimals = tokenInConfig?.decimals ?? 9;
+        const amountInRaw = BigInt(
+          Math.floor(amountInFloat * Math.pow(10, tokenInDecimals))
         );
 
         // Estimate swap using DeepBook
-        const isBid = tokenIn === "USDC"; // Buying SUI with USDC
+        // isBid = buying base (SUI) with quote (DBUSDC/USDC)
+        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+        // DeepBook pool base/quote are fixed regardless of swap direction
+        const baseType = isBid ? tokenOutConfig?.type : tokenInConfig?.type;
+        const quoteType = isBid ? tokenInConfig?.type : tokenOutConfig?.type;
+        if (!baseType || !quoteType) {
+          throw new Error("Token type not configured");
+        }
+
+        // Fetch lot size first so we can align amountIn before estimation
+        let currentLotSize = lotSize;
+        try {
+          const params = await getPoolBookParams(
+            client,
+            deepbookPoolId,
+            baseType,
+            quoteType,
+            network === "mainnet" ? "mainnet" : "testnet",
+          );
+          currentLotSize = params.lotSize;
+          setLotSize(params.lotSize);
+          setMinSize(params.minSize);
+        } catch {
+          // Keep default lotSize/minSize of 1n if fetch fails
+        }
+
+        // Align amountIn to nearest lot size (round down) so DeepBook doesn't silently truncate.
+        // For bid (USDC→SUI), amountInRaw is in quote units — lotSize is in base (SUI) units,
+        // so alignment must be skipped to avoid dividing a small USDC amount by a large SUI lot size (→ 0).
+        const amountInBigInt = (!isBid && currentLotSize > 1n)
+          ? (amountInRaw / currentLotSize) * currentLotSize
+          : amountInRaw;
+
         const estimation = await estimateDeepBookSwap(
           client,
           deepbookPoolId,
           amountInBigInt,
-          isBid
+          isBid,
+          baseType,
+          quoteType,
+          (network === "mainnet" ? "mainnet" : "testnet"),
         );
 
         // Convert output to display units
+        const tokenOutDecimals = tokenOutConfig?.decimals ?? 9;
         const amountOutFloat = Number(estimation.amountOut) /
-          Math.pow(10, tokens![tokenOut].decimals);
+          Math.pow(10, tokenOutDecimals);
 
-        setAmountOut(amountOutFloat.toFixed(tokens![tokenOut].decimals));
+        if (estimation.isApproximate) {
+          setAmountOut("");
+          setExchangeRate(null);
+          setPriceImpact(0);
+          setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+          return;
+        }
+
+        setAmountOut(amountOutFloat.toFixed(tokenOutDecimals));
+        setExchangeRate(amountInFloat > 0 ? amountOutFloat / amountInFloat : null);
         setPriceImpact(estimation.priceImpact);
+        setEstimationWarning(null);
       } catch (err) {
         console.error("Failed to estimate output:", err);
         setAmountOut("0");
@@ -130,7 +258,119 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenIn, tokenOut, client]);
+  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, activeInput]);
+
+  // Estimate required input amount when output changes (reverse: TO → FROM)
+  useEffect(() => {
+    if (activeInput !== "to") return;
+
+    const estimateInput = async () => {
+      if (!amountOut || parseFloat(amountOut) <= 0) {
+        setAmountIn("");
+        setExchangeRate(null);
+        setPriceImpact(0);
+        setEstimationWarning(null);
+        return;
+      }
+
+      setIsEstimatingReverse(true);
+      try {
+        const amountOutFloat = parseFloat(amountOut);
+
+        if (tokenInSymbol === tokenOutSymbol) {
+          setAmountIn(amountOut);
+          return;
+        }
+
+        const deepbookPoolId = network === "mainnet"
+          ? NETWORK_CONFIG.mainnet.suiusdcPoolId
+          : NETWORK_CONFIG.testnet.suidbusdcPoolId;
+        if (!deepbookPoolId || deepbookPoolId === "0x...") return;
+
+        const tokenInCfg = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+        const tokenOutCfg = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+        if (!tokenInCfg || !tokenOutCfg) return;
+
+        const tokenInDecimals = tokenInCfg.decimals ?? 9;
+        const tokenOutDecimals = tokenOutCfg.decimals ?? 9;
+        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+        const baseType = isBid ? tokenOutCfg.type : tokenInCfg.type;
+        const quoteType = isBid ? tokenInCfg.type : tokenOutCfg.type;
+        const networkKey = network === "mainnet" ? "mainnet" as const : "testnet" as const;
+
+        // Fetch lot size
+        let currentLotSize = lotSize;
+        try {
+          const params = await getPoolBookParams(client, deepbookPoolId, baseType, quoteType, networkKey);
+          currentLotSize = params.lotSize;
+          setLotSize(params.lotSize);
+          setMinSize(params.minSize);
+        } catch { /* keep existing lotSize */ }
+
+        const alignToLot = (raw: bigint) =>
+          !isBid && currentLotSize > 1n ? (raw / currentLotSize) * currentLotSize : raw;
+
+        // Step 1: Get exchange rate — bootstrap with 1 unit if not yet available
+        let currentRate = exchangeRate;
+        if (!currentRate) {
+          const probeRaw = alignToLot(BigInt(Math.pow(10, tokenInDecimals)));
+          if (probeRaw > 0n) {
+            const probeEst = await estimateDeepBookSwap(client, deepbookPoolId, probeRaw, isBid, baseType, quoteType, networkKey);
+            if (probeEst.isApproximate) {
+              setAmountIn("");
+              setExchangeRate(null);
+              setPriceImpact(0);
+              setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+              return;
+            }
+            const probeOut = Number(probeEst.amountOut) / Math.pow(10, tokenOutDecimals);
+            if (probeOut > 0) currentRate = probeOut;
+          }
+        }
+        if (!currentRate || currentRate <= 0) return;
+
+        // Step 2: Approximate amountIn = amountOut / rate
+        const approxInRaw = alignToLot(
+          BigInt(Math.floor((amountOutFloat / currentRate) * Math.pow(10, tokenInDecimals)))
+        );
+        if (approxInRaw <= 0n) return;
+
+        // Step 3: Run forward estimation to refine and get price impact
+        const refined = await estimateDeepBookSwap(client, deepbookPoolId, approxInRaw, isBid, baseType, quoteType, networkKey);
+        if (refined.isApproximate) {
+          setAmountIn("");
+          setExchangeRate(null);
+          setPriceImpact(0);
+          setEstimationWarning("Insufficient liquidity in DeepBook pool for this amount.");
+          return;
+        }
+        const refinedOutFloat = Number(refined.amountOut) / Math.pow(10, tokenOutDecimals);
+
+        // Step 4: Scale proportionally to hit the target output
+        let finalInRaw = approxInRaw;
+        if (refinedOutFloat > 0) {
+          const scaled = BigInt(Math.floor(Number(approxInRaw) * (amountOutFloat / refinedOutFloat)));
+          finalInRaw = alignToLot(scaled);
+        }
+        if (finalInRaw <= 0n) return;
+
+        const finalInFloat = Number(finalInRaw) / Math.pow(10, tokenInDecimals);
+        setAmountIn(finalInFloat.toFixed(tokenInDecimals));
+
+        const approxInFloat = Number(approxInRaw) / Math.pow(10, tokenInDecimals);
+        setExchangeRate(approxInFloat > 0 ? refinedOutFloat / approxInFloat : null);
+        setPriceImpact(refined.priceImpact);
+        setEstimationWarning(null);
+      } catch (err) {
+        console.error("Failed to estimate input:", err);
+      } finally {
+        setIsEstimatingReverse(false);
+      }
+    };
+
+    const debounce = setTimeout(estimateInput, 500);
+    return () => clearTimeout(debounce);
+  }, [amountOut, activeInput, tokenInSymbol, tokenOutSymbol, client]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,273 +392,200 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       return;
     }
 
+    const tokenInDecimals = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig]?.decimals ?? 9;
+    const amountInSmallest = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, tokenInDecimals)));
+
     if (!amountOut || parseFloat(amountOut) <= 0) {
       setError("Cannot estimate output amount");
       return;
     }
 
-    setIsSubmitting(true);
+    const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+    if (!tokenInConfig) {
+      throw new Error(`Token config not found for ${tokenInSymbol}`);
+    }
+    const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+    if (!tokenOutConfig) {
+      throw new Error(`Token config not found for ${tokenOutSymbol}`);
+    }
 
-    try {
-      await initPoseidon();
+    // lotSize is in base asset (SUI) units — only align for ask (SUI→USDC), not bid (USDC→SUI)
+    const isBidSubmit = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    const amountInBase = (!isBidSubmit && lotSize > 1n)
+      ? (amountInSmallest / lotSize) * lotSize
+      : amountInSmallest;
+    const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
+    // Slippage-adjusted minimum: this is what the ZKP commits to and the note is spendable for
+    const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
 
-      const amountInBigInt = parseSui(amountIn);
-      const amountOutBigInt = parseSui(amountOut);
-      const minAmountOut = calculateMinOutput(amountOutBigInt, slippage);
-
-      // Get unspent notes
-      const unspentNotes = notes.filter((n: OwnedNote) => !n.spent);
-
-      if (unspentNotes.length === 0) {
-        setError("No unspent notes found. Please shield tokens first.");
-        setIsSubmitting(false);
+    // Validate minimum order size (minSize is always in base asset / SUI units)
+    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    if (!isBid) {
+      // Ask (SUI→USDC): amountIn is base asset, compare directly
+      if (amountInSmallest < minSize) {
+        const minDisplay = Number(minSize) / Math.pow(10, tokenInDecimals);
+        setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook minimum order size)`);
         return;
       }
-
-      // 1. Select notes for swap (use transfer selection logic)
-      const selectableNotes: SelectableNote[] = unspentNotes.map((ownedNote: OwnedNote) => ({
-        note: ownedNote.note,
-        leafIndex: ownedNote.leafIndex,
-        pathElements: [], // Will be fetched lazily
-      }));
-
-      const selectedNotes = selectNotes(selectableNotes, amountInBigInt);
-
-      // 2. Fetch Merkle proofs lazily for selected notes
-      const merkleProofs = await fetchMerkleProofs(
-        keypair.spendingKey,
-        tokens![tokenIn].poolId,
-        selectedNotes.map((n) => n.leafIndex)
-      );
-
-      // Attach proofs to selected notes
-      const notesWithProofs = selectedNotes.map((n) => ({
-        ...n,
-        pathElements: merkleProofs.get(n.leafIndex)!,
-      }));
-
-      // Validate all notes have proofs
-      if (notesWithProofs.some((n) => !n.pathElements || n.pathElements.length === 0)) {
-        throw new Error("Failed to generate Merkle proofs for selected notes");
+    } else {
+      // Bid (USDC→SUI): minSize is in SUI output terms, validate estimated output
+      const suiDecimals = tokenOutConfig.decimals;
+      const estimatedBaseOut = parseTokenAmount(amountOut, suiDecimals);
+      if (estimatedBaseOut < minSize) {
+        const minDisplay = Number(minSize) / Math.pow(10, suiDecimals);
+        setError(`Estimated SUI output must be at least ${minDisplay} SUI (DeepBook minimum order size)`);
+        return;
       }
+    }
 
-      // 3. Mark selected notes as spent locally to prevent double-spending during proof generation
-      const selectedOwnedNotes = unspentNotes.filter((ownedNote: OwnedNote) =>
-        notesWithProofs.some(sn => sn.leafIndex === ownedNote.leafIndex)
+    try {
+      // 1. Select notes and fetch proofs
+      setState("fetching-merkle-proofs");
+      const notesWithProofs = await selectNotesWithProofs(
+        notes,
+        amountInBase,
+        keypair,
+        tokenInConfig.poolId
       );
-      selectedOwnedNotes.forEach((ownedNote: OwnedNote) => {
-        markNoteSpent?.(ownedNote.nullifier);
-      });
 
-      // 4. Get token IDs from selected notes
-      const inputTokenId = notesWithProofs[0].note.token;
-      // For output token, we use a simple hash for now (TODO: proper token registry)
-      // For SUI->USDC swap, output should be USDC token ID
-      // For now, we'll use a placeholder that matches the mock implementation
-      const outputTokenId = tokenIn === "SUI"
-        ? poseidonHash([BigInt(0x3)]) // Mock USDC token ID
-        : poseidonHash([BigInt(0x2)]); // SUI token ID
-
-      // 5. Build swap parameters
-      const swapParams: SwapParams = {
-        tokenIn: inputTokenId,
-        tokenOut: outputTokenId,
-        amountIn: amountInBigInt,
-        minAmountOut,
-        dexPoolId: 1n, // Mock DEX pool ID for testing
-        slippageBps: slippage,
-      };
-
-      // 6. Create output note (swapped tokens for recipient - self)
-      const outputRandom = randomFieldElement();
-      const outputNote = createNote(
+      // 2. Create output notes (swap + change)
+      // swapNote commits to minAmountOut — the slippage-protected minimum the circuit guarantees
+      const inputTotal = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
+      const tokenIn = notesWithProofs[0].note.token;
+      const tokenOut = getTokenIdFromCoinType(tokenOutConfig.type);
+      const [swapNote, changeNote] = createSwapOutputs(
         keypair.masterPublicKey,
-        outputTokenId,
-        amountOutBigInt,
-        outputRandom
-      );
+        amountInBase,
+        minAmountOutBase,
+        inputTotal,
+        tokenIn,
+        tokenOut,
+      )
 
-      // 7. Calculate change amount (remaining input tokens)
-      const totalInputValue = notesWithProofs.reduce((sum, n) => sum + n.note.amount, 0n);
-      const changeAmount = totalInputValue - amountInBigInt;
-
-      const changeRandom = randomFieldElement();
-      const changeNote = createNote(
-        keypair.masterPublicKey,
-        inputTokenId,
-        changeAmount,
-        changeRandom
-      );
-
-      // 8. Build swap input for proof generation
-      // Debug: Verify NSK derivation and Merkle proofs for each input note
-      console.log("=== Swap Input Verification ===");
-      const MERKLE_TREE_DEPTH = 16;
-      const computedRoots: bigint[] = [];
-
-      for (let i = 0; i < notesWithProofs.length; i++) {
-        const note = notesWithProofs[i].note;
-        const expectedNSK = poseidonHash([keypair.masterPublicKey, note.random]);
-        const matches = expectedNSK === note.nsk;
-
-        // Compute Merkle root from this note's proof
-        let root = note.commitment;
-        const leafIndex = BigInt(notesWithProofs[i].leafIndex);
-        const pathElements = notesWithProofs[i].pathElements!;
-
-        for (let level = 0; level < MERKLE_TREE_DEPTH; level++) {
-          const sibling = pathElements[level];
-          const isRight = (leafIndex >> BigInt(level)) & 1n;
-          if (isRight === 0n) {
-            root = poseidonHash([root, sibling]);
-          } else {
-            root = poseidonHash([sibling, root]);
-          }
-        }
-
-        computedRoots.push(root);
-
-        console.log(`Input Note ${i}:`, {
-          token: note.token.toString(),
-          value: note.amount.toString(),
-          nsk: note.nsk.toString(),
-          random: note.random.toString(),
-          expectedNSK: expectedNSK.toString(),
-          nskMatches: matches,
-          leafIndex: notesWithProofs[i].leafIndex,
-          commitment: note.commitment.toString(),
-          merkleRoot: root.toString(),
-        });
-
-        if (!matches) {
-          throw new Error(`Input note ${i} has invalid NSK! Expected ${expectedNSK} but got ${note.nsk}`);
-        }
-      }
-
-      // Verify both notes have the same Merkle root
-      if (computedRoots.length === 2 && computedRoots[0] !== computedRoots[1]) {
-        throw new Error(
-          `Merkle root mismatch detected!\n` +
-          `Note 0 root: ${computedRoots[0].toString()}\n` +
-          `Note 1 root: ${computedRoots[1].toString()}\n` +
-          `Your notes have stale Merkle proofs. Please refresh your notes and try again.`
-        );
-      }
-
-      // Verify computed root matches on-chain root
-      const onChainRootResult = await client.devInspectTransactionBlock({
-        transactionBlock: (() => {
-          const tx = new Transaction();
-          tx.moveCall({
-            target: `${packageId}::pool::get_merkle_root`,
-            typeArguments: [SUI_COIN_TYPE],
-            arguments: [tx.object(suiPoolId!)],
-          });
-          return tx;
-        })(),
-        sender: account?.address || "0x0",
-      });
-
-      if (onChainRootResult.results?.[0]?.returnValues?.[0]) {
-        const [rootBytes] = onChainRootResult.results[0].returnValues[0];
-        // Convert bytes to bigint (LE format)
-        let onChainRoot = 0n;
-        for (let i = 0; i < rootBytes.length; i++) {
-          onChainRoot |= BigInt(rootBytes[i]) << BigInt(8 * i);
-        }
-
-        const localRoot = computedRoots[0];
-        console.log("On-chain Merkle Root:", onChainRoot.toString());
-        console.log("Local Merkle Root:", localRoot.toString());
-
-        if (onChainRoot !== localRoot) {
-          throw new Error(
-            `Your notes have outdated Merkle proofs!\n` +
-            `Local root: ${localRoot.toString()}\n` +
-            `On-chain root: ${onChainRoot.toString()}\n\n` +
-            `New notes have been added to the pool since you last scanned. ` +
-            `Please refresh your notes and try again.`
-          );
-        }
-
-        console.log("✓ Merkle proof validation passed!");
-      }
-
-      console.log("MPK:", keypair.masterPublicKey.toString());
-      console.log("Token In:", inputTokenId.toString());
-      console.log("Token Out:", outputTokenId.toString());
-      console.log("Merkle Root (verified):", computedRoots[0]?.toString());
-
-      const swapInput: SwapInput = {
+      // 3. Generate ZK proof (returns proof + nullifiers separately)
+      setState("generating-proof");
+      const { proof, nullifiers } = await generateSwapProof({
         keypair,
         inputNotes: notesWithProofs.map(n => n.note),
         inputLeafIndices: notesWithProofs.map(n => n.leafIndex),
         inputPathElements: notesWithProofs.map(n => n.pathElements!),
-        swapParams,
-        outputNSK: outputNote.nsk,
-        outputRandom: outputNote.random,
-        outputAmount: outputNote.amount,
-        changeNSK: changeNote.nsk,
-        changeRandom: changeNote.random,
-        changeAmount: changeNote.amount,
-      };
+        swapNote,
+        changeNote,
+      });
 
-      // 9. Generate ZK proof (30-60 seconds)
-      const { proof, publicSignals } = await generateSwapProof(swapInput);
+      // 4. Encrypt output note using viewing public keys
+      const viewingPk = deriveViewingPublicKey(keypair.spendingKey);
+      const encryptedOutputNote = encryptNote(swapNote, viewingPk);
+      const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
-      // 10. Convert proof to Sui format
-      const suiProof = convertSwapProofToSui(proof, publicSignals);
-
-      // 11. Encrypt notes for recipient (self)
-      const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
-      const encryptedOutputNote = encryptNote(outputNote, myViewingPk);
-      const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
-
-      // 12. Get DeepBook pool ID
-      const poolKey = `${tokenIn}_${tokenOut}`;
-      const deepbookPoolId = DEEPBOOK_POOLS[poolKey];
-
+      // 5. Get DeepBook pool ID
+      const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
       if (!deepbookPoolId || deepbookPoolId === "0x...") {
-        throw new Error(`DeepBook pool not found for ${poolKey}`);
+        throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
       }
 
-      // 13. Build and execute transaction
-      const tx = buildSwapTransaction(
-        packageId!,
-        tokens![tokenIn].poolId,
-        tokens![tokenOut].poolId,
-        deepbookPoolId,
-        tokens![tokenIn].type,
-        tokens![tokenOut].type,
-        suiProof,
-        amountInBigInt,
-        minAmountOut,
-        encryptedOutputNote,
-        encryptedChangeNote
+      if (!selectedDeepCoin) {
+        throw new Error(
+          "DEEP tokens required for swap. Please acquire DEEP tokens."
+        );
+      }
+      const deepCoinBalance = deepBalance?.data?.find(
+        (c) => c.coinObjectId === selectedDeepCoin
       );
+      if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
+        throw new Error("Insufficient DEEP balance for swap fees");
+      }
+
+      // 6. Build and submit transaction
+      setState("submitting");
+      const tx = new Transaction();
+
+      // isBid = tokenIn is the quote token (e.g. DBUSDC → SUI)
+      const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+
+      if (isBid) {
+        // Bid: quote → base. Contract function swap_bid<Base, Quote>.
+        // Type args must be [baseType, quoteType] to match DeepBookPool<Base, Quote>.
+        tx.moveCall({
+          target: `${packageId}::pool::swap_bid`,
+          typeArguments: [tokenOutConfig.type, tokenInConfig.type], // [Base, Quote]
+          arguments: [
+            tx.object(tokenInConfig.poolId),   // pool_in = quote (DBUSDC) pool
+            tx.object(tokenOutConfig.poolId),  // pool_out = base (SUI) pool
+            tx.object(deepbookPoolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.object(selectedDeepCoin!),
+            tx.object(CLOCK_OBJECT_ID),
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+      } else {
+        // Ask: base → quote (e.g. SUI → DBUSDC)
+        tx.moveCall({
+          target: `${packageId}::pool::swap`,
+          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+          arguments: [
+            tx.object(tokenInConfig.poolId),
+            tx.object(tokenOutConfig.poolId),
+            tx.object(deepbookPoolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.object(selectedDeepCoin!),
+            tx.object(CLOCK_OBJECT_ID),
+            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+      }
 
       const result = await signAndExecute({ transaction: tx });
 
-      setSuccess(`Swap successful! TX: ${result.digest}`);
-      if (onSuccess) await onSuccess();
+      // 7. Success!
+      setState("success");
+      const actualAmountOut = formatTokenAmount(swapNote.amount, tokenOutConfig.decimals);
+      const actualAmountIn = formatTokenAmount(amountInBase, tokenInConfig.decimals);
+      let successMessage = `Swapped ${actualAmountIn} ${tokenInSymbol} → ${actualAmountOut} ${tokenOutSymbol}`;
+      if (changeNote.amount > 0n) {
+        successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenInConfig.decimals)} ${tokenInSymbol})`;
+      }
+      setSuccess({
+        message: successMessage,
+        txDigest: result.digest
+      });
+      setAmountIn("");
+      setAmountOut("");
+
+      // 8. Trigger note rescan to pick up the output and change notes
+      await onSuccess?.();
     } catch (err) {
       console.error("Swap failed:", err);
+      setState("error");
       setError(err instanceof Error ? err.message : "Swap failed");
-
-      // If transaction fails, trigger refresh to reconcile state
-      if (onRefresh) {
-        setTimeout(() => {
-          onRefresh();
-        }, 1000);
-      }
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
   const unspentNotes = notes.filter((n) => !n.spent);
+
+  const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+  // lotSize is in base asset (SUI) units; don't apply it as step for bid (USDC input)
+  const isBidForStep = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+  const tokenInDecimals = tokenInConfig?.decimals ?? 9;
+  const lotSizeStep = (!isBidForStep && lotSize > 1n)
+    ? Number(lotSize) / Math.pow(10, tokenInDecimals)
+    : Math.pow(10, -tokenInDecimals);
+  const maxAmountIn = unspentNotes
+    .filter((n) => tokenInConfig && n.note.token === getTokenIdFromCoinType(tokenInConfig.type))
+    .reduce((sum, n) => sum + n.note.amount, 0n);
+  const handleMaxIn = () => {
+    const decimals = tokenInConfig?.decimals ?? 9;
+    setAmountIn((Number(maxAmountIn) / 10 ** decimals).toFixed(decimals));
+  };
+
   const isFormValid =
-    isMainnet &&
     !!account &&
     !!keypair &&
     !!amountIn &&
@@ -429,52 +596,107 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {!isMainnet ? (
-        <div className="p-3 border border-red-600/40 bg-red-900/20 clip-corner">
-          <div className="flex items-start gap-2">
-            <span className="text-red-400 text-sm">✕</span>
-            <p className="text-xs text-red-400 font-mono leading-relaxed">
-              Swap requires <span className="text-amber-400 font-bold">Mainnet</span>. Switch network in your wallet or click the network badge in the header.
+      {/* DEEP Token Status */}
+      <div className={cn(
+        "p-3 border clip-corner",
+        selectedDeepCoin
+          ? "border-green-600/40 bg-green-900/20"
+          : "border-yellow-600/40 bg-yellow-900/20"
+      )}>
+        <div className="flex items-start gap-2">
+          <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
+            {selectedDeepCoin ? "✓" : "!"}
+          </span>
+          <div className="flex-1">
+            <p className={cn(
+              "text-xs font-mono leading-relaxed",
+              selectedDeepCoin ? "text-green-400" : "text-yellow-400"
+            )}>
+              {selectedDeepCoin
+                ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
+                : "DEEP tokens required for swap fees. Please acquire DEEP tokens."
+              }
             </p>
           </div>
         </div>
-      ) : (
-        <div className="p-3 border border-yellow-600/30 bg-yellow-900/20 clip-corner">
-          <div className="flex items-start gap-2">
-            <span className="text-yellow-500 text-sm">!</span>
-            <p className="text-xs text-yellow-400 font-mono leading-relaxed">
-              Swap uses simulated prices (1 SUI = 3 USDC). Real DeepBook V3 integration in progress.
-            </p>
-          </div>
-        </div>
-      )}
+      </div>
 
       <div className="space-y-4">
         {/* Token In */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            From
-          </label>
-          <div className="flex gap-2">
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              From
+            </label>
             <select
-              value={tokenIn}
-              onChange={(e) => setTokenIn(e.target.value as "SUI" | "USDC")}
+              value={tokenInSymbol}
+              onChange={(e) => {
+                const newTokenIn = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                setTokenInSymbol(newTokenIn);
+                if (newTokenIn === tokenOutSymbol) {
+                  setTokenOutSymbol(tokenInSymbol);
+                }
+              }}
               className="input w-24"
-              disabled={isSubmitting}
+              disabled={isProcessing}
             >
-              <option value="SUI">SUI</option>
-              <option value="USDC">USDC</option>
+              {availableTokens.map(token => (
+                <option key={token} value={token}>{token}</option>
+              ))}
             </select>
-            <NumberInput
-              value={amountIn}
-              onChange={setAmountIn}
-              placeholder="0.0"
-              step={0.000000001}
-              min={0}
-              disabled={isSubmitting}
-              className="flex-1"
-            />
           </div>
+          <NumberInput
+            value={isEstimatingReverse ? "" : amountIn}
+            onChange={(val) => {
+              setAmountIn(val);
+              setActiveInput("from");
+            }}
+            placeholder={isEstimatingReverse ? "Estimating..." : "0.0"}
+            step={lotSizeStep}
+            min={0}
+            disabled={isEstimatingReverse || isProcessing}
+            onMax={handleMaxIn}
+          />
+          {amountIn && (() => {
+            const decimals = tokenInConfig?.decimals ?? 9;
+            const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
+            const isBidInline = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+            // For bid (USDC→SUI): minSize is in SUI output terms — warn using estimated output
+            if (isBidInline && minSize > 1n && !isEstimating && amountOut && parseFloat(amountOut) > 0) {
+              const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
+              const suiDecimals = tokenOutConfig?.decimals ?? 9;
+              const estimatedBaseOut = parseTokenAmount(amountOut, suiDecimals);
+              if (estimatedBaseOut < minSize) {
+                const minDisplay = (Number(minSize) / Math.pow(10, suiDecimals)).toFixed(suiDecimals).replace(/\.?0+$/, '');
+                return (
+                  <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                    ⚠ Estimated SUI output below minimum: {minDisplay} SUI required
+                  </p>
+                );
+              }
+            }
+            // minSize is in base asset (SUI) units; only show inline warning for ask direction
+            if (!isBidInline && minSize > 1n && raw < minSize) {
+              const minDisplay = (Number(minSize) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
+              return (
+                <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                  ⚠ Minimum swap amount is {minDisplay} {tokenInSymbol}
+                </p>
+              );
+            }
+            if (!isBidInline && lotSize > 1n) {
+              const aligned = (raw / lotSize) * lotSize;
+              if (raw !== aligned) {
+                const alignedDisplay = (Number(aligned) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
+                return (
+                  <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                    ⚠ Will round down to nearest lot size: {alignedDisplay} {tokenInSymbol}
+                  </p>
+                );
+              }
+            }
+            return null;
+          })()}
         </div>
 
         {/* Swap Direction Button */}
@@ -483,7 +705,7 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
             type="button"
             onClick={handleSwitchTokens}
             className="p-2 clip-corner border border-cyber-blue/30 hover:bg-cyber-blue/10 transition"
-            disabled={isSubmitting}
+            disabled={isProcessing}
           >
             <svg className="w-5 h-5 text-cyber-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
@@ -493,26 +715,46 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
 
         {/* Token Out */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            To (Estimated)
-          </label>
-          <div className="flex gap-2">
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              {isTargetAmount ? "To (Target)" : "To (Estimated)"}
+            </label>
             <select
-              value={tokenOut}
-              onChange={(e) => setTokenOut(e.target.value as "SUI" | "USDC")}
+              value={tokenOutSymbol}
+              onChange={(e) => {
+                const newTokenOut = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                setTokenOutSymbol(newTokenOut);
+                setIsTargetAmount(false);
+                if (newTokenOut === tokenInSymbol) {
+                  setTokenInSymbol(tokenOutSymbol);
+                }
+              }}
               className="input w-24"
-              disabled={isSubmitting}
+              disabled={isProcessing}
             >
-              <option value="SUI">SUI</option>
-              <option value="USDC">USDC</option>
+              {availableTokens.map(token => (
+                <option key={token} value={token}>{token}</option>
+              ))}
             </select>
-            <input
-              type="text"
-              value={isEstimating ? "Estimating..." : amountOut}
-              readOnly
-              className="input flex-1 bg-black/30"
-            />
           </div>
+          <NumberInput
+            value={isEstimating ? "" : amountOut}
+            onChange={(val) => {
+              setAmountOut(val);
+              if (val !== "" && parseFloat(val) > 0) {
+                setIsTargetAmount(true);
+                setActiveInput("to");
+              } else {
+                setIsTargetAmount(false);
+                setActiveInput("from");
+                setAmountIn("");
+              }
+            }}
+            placeholder={isEstimating ? "Estimating..." : "0.0"}
+            step={0.000000001}
+            min={0}
+            disabled={isEstimating || isProcessing}
+          />
           {isEstimating && (
             <p className="mt-2 text-[10px] text-gray-500 font-mono flex items-center gap-2">
               <svg
@@ -538,30 +780,54 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
               <span>HIGH PRICE IMPACT: {priceImpact.toFixed(2)}%</span>
             </p>
           )}
+          {!isEstimating && estimationWarning && (
+            <p className="mt-2 text-[10px] text-yellow-500 font-mono flex items-center gap-1">
+              <span>⚠</span>
+              <span>{estimationWarning}</span>
+            </p>
+          )}
+          {!isEstimating && exchangeRate !== null && (
+            <p className="mt-2 text-[10px] text-gray-400 font-mono">
+              <span className="text-gray-500">RATE:</span>{" "}
+              <span className="text-cyber-blue font-bold">
+                1 {tokenInSymbol} = {exchangeRate.toFixed(tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig]?.decimals ?? 6)} {tokenOutSymbol}
+              </span>
+            </p>
+          )}
         </div>
 
         {/* Slippage Settings */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            Slippage Tolerance
-          </label>
-          <div className="flex gap-2">
-            {[10, 50, 100, 500].map((bps) => (
-              <button
-                key={bps}
-                type="button"
-                onClick={() => setSlippage(bps)}
-                disabled={isSubmitting}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-mono font-bold uppercase tracking-wider transition clip-corner",
-                  slippage === bps
-                    ? "bg-cyber-blue text-black border border-cyber-blue"
-                    : "bg-black/30 text-gray-400 border border-gray-800 hover:border-cyber-blue/50"
-                )}
-              >
-                {bps / 100}%
-              </button>
-            ))}
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              Slippage Tolerance
+            </label>
+            <span className="text-xs font-mono font-bold text-cyber-blue">
+              {(slippage / 100).toFixed(1)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={10}
+            max={1000}
+            step={10}
+            value={slippage}
+            onChange={(e) => setSlippage(Number(e.target.value))}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                e.preventDefault();
+                const delta = e.key === "ArrowUp" ? 100 : -100;
+                setSlippage((prev) => Math.min(1000, Math.max(10, prev + delta)));
+              }
+            }}
+            disabled={isProcessing}
+            className="w-full h-1.5 appearance-none rounded-none cursor-pointer accent-cyber-blue bg-gray-800 disabled:opacity-50"
+          />
+          <div className="mt-1 flex justify-between text-[10px] text-gray-600 font-mono">
+            <span>0.1%</span>
+            <span>2.5%</span>
+            <span>5%</span>
+            <span>10%</span>
           </div>
         </div>
 
@@ -580,6 +846,45 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           </div>
         )}
 
+        {/* Progress indicator */}
+        {isProcessing && (
+          <div className="p-4 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
+            <div className="flex items-center gap-3">
+              <svg
+                className="h-5 w-5 animate-spin text-cyber-blue"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
+              </svg>
+              <div>
+                <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
+                  {state === "fetching-merkle-proofs"
+                    ? "Building Merkle Tree..."
+                    : state === "generating-proof"
+                      ? "Generating ZK Proof..."
+                      : "Submitting Transaction..."}
+                </p>
+                <p className="text-[10px] text-gray-400 font-mono mt-0.5">
+                  {getProgressMessage()}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Error Message */}
         {error && (
           <div className="p-3 border border-red-600/30 bg-red-900/20 clip-corner">
@@ -595,7 +900,23 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
           <div className="p-3 border border-green-600/30 bg-green-900/20 clip-corner">
             <div className="flex items-start gap-2">
               <span className="text-green-500 text-sm">✓</span>
-              <p className="text-xs text-green-400 font-mono leading-relaxed">{success}</p>
+              <div className="text-xs text-green-400 font-mono leading-relaxed">
+                <p>{success.message}</p>
+                {success.txDigest && (
+                  <>
+                    {' '}
+                    <a
+                      href={`https://${network}.suivision.xyz/txblock/${success.txDigest}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-cyber-blue hover:text-cyber-blue/80 underline"
+                      title={`View transaction: ${success.txDigest}`}
+                    >
+                      [{truncateAddress(success.txDigest, 6)}]
+                    </a>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -604,32 +925,13 @@ export function SwapForm({ keypair, notes, loading: notesLoading, error: notesEr
       {/* Submit Button */}
       <button
         type="submit"
-        disabled={!isFormValid || isSubmitting}
+        disabled={!isFormValid || isProcessing}
         className={cn(
           "btn-primary w-full",
-          isSubmitting && "cursor-wait opacity-70"
+          isProcessing && "cursor-wait opacity-70"
         )}
       >
-        {isSubmitting ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
-            GENERATING PROOF...
-          </span>
-        ) : (
-          "⇄ PRIVATE SWAP"
-        )}
+        {isProcessing ? "◉ PROCESSING..." : "⇄ PRIVATE SWAP"}
       </button>
 
       {/* Info Box */}

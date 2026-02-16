@@ -131,10 +131,31 @@ if [ -n "$ENV_FILE" ]; then
     }
 
     NETWORK_UPPER=$(echo "$NETWORK" | tr '[:lower:]' '[:upper:]')
+
+    # Extract original-id from Published.toml
+    ORIGINAL_PACKAGE_ID=$(awk '/\[published\.'"$NETWORK"'\]/{found=1} found && /original-id =/{match($0, /0x[a-f0-9]+/); print substr($0, RSTART, RLENGTH); exit}' Published.toml)
+
+    # Update PACKAGE_ID (published-at) - used for function calls
     ENV_KEY="NEXT_PUBLIC_${NETWORK_UPPER}_PACKAGE_ID"
     update_env_var "$ENV_KEY" "$NEXT_PUBLIC_PACKAGE_ID" "$ENV_FILE"
+    echo "✓ Updated $ENV_KEY = $NEXT_PUBLIC_PACKAGE_ID (published-at)"
 
-    echo "✓ Updated $ENV_KEY in $ENV_FILE"
+    # Update or set ORIGINAL_PACKAGE_ID - used for event queries
+    ORIGINAL_ENV_KEY="NEXT_PUBLIC_${NETWORK_UPPER}_ORIGINAL_PACKAGE_ID"
+    if [ -n "$ORIGINAL_PACKAGE_ID" ]; then
+        update_env_var "$ORIGINAL_ENV_KEY" "$ORIGINAL_PACKAGE_ID" "$ENV_FILE"
+        echo "✓ Updated $ORIGINAL_ENV_KEY = $ORIGINAL_PACKAGE_ID (original-id)"
+
+        if [ "$ORIGINAL_PACKAGE_ID" != "$NEXT_PUBLIC_PACKAGE_ID" ]; then
+            echo ""
+            echo "⚠️  NOTICE: This is an upgraded package (v2+)"
+            echo "   - Function calls use: $NEXT_PUBLIC_PACKAGE_ID (published-at)"
+            echo "   - Event queries use:  $ORIGINAL_PACKAGE_ID (original-id)"
+        fi
+    else
+        echo "⚠️  Warning: Could not extract original-id from Published.toml"
+    fi
+
     echo ""
 fi
 

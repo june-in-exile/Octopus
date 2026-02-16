@@ -1,76 +1,75 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
   useSignAndExecuteTransaction,
   useSuiClient,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
-import { cn, parseTokenAmount, formatTokenAmount, truncateAddress } from "@/lib/utils";
+import {
+  cn,
+  parseTokenAmount,
+  formatTokenAmount,
+  truncateAddress,
+  getTokenIdFromCoinType
+} from "@/lib/utils";
 import type { TokenConfig } from "@/lib/constants";
-import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
+import { initPoseidon } from "@/lib/poseidon";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
+import { NumberInput } from "@/components/NumberInput";
 import {
   createNote,
   encryptNote,
   bigIntToLE32,
-  poseidonHash,
   deriveViewingPublicKey
 } from "@june_zk/octopus-sdk";
-import { initPoseidon } from "@/lib/poseidon";
-import { NumberInput } from "@/components/NumberInput";
 
 interface ShieldFormProps {
   keypair: OctopusKeypair | null;
   tokenConfig: TokenConfig;
+  balance: bigint | null;
+  loading: boolean;
   onSuccess?: () => void | Promise<void>;
 }
 
-export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps) {
-  const [amount, setAmount] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
-  const [balance, setBalance] = useState<bigint | null>(null);
-  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
+type ShieldState =
+  | "idle"
+  | "processing"
+  | "submitting"
+  | "success"
+  | "error";
 
+export function ShieldForm({
+  keypair,
+  tokenConfig,
+  balance,
+  loading,
+  onSuccess,
+}: ShieldFormProps) {
   const { packageId, network } = useNetworkConfig();
   const account = useCurrentAccount();
+  const [amount, setAmount] = useState("");
+  const [state, setState] = useState<ShieldState>("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
-  // Fetch wallet balance whenever account or token changes
-  useEffect(() => {
-    const fetchBalance = async () => {
-      if (!account?.address) {
-        setBalance(null);
-        return;
-      }
+  const isProcessing = state !== "idle" && state !== "error" && state !== "success";
 
-      setIsLoadingBalance(true);
-      try {
-        const balanceResult = await client.getBalance({
-          owner: account.address,
-          coinType: tokenConfig.type,
-        });
-        setBalance(BigInt(balanceResult.totalBalance));
-      } catch (err) {
-        console.error("Failed to fetch balance:", err);
-        setBalance(null);
-      } finally {
-        setIsLoadingBalance(false);
-      }
-    };
-
-    fetchBalance();
-  }, [account?.address, client, tokenConfig.type]);
-
-  // Derive token ID from coin type package address
-  function getTokenId(coinType: string): bigint {
-    const packageAddr = coinType.split("::")[0];
-    return poseidonHash([BigInt(packageAddr)]);
-  }
+  const getProgressMessage = () => {
+    switch (state) {
+      case "processing":
+        return "// Creating and encrypting note";
+      case "submitting":
+        return "// Awaiting wallet confirmation";
+      default:
+        return "";
+    }
+  };
 
   // Build coin argument for the shield transaction
   async function buildCoinArg(tx: Transaction, amountBase: bigint) {
@@ -147,12 +146,12 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
       return;
     }
 
-    setIsSubmitting(true);
-
     try {
+      // 1. Creating and encrypting note
+      setState("processing");
       await initPoseidon();
 
-      const tokenId = getTokenId(tokenConfig.type);
+      const tokenId = getTokenIdFromCoinType(tokenConfig.type);
 
       const note = createNote(keypair.masterPublicKey, tokenId, amountBase);
 
@@ -161,6 +160,8 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
 
       const commitmentBytes = bigIntToLE32(note.commitment);
 
+      // 2. Building and submitting transaction
+      setState("submitting");
       const tx = new Transaction();
       const coin = await buildCoinArg(tx, amountBase);
 
@@ -177,23 +178,21 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
 
       const result = await signAndExecute({ transaction: tx });
 
+      // 3. Success!
+      setState("success");
+      const successMessage = `Successfully shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!`;
       setSuccess({
-        message: `Shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!\nRefreshing balance...`,
+        message: successMessage,
         txDigest: result.digest,
       });
       setAmount("");
 
+      // 4. Trigger note rescan to pick up the change note
       await onSuccess?.();
-
-      setSuccess({
-        message: `Successfully shielded ${formatTokenAmount(amountBase, tokenConfig.decimals)} ${tokenConfig.symbol}!`,
-        txDigest: result.digest,
-      });
     } catch (err) {
       console.error("Shield failed:", err);
+      setState("error");
       setError(err instanceof Error ? err.message : "Shield failed");
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -210,7 +209,7 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
             </label>
             {account && (
               <span className="text-[10px] text-gray-500 font-mono">
-                {isLoadingBalance ? (
+                {loading ? (
                   "// Loading..."
                 ) : balance !== null ? (
                   <>BAL: {formatTokenAmount(balance, tokenConfig.decimals)}</>
@@ -227,7 +226,8 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
             placeholder={`0.${"0".repeat(tokenConfig.decimals)}`}
             step={1 / 10 ** tokenConfig.decimals}
             min={0}
-            disabled={isSubmitting}
+            disabled={isProcessing}
+            onMax={balance !== null ? () => setAmount(formatTokenAmount(balance, tokenConfig.decimals)) : undefined}
           />
         </div>
 
@@ -266,12 +266,47 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
         )}
       </div>
 
+      {/* Progress indicator */}
+      {isProcessing && (
+        <div className="p-4 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
+          <div className="flex items-center gap-3">
+            <svg
+              className="h-5 w-5 animate-spin text-cyber-blue"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              />
+            </svg>
+            <div>
+              <p className="font-bold text-cyber-blue text-xs uppercase tracking-wider">
+                {state === "processing" ? "Creating Note..." : "Submitting Transaction..."}
+              </p>
+              <p className="text-[10px] text-gray-400 font-mono mt-0.5">
+                {getProgressMessage()}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <button
         type="submit"
-        disabled={!account || !keypair || isSubmitting}
+        disabled={!account || !keypair || isProcessing}
         className={cn(
           "btn-primary w-full",
-          isSubmitting && "cursor-wait opacity-70"
+          isProcessing && "cursor-wait opacity-70"
         )}
         style={{
           backgroundColor: "transparent",
@@ -279,46 +314,28 @@ export function ShieldForm({ keypair, tokenConfig, onSuccess }: ShieldFormProps)
           borderColor: "#00d9ff",
         }}
       >
-        {isSubmitting ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg
-              className="h-4 w-4 animate-spin"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="3"
-            >
-              <circle className="opacity-25" cx="12" cy="12" r="10" />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
-            </svg>
-            SHIELDING...
-          </span>
-        ) : (
-          "▲ SHIELD TOKENS"
-        )}
+        {isProcessing ? "◉ PROCESSING..." : "▲ SHIELD TOKENS"}
       </button>
 
-      {/* Info Box */}
-      <div className="p-4 border border-gray-800 bg-black/30 clip-corner space-y-3">
-        <h4 className="text-[10px] font-bold uppercase tracking-wider text-cyber-blue font-mono">
-          Shield Process:
-        </h4>
-        <ol className="text-[10px] text-gray-400 space-y-1.5 list-decimal list-inside font-mono leading-relaxed">
-          <li>Enter amount to shield</li>
-          <li>Create private note with commitment</li>
-          <li>Encrypt note for recovery</li>
-          <li>Submit deposit transaction</li>
-          <li>Note added to Merkle tree</li>
-        </ol>
-        <div className="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent" />
-        <p className="text-[10px] text-gray-500 font-mono">
-          <span className="text-cyber-blue">◉</span> Privacy: Token amount and ownership hidden on-chain
-        </p>
-      </div>
+      {/* Info Box - Hidden when success is shown */}
+      {!success && (
+        <div className="p-4 border border-gray-800 bg-black/30 clip-corner space-y-3">
+          <h4 className="text-[10px] font-bold uppercase tracking-wider text-cyber-blue font-mono">
+            Shield Process:
+          </h4>
+          <ol className="text-[10px] text-gray-400 space-y-1.5 list-decimal list-inside font-mono leading-relaxed">
+            <li>Enter amount to shield</li>
+            <li>Create private note with commitment</li>
+            <li>Encrypt note for recovery</li>
+            <li>Submit deposit transaction</li>
+            <li>Note added to Merkle tree</li>
+          </ol>
+          <div className="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent" />
+          <p className="text-[10px] text-gray-500 font-mono">
+            <span className="text-cyber-blue">◉</span> Privacy: Token amount and ownership hidden on-chain
+          </p>
+        </div>
+      )}
     </form>
   );
 }
