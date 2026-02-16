@@ -13,7 +13,7 @@ import {
   bytesToBigIntLE_BN254,
 } from "@june_zk/octopus-sdk";
 import { SuiGraphQLClient } from "@mysten/sui/graphql";
-import { graphql } from "@mysten/sui/graphql/schemas/latest";
+import { graphql } from "@mysten/sui/graphql/schema";
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -781,7 +781,8 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         }
 
         const scanStartTime = Date.now();
-        const client = new SuiGraphQLClient({ url: request.graphqlUrl });
+        const network = request.graphqlUrl.includes("mainnet") ? "mainnet" : "testnet";
+        const client = new SuiGraphQLClient({ url: request.graphqlUrl, network });
         const cacheKey = await generateCacheKey(request.spendingKey);
         const cachedData = await loadScanCache(cacheKey, request.poolId);
 
@@ -904,7 +905,8 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       }
 
       case "count_pool_notes": {
-        const client = new SuiGraphQLClient({ url: request.graphqlUrl });
+        const network = request.graphqlUrl.includes("mainnet") ? "mainnet" : "testnet";
+        const client = new SuiGraphQLClient({ url: request.graphqlUrl, network });
 
         const [shieldResult, transferResult, unshieldResult, swapResult] = await Promise.all([
           queryAllEvents(client, `${request.packageId}::pool::ShieldEvent`, 'ShieldEvents'),

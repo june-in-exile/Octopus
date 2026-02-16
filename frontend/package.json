@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@june_zk/octopus-sdk": "file:../sdk",
-    "@mysten/dapp-kit": "^0.14.0",
-    "@mysten/sui": "^1.24.0",
+    "@mysten/dapp-kit": "^1.0.3",
+    "@mysten/sui": "^2.4.0",
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",

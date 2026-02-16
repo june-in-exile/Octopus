@@ -1,4 +1,4 @@
-import type { SuiClient } from "@mysten/sui/client";
+import type { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { poseidonHash, bytesToBigIntLE } from "@june_zk/octopus-sdk";
 import type { OwnedNote } from "@/hooks/useNotes";
@@ -78,7 +78,7 @@ export function verifyNotesAndComputeRoots(
  * @param stage - Description of when verification is happening (e.g., "pre-proof", "post-proof")
  */
 export async function verifyOnChainRoot(
-  client: SuiClient,
+  client: SuiJsonRpcClient,
   packageId: string,
   poolId: string,
   coinType: string,

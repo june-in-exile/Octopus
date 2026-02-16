@@ -456,8 +456,8 @@ export function SwapForm({
               value={amountIn}
               onChange={setAmountIn}
               placeholder="0.0"
-              step={1}
-              min={1}
+              step={0.000000001}
+              min={0}
               disabled={isProcessing}
               className="flex-1"
             />
