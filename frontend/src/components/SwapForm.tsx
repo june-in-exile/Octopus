@@ -83,6 +83,7 @@ export function SwapForm({
   const [amountOut, setAmountOut] = useState("");
   const [isTargetAmount, setIsTargetAmount] = useState(false);
   const [slippage, setSlippage] = useState(50); // 0.5% in bps
+  const [exchangeRate, setExchangeRate] = useState<number | null>(null);
   const [isEstimating, setIsEstimating] = useState(false);
   const [state, setState] = useState<SwapState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +92,7 @@ export function SwapForm({
   const [estimationWarning, setEstimationWarning] = useState<string | null>(null);
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
   const [lotSize, setLotSize] = useState<bigint>(1n);
+  const [minSize, setMinSize] = useState<bigint>(1n);
 
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
@@ -151,6 +153,7 @@ export function SwapForm({
         setEstimationWarning(null);
         setAmountOut("");
         setPriceImpact(0);
+        setExchangeRate(null);
         return;
       }
 
@@ -175,7 +178,7 @@ export function SwapForm({
         const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
         const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
         const tokenInDecimals = tokenInConfig?.decimals ?? 9;
-        const amountInBigInt = BigInt(
+        const amountInRaw = BigInt(
           Math.floor(amountInFloat * Math.pow(10, tokenInDecimals))
         );
 
@@ -188,6 +191,9 @@ export function SwapForm({
         if (!baseType || !quoteType) {
           throw new Error("Token type not configured");
         }
+
+        // Fetch lot size first so we can align amountIn before estimation
+        let currentLotSize = lotSize;
         try {
           const params = await getPoolBookParams(
             client,
@@ -196,10 +202,17 @@ export function SwapForm({
             quoteType,
             network === "mainnet" ? "mainnet" : "testnet",
           );
+          currentLotSize = params.lotSize;
           setLotSize(params.lotSize);
+          setMinSize(params.minSize);
         } catch {
-          // Keep default lotSize of 1n if fetch fails
+          // Keep default lotSize/minSize of 1n if fetch fails
         }
+
+        // Align amountIn to nearest lot size (round down) so DeepBook doesn't silently truncate
+        const amountInBigInt = currentLotSize > 1n
+          ? (amountInRaw / currentLotSize) * currentLotSize
+          : amountInRaw;
 
         const estimation = await estimateDeepBookSwap(
           client,
@@ -217,6 +230,7 @@ export function SwapForm({
           Math.pow(10, tokenOutDecimals);
 
         setAmountOut(amountOutFloat.toFixed(tokenOutDecimals));
+        setExchangeRate(amountInFloat > 0 ? amountOutFloat / amountInFloat : null);
         setPriceImpact(estimation.priceImpact);
         setEstimationWarning(
           estimation.isApproximate
@@ -258,9 +272,10 @@ export function SwapForm({
 
     const tokenInDecimals = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig]?.decimals ?? 9;
     const amountInSmallest = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, tokenInDecimals)));
-    if (amountInSmallest < lotSize) {
-      const minDisplay = Number(lotSize) / Math.pow(10, tokenInDecimals);
-      setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook lot size)`);
+    const effectiveMin = minSize > lotSize ? minSize : lotSize;
+    if (amountInSmallest < effectiveMin) {
+      const minDisplay = Number(effectiveMin) / Math.pow(10, tokenInDecimals);
+      setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook minimum order size)`);
       return;
     }
 
@@ -414,6 +429,18 @@ export function SwapForm({
 
   const unspentNotes = notes.filter((n) => !n.spent);
 
+  const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
+  const lotSizeStep = lotSize > 1n
+    ? Number(lotSize) / Math.pow(10, tokenInConfig?.decimals ?? 9)
+    : 0.000000001;
+  const maxAmountIn = unspentNotes
+    .filter((n) => tokenInConfig && n.note.token === getTokenIdFromCoinType(tokenInConfig.type))
+    .reduce((sum, n) => sum + n.note.amount, 0n);
+  const handleMaxIn = () => {
+    const decimals = tokenInConfig?.decimals ?? 9;
+    setAmountIn((Number(maxAmountIn) / 10 ** decimals).toFixed(decimals));
+  };
+
   const isFormValid =
     !!account &&
     !!keypair &&
@@ -453,10 +480,10 @@ export function SwapForm({
       <div className="space-y-4">
         {/* Token In */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            From
-          </label>
-          <div className="flex gap-2">
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              From
+            </label>
             <select
               value={tokenInSymbol}
               onChange={(e) => {
@@ -473,16 +500,16 @@ export function SwapForm({
                 <option key={token} value={token}>{token}</option>
               ))}
             </select>
-            <NumberInput
-              value={amountIn}
-              onChange={setAmountIn}
-              placeholder="0.0"
-              step={0.000000001}
-              min={0}
-              disabled={isProcessing}
-              className="flex-1"
-            />
           </div>
+          <NumberInput
+            value={amountIn}
+            onChange={setAmountIn}
+            placeholder="0.0"
+            step={lotSizeStep}
+            min={0}
+            disabled={isProcessing}
+            onMax={handleMaxIn}
+          />
         </div>
 
         {/* Swap Direction Button */}
@@ -501,10 +528,10 @@ export function SwapForm({
 
         {/* Token Out */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            {isTargetAmount ? "To (Target)" : "To (Estimated)"}
-          </label>
-          <div className="flex gap-2">
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              {isTargetAmount ? "To (Target)" : "To (Estimated)"}
+            </label>
             <select
               value={tokenOutSymbol}
               onChange={(e) => {
@@ -522,19 +549,18 @@ export function SwapForm({
                 <option key={token} value={token}>{token}</option>
               ))}
             </select>
-            <NumberInput
-              value={isEstimating ? "" : amountOut}
-              onChange={(val) => {
-                setAmountOut(val);
-                setIsTargetAmount(val !== "" && parseFloat(val) > 0);
-              }}
-              placeholder={isEstimating ? "Estimating..." : "0.0"}
-              step={0.000000001}
-              min={0}
-              disabled={isEstimating || isProcessing}
-              className="flex-1"
-            />
           </div>
+          <NumberInput
+            value={isEstimating ? "" : amountOut}
+            onChange={(val) => {
+              setAmountOut(val);
+              setIsTargetAmount(val !== "" && parseFloat(val) > 0);
+            }}
+            placeholder={isEstimating ? "Estimating..." : "0.0"}
+            step={0.000000001}
+            min={0}
+            disabled={isEstimating || isProcessing}
+          />
           {isEstimating && (
             <p className="mt-2 text-[10px] text-gray-500 font-mono flex items-center gap-2">
               <svg
@@ -566,30 +592,48 @@ export function SwapForm({
               <span>{estimationWarning}</span>
             </p>
           )}
+          {!isEstimating && exchangeRate !== null && (
+            <p className="mt-2 text-[10px] text-gray-400 font-mono">
+              <span className="text-gray-500">RATE:</span>{" "}
+              <span className="text-cyber-blue font-bold">
+                1 {tokenInSymbol} = {exchangeRate.toFixed(tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig]?.decimals ?? 6)} {tokenOutSymbol}
+              </span>
+            </p>
+          )}
         </div>
 
         {/* Slippage Settings */}
         <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
-            Slippage Tolerance
-          </label>
-          <div className="flex gap-2">
-            {[10, 50, 100, 500].map((bps) => (
-              <button
-                key={bps}
-                type="button"
-                onClick={() => setSlippage(bps)}
-                disabled={isProcessing}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-mono font-bold uppercase tracking-wider transition clip-corner",
-                  slippage === bps
-                    ? "bg-cyber-blue text-black border border-cyber-blue"
-                    : "bg-black/30 text-gray-400 border border-gray-800 hover:border-cyber-blue/50"
-                )}
-              >
-                {bps / 100}%
-              </button>
-            ))}
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-gray-400 font-mono">
+              Slippage Tolerance
+            </label>
+            <span className="text-xs font-mono font-bold text-cyber-blue">
+              {(slippage / 100).toFixed(1)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={10}
+            max={1000}
+            step={10}
+            value={slippage}
+            onChange={(e) => setSlippage(Number(e.target.value))}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+                e.preventDefault();
+                const delta = e.key === "ArrowUp" ? 100 : -100;
+                setSlippage((prev) => Math.min(1000, Math.max(10, prev + delta)));
+              }
+            }}
+            disabled={isProcessing}
+            className="w-full h-1.5 appearance-none rounded-none cursor-pointer accent-cyber-blue bg-gray-800 disabled:opacity-50"
+          />
+          <div className="mt-1 flex justify-between text-[10px] text-gray-600 font-mono">
+            <span>0.1%</span>
+            <span>2.5%</span>
+            <span>5%</span>
+            <span>10%</span>
           </div>
         </div>
 

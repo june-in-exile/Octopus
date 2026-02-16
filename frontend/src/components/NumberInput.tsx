@@ -10,6 +10,7 @@ interface NumberInputProps {
   min?: number;
   max?: number;
   className?: string;
+  onMax?: () => void;
 }
 
 export function NumberInput({
@@ -22,6 +23,7 @@ export function NumberInput({
   min = 0,
   max,
   className,
+  onMax,
 }: NumberInputProps) {
   const handleIncrement = () => {
     const currentValue = parseFloat(value) || 0;
@@ -71,13 +73,26 @@ export function NumberInput({
         value={value}
         onChange={handleInputChange}
         placeholder={placeholder}
-        className={cn("input pr-12", className)}
+        className={cn("input", onMax ? "pr-20" : "pr-12", className)}
         disabled={disabled}
         style={{
           // Hide native spin buttons
           MozAppearance: "textfield",
         }}
       />
+
+      {/* MAX button */}
+      {onMax && (
+        <button
+          type="button"
+          onClick={onMax}
+          disabled={disabled}
+          className="absolute right-12 top-1/2 -translate-y-1/2 text-[10px] font-mono font-bold text-cyber-blue/50 hover:text-cyber-blue disabled:opacity-30 transition-colors"
+          aria-label="Set max"
+        >
+          MAX
+        </button>
+      )}
 
       {/* Custom increment/decrement buttons */}
       <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col gap-0.5">

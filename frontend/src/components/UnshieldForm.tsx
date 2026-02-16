@@ -203,6 +203,7 @@ export function UnshieldForm({
             step={0.000000001}
             min={0}
             disabled={isProcessing}
+            onMax={() => setAmount((Number(maxAmount) / 10 ** tokenConfig.decimals).toFixed(tokenConfig.decimals))}
           />
           <p className="mt-2 text-[10px] text-gray-500 font-mono">
             {notesLoading ? (
