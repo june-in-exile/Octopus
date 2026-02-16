@@ -272,7 +272,7 @@ export function SwapForm({
 
     const tokenInDecimals = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig]?.decimals ?? 9;
     const amountInSmallest = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, tokenInDecimals)));
-    const effectiveMin = minSize > lotSize ? minSize : lotSize;
+    const effectiveMin = minSize * lotSize;
     if (amountInSmallest < effectiveMin) {
       const minDisplay = Number(effectiveMin) / Math.pow(10, tokenInDecimals);
       setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook minimum order size)`);
@@ -293,7 +293,9 @@ export function SwapForm({
       throw new Error(`Token config not found for ${tokenOutSymbol}`);
     }
 
-    const amountInBase = parseTokenAmount(amountIn, tokenInConfig.decimals);
+    const amountInBase = lotSize > 1n
+      ? (amountInSmallest / lotSize) * lotSize
+      : amountInSmallest;
     const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
     // Slippage-adjusted minimum: this is what the ZKP commits to and the note is spendable for
     const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
@@ -407,7 +409,8 @@ export function SwapForm({
       // 7. Success!
       setState("success");
       const actualAmountOut = formatTokenAmount(swapNote.amount, tokenOutConfig.decimals);
-      let successMessage = `Swapped ${amountIn} ${tokenInSymbol} → ${actualAmountOut} ${tokenOutSymbol}`;
+      const actualAmountIn = formatTokenAmount(amountInBase, tokenInConfig.decimals);
+      let successMessage = `Swapped ${actualAmountIn} ${tokenInSymbol} → ${actualAmountOut} ${tokenOutSymbol}`;
       if (changeNote.amount > 0n) {
         successMessage += ` (Change: ${formatTokenAmount(changeNote.amount, tokenInConfig.decimals)} ${tokenInSymbol})`;
       }
@@ -510,6 +513,31 @@ export function SwapForm({
             disabled={isProcessing}
             onMax={handleMaxIn}
           />
+          {amountIn && (() => {
+            const decimals = tokenInConfig?.decimals ?? 9;
+            const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
+            const effectiveMin = minSize * lotSize;
+            if (effectiveMin > 1n && raw < effectiveMin) {
+              const minDisplay = (Number(effectiveMin) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
+              return (
+                <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                  ⚠ Minimum swap amount is {minDisplay} {tokenInSymbol}
+                </p>
+              );
+            }
+            if (lotSize > 1n) {
+              const aligned = (raw / lotSize) * lotSize;
+              if (raw !== aligned) {
+                const alignedDisplay = (Number(aligned) / Math.pow(10, decimals)).toFixed(decimals).replace(/\.?0+$/, '');
+                return (
+                  <p className="mt-1 text-[10px] text-yellow-400 font-mono">
+                    ⚠ Will round down to nearest lot size: {alignedDisplay} {tokenInSymbol}
+                  </p>
+                );
+              }
+            }
+            return null;
+          })()}
         </div>
 
         {/* Swap Direction Button */}

@@ -27,7 +27,9 @@ export function NumberInput({
 }: NumberInputProps) {
   const handleIncrement = () => {
     const currentValue = parseFloat(value) || 0;
-    const newValue = currentValue + step;
+    const snapped = Math.floor(currentValue / step) * step;
+    const isAligned = Math.abs(currentValue - snapped) < step * 1e-9;
+    const newValue = isAligned ? currentValue + step : snapped + step;
     if (max === undefined || newValue <= max) {
       onChange(newValue.toFixed(9));
     }
@@ -35,7 +37,9 @@ export function NumberInput({
 
   const handleDecrement = () => {
     const currentValue = parseFloat(value) || 0;
-    const newValue = Math.max(min, currentValue - step);
+    const snapped = Math.floor(currentValue / step) * step;
+    const isAligned = Math.abs(currentValue - snapped) < step * 1e-9;
+    const newValue = Math.max(min, isAligned ? currentValue - step : snapped);
     onChange(newValue.toFixed(9));
   };
 
@@ -67,11 +71,20 @@ export function NumberInput({
       <input
         id={id}
         type="number"
-        step={step}
+        step="any"
         min={min}
         max={max}
         value={value}
         onChange={handleInputChange}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            handleIncrement();
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            handleDecrement();
+          }
+        }}
         placeholder={placeholder}
         className={cn("input", onMax ? "pr-20" : "pr-12", className)}
         disabled={disabled}
