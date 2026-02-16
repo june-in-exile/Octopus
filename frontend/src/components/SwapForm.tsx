@@ -238,6 +238,11 @@ export function SwapForm({
       return;
     }
 
+    if (parseFloat(amountIn) < 1) {
+      setError("Minimum swap amount is 1 (DeepBook lot size restriction)");
+      return;
+    }
+
     if (!amountOut || parseFloat(amountOut) <= 0) {
       setError("Cannot estimate output amount");
       return;
@@ -451,8 +456,8 @@ export function SwapForm({
               value={amountIn}
               onChange={setAmountIn}
               placeholder="0.0"
-              step={0.000000001}
-              min={0}
+              step={1}
+              min={1}
               disabled={isProcessing}
               className="flex-1"
             />
