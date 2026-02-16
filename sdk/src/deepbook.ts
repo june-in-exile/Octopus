@@ -32,6 +32,52 @@ const CLOCK_OBJECT_ID = "0x6";
 const FLOAT_SCALING = 1_000_000_000n;
 
 /**
+ * DeepBook pool book parameters (tick size, lot size, min size).
+ */
+export interface PoolBookParams {
+  tickSize: bigint;
+  lotSize: bigint;
+  minSize: bigint;
+}
+
+/**
+ * Fetch the book parameters for a DeepBook pool via devInspect.
+ * Returns tick_size, lot_size, and min_size set at pool creation.
+ */
+export async function getPoolBookParams(
+  client: SuiClientLike,
+  poolId: string,
+  baseType: string,
+  quoteType: string,
+  network: "testnet" | "mainnet",
+  deepbookPackageId?: string,
+): Promise<PoolBookParams> {
+  const packageId = deepbookPackageId ?? DEEPBOOK_PACKAGE_ID_DEFAULTS[network];
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${packageId}::pool::pool_book_params`,
+    typeArguments: [baseType, quoteType],
+    arguments: [tx.object(poolId)],
+  });
+
+  const result = await client.devInspectTransactionBlock({
+    transactionBlock: tx,
+    sender: "0x0000000000000000000000000000000000000000000000000000000000000000",
+  });
+
+  const returnValues = result.results?.[0]?.returnValues;
+  if (!returnValues || returnValues.length < 3) {
+    throw new Error("Failed to fetch pool book params");
+  }
+
+  return {
+    tickSize: BigInt(bcs.U64.parse(new Uint8Array(returnValues[0][0]))),
+    lotSize: BigInt(bcs.U64.parse(new Uint8Array(returnValues[1][0]))),
+    minSize: BigInt(bcs.U64.parse(new Uint8Array(returnValues[2][0]))),
+  };
+}
+
+/**
  * Fallback estimation using DeepBook mid_price when order book depth is insufficient.
  * mid_price = (best_bid + best_ask) / 2, scaled by FLOAT_SCALING (1e9).
  */

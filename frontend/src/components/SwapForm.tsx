@@ -31,6 +31,7 @@ import {
   createSwapOutputs,
   generateSwapProof,
   estimateDeepBookSwap,
+  getPoolBookParams,
   encryptNote,
   deriveViewingPublicKey,
 } from "@june_zk/octopus-sdk";
@@ -89,6 +90,7 @@ export function SwapForm({
   const [priceImpact, setPriceImpact] = useState<number>(0);
   const [estimationWarning, setEstimationWarning] = useState<string | null>(null);
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
+  const [lotSize, setLotSize] = useState<bigint>(1n);
 
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
@@ -186,6 +188,19 @@ export function SwapForm({
         if (!baseType || !quoteType) {
           throw new Error("Token type not configured");
         }
+        try {
+          const params = await getPoolBookParams(
+            client,
+            deepbookPoolId,
+            baseType,
+            quoteType,
+            network === "mainnet" ? "mainnet" : "testnet",
+          );
+          setLotSize(params.lotSize);
+        } catch {
+          // Keep default lotSize of 1n if fetch fails
+        }
+
         const estimation = await estimateDeepBookSwap(
           client,
           deepbookPoolId,
@@ -241,8 +256,11 @@ export function SwapForm({
       return;
     }
 
-    if (parseFloat(amountIn) < 1) {
-      setError("Minimum swap amount is 1 (DeepBook lot size restriction)");
+    const tokenInDecimals = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig]?.decimals ?? 9;
+    const amountInSmallest = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, tokenInDecimals)));
+    if (amountInSmallest < lotSize) {
+      const minDisplay = Number(lotSize) / Math.pow(10, tokenInDecimals);
+      setError(`Minimum swap amount is ${minDisplay} ${tokenInSymbol} (DeepBook lot size)`);
       return;
     }
 

@@ -25,6 +25,8 @@ export {
 // DeepBook V3 Integration
 export {
   estimateDeepBookSwap,
+  getPoolBookParams,
+  type PoolBookParams,
 } from "./deepbook.js";
 
 // Merkle tree utilities
