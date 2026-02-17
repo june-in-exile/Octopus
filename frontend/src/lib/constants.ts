@@ -40,22 +40,6 @@ export const CLOCK_OBJECT_ID = "0x6";
 // Static token type
 export const SUI_COIN_TYPE = "0x2::sui::SUI";
 
-// DeepBook pool mappings (network-specific)
-const getDeepBookPoolId = (tokenPair: string) => {
-  if (NETWORK === "mainnet") {
-    // Mainnet uses SUI/USDC pool
-    if (tokenPair === "SUI_USDC" || tokenPair === "USDC_SUI") {
-      return process.env.NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC || "0x...";
-    }
-  } else {
-    // Testnet uses SUI/DBUSDC pool
-    if (tokenPair === "SUI_DBUSDC" || tokenPair === "DBUSDC_SUI") {
-      return process.env.NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC || "0x...";
-    }
-  }
-  return "0x...";
-};
-
 // Estimated DEEP fee for swap operations (~0.01 DEEP)
 export const ESTIMATED_DEEP_FEE = 10_000n; // 0.01 DEEP in smallest units (6 decimals)
 

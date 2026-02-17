@@ -2,11 +2,6 @@
  * Octopus SDK - Type Definitions
  */
 
-/** BN254 curve field modulus */
-export const FIELD_MODULUS = BigInt(
-  "21888242871839275222246405745257275088696311157297823662689037894645226208583"
-);
-
 /** BN254 scalar field modulus */
 export const SCALAR_MODULUS = BigInt(
   "21888242871839275222246405745257275088548364400416034343698204186575808495617"
@@ -14,9 +9,6 @@ export const SCALAR_MODULUS = BigInt(
 
 /** Merkle tree depth (supports 2^16 = 65536 notes) */
 export const MERKLE_TREE_DEPTH = 16;
-
-/** Number of historical roots stored for concurrent transactions */
-export const ROOT_HISTORY_SIZE = 100;
 
 /**
  * Keypair derived from master spending key
@@ -44,14 +36,6 @@ export interface Note {
   random: bigint;
   /** Computed commitment = Poseidon(nsk, token, amount) */
   commitment: bigint;
-}
-
-/**
- * Verification key in Sui-compatible format
- */
-export interface SuiVerificationKey {
-  /** VK bytes in Arkworks compressed format */
-  vkBytes: Uint8Array;
 }
 
 /**
