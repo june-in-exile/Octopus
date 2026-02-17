@@ -264,7 +264,6 @@ export function useLocalKeypair(walletAddress: string | undefined) {
   return {
     keypair,
     isLoading,
-    poseidonReady,
     savedKeypairs,
     generateKeypair,
     selectKeypair,
@@ -272,6 +271,5 @@ export function useLocalKeypair(walletAddress: string | undefined) {
     removeKeypair,
     restoreKeypair,
     renameKeypair,
-    hasKeypair: keypair !== null,
   };
 }

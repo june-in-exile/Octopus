@@ -20,7 +20,6 @@ export function formatSui(mist: bigint | number): string {
 
   // Check for NaN or invalid numbers
   if (isNaN(num) || !isFinite(num)) {
-    console.error("Invalid SUI amount:", mist);
     return "0";
   }
 

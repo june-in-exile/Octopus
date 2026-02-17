@@ -119,16 +119,17 @@ export default function OverviewPage() {
                     TRANSFER (Private Payment)
                   </h3>
                   <p className="text-gray-400 text-sm font-mono leading-relaxed mb-3">
-                    Send tokens privately to another user within the pool. The transaction uses a
-                    2-input, 2-output UTXO model with ZK proofs, completely hiding sender, recipient,
-                    and amount from observers.
+                    Send tokens privately to another user within the pool. Each transaction accepts
+                    up to 2 input notes and produces 1 transfer note to the recipient, plus 1 change
+                    note if any remainder exists — completely hiding sender, recipient, and amount
+                    from observers.
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <span className="px-2 py-1 text-xs font-mono bg-cyber-blue/10 group-hover:bg-purple-500/10 text-cyber-blue group-hover:text-purple-500 border border-cyber-blue/30 group-hover:border-purple-500/30 transition-colors">
                       ZK PROOF VERIFIED
                     </span>
                     <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
-                      CONSTRAINTS: ~21,649
+                      2-INPUT / 2-OUTPUT UTXO
                     </span>
                   </div>
                 </div>
@@ -151,11 +152,11 @@ export default function OverviewPage() {
                     like DeepBook V3.
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    <span className="px-2 py-1 text-xs font-mono bg-yellow-500/10 text-yellow-500 border border-yellow-500/30">
-                      85% COMPLETE
+                    <span className="px-2 py-1 text-xs font-mono bg-cyber-blue/10 group-hover:bg-purple-500/10 text-cyber-blue group-hover:text-purple-500 border border-cyber-blue/30 group-hover:border-purple-500/30 transition-colors">
+                      ZK PROOF VERIFIED
                     </span>
                     <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
-                      CONSTRAINTS: ~22,553
+                      DEEPBOOK V3
                     </span>
                   </div>
                 </div>
@@ -182,15 +183,62 @@ export default function OverviewPage() {
                       ZK PROOF VERIFIED
                     </span>
                     <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
-                      CONSTRAINTS: ~11,000
-                    </span>
-                    <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
                       AUTO CHANGE NOTES
                     </span>
                   </div>
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Relayer Network */}
+        <div className="card mb-8">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-1 h-6 bg-gradient-to-b from-cyber-purple to-transparent" />
+            <h2 className="text-xl font-black uppercase tracking-wider text-cyber-purple">
+              COMING SOON: RELAYER NETWORK
+            </h2>
+          </div>
+
+          <p className="text-gray-400 text-sm font-mono mb-6">
+            Today, users submit transactions directly from their wallets — which means your public
+            address is visible on-chain, even if the contents of your notes are hidden. A relayer
+            network eliminates this last remaining metadata leak.
+          </p>
+
+          <div className="grid md:grid-cols-2 gap-6 mb-6">
+            <div className="border border-red-500/20 bg-red-500/5 p-4 rounded">
+              <h3 className="text-sm font-bold text-red-400 uppercase mb-3">WITHOUT RELAYER</h3>
+              <ul className="text-xs text-gray-400 font-mono space-y-2">
+                <li><span className="text-red-400">•</span> Sender&apos;s public address is exposed on-chain</li>
+                <li><span className="text-red-400">•</span> Gas payment source is traceable</li>
+                <li><span className="text-red-400">•</span> Transaction timing reveals behavioral patterns</li>
+                <li><span className="text-red-400">•</span> Shield / unshield operations can be correlated</li>
+              </ul>
+            </div>
+
+            <div className="border border-green-500/20 bg-green-500/5 p-4 rounded">
+              <h3 className="text-sm font-bold text-green-400 uppercase mb-3">WITH RELAYER</h3>
+              <ul className="text-xs text-gray-400 font-mono space-y-2">
+                <li><span className="text-green-400">•</span> Transactions appear to originate from relayer addresses</li>
+                <li><span className="text-green-400">•</span> User&apos;s public address never touches the privacy pool</li>
+                <li><span className="text-green-400">•</span> Gas paid by relayer, reimbursed in shielded tokens</li>
+                <li><span className="text-green-400">•</span> On-chain correlation between operations is broken</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <span className="px-2 py-1 text-xs font-mono bg-cyber-purple/10 text-cyber-purple border border-cyber-purple/30">
+              PLANNED
+            </span>
+            <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
+              DECENTRALIZED BROADCASTER NETWORK
+            </span>
+            <span className="px-2 py-1 text-xs font-mono bg-gray-800/50 text-gray-400 border border-gray-700">
+              FEE IN SHIELDED TOKENS
+            </span>
           </div>
         </div>
 

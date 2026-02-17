@@ -50,25 +50,6 @@ export function bigIntToBE32(n: bigint): Uint8Array {
 }
 
 /**
- * Convert Uint8Array to BigInt (little-endian)
- *
- * Used for:
- * - Parsing Sui proof data
- * - General LE byte array conversion
- *
- * @param bytes - Byte array to convert
- * @returns BigInt value
- */
-export function bytesToBigIntLE(bytes: Uint8Array | number[]): bigint {
-  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  let result = 0n;
-  for (let i = arr.length - 1; i >= 0; i--) {
-    result = (result << 8n) | BigInt(arr[i]);
-  }
-  return result;
-}
-
-/**
  * Convert Uint8Array to BigInt (big-endian)
  *
  * Used for:
@@ -131,7 +112,7 @@ export function hexToBytes(hex: string): Uint8Array {
   const cleanHex = hex.startsWith("0x") ? hex.slice(2) : hex;
   const bytes = new Uint8Array(cleanHex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(cleanHex.substr(i * 2, 2), 16);
+    bytes[i] = parseInt(cleanHex.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
 }
@@ -149,12 +130,3 @@ export function bytesToHex(bytes: Uint8Array | number[]): string {
     .join("");
 }
 
-/**
- * Convert Uint8Array to hex string with "0x" prefix
- *
- * @param bytes - Byte array to convert
- * @returns Hex string with "0x" prefix
- */
-export function bytesToHex0x(bytes: Uint8Array | number[]): string {
-  return "0x" + bytesToHex(bytes);
-}

@@ -6,7 +6,7 @@ import { useSuiClient } from "@mysten/dapp-kit";
 /**
  * Pool information from on-chain
  */
-export interface PoolInfo {
+interface PoolInfo {
   /** Token type (e.g., "0x2::sui::SUI") */
   tokenType: string;
   /** Pool balance in base units */

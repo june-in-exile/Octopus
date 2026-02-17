@@ -405,6 +405,20 @@ export default function Home() {
               </div>
             </div>
             <div className="group relative p-4 border border-gray-800 hover:border-cyber-blue transition-all duration-300 clip-corner">
+              <div className="absolute top-0 right-0 text-6xl font-black text-gray-900 opacity-20 select-none">04</div>
+              <div className="relative z-10">
+                <div className="mb-3 w-10 h-10 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30">
+                  <span className="text-cyber-blue text-xl">●</span>
+                </div>
+                <h3 className="mb-2 font-bold uppercase tracking-wider text-cyber-blue text-sm">
+                  HOLD
+                </h3>
+                <p className="text-xs text-gray-400 font-mono leading-relaxed">
+                  Shielded balance encrypted. Only accessible with your keypair.
+                </p>
+              </div>
+            </div>
+            <div className="group relative p-4 border border-gray-800 hover:border-cyber-blue transition-all duration-300 clip-corner">
               <div className="absolute top-0 right-0 text-6xl font-black text-gray-900 opacity-20 select-none">02</div>
               <div className="relative z-10">
                 <div className="mb-3 w-10 h-10 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30">
@@ -429,20 +443,6 @@ export default function Home() {
                 </h3>
                 <p className="text-xs text-gray-400 font-mono leading-relaxed">
                   Private token swaps. Exchange tokens while maintaining full privacy.
-                </p>
-              </div>
-            </div>
-            <div className="group relative p-4 border border-gray-800 hover:border-cyber-blue transition-all duration-300 clip-corner">
-              <div className="absolute top-0 right-0 text-6xl font-black text-gray-900 opacity-20 select-none">04</div>
-              <div className="relative z-10">
-                <div className="mb-3 w-10 h-10 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30">
-                  <span className="text-cyber-blue text-xl">●</span>
-                </div>
-                <h3 className="mb-2 font-bold uppercase tracking-wider text-cyber-blue text-sm">
-                  HOLD
-                </h3>
-                <p className="text-xs text-gray-400 font-mono leading-relaxed">
-                  Shielded balance encrypted. Only accessible with your keypair.
                 </p>
               </div>
             </div>

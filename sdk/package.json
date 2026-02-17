@@ -17,7 +17,6 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@mysten/deepbook-v3": "^1.0.9",
     "@mysten/sui": "^2.4.0",
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",

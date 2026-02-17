@@ -59,19 +59,11 @@ export function useNotes(
   const [loading, setLoading] = useState(true);  // Start with loading=true to avoid showing balance=0 before first scan
   const [error, setError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [scanProgress, setScanProgress] = useState<{
-    current: number;
-    total: number;
-    message: string;
-    totalNotesInPool?: number;
-  } | null>(null);
   const [lastScanStats, setLastScanStats] = useState<{
     eventsScanned: number;
     notesDecrypted: number;
     timestamp: number;
   } | null>(null);
-  const [totalNotesInPool, setTotalNotesInPool] = useState<number>(0);
-
   // Track current keypair and poolId to detect changes
   const currentKeypairRef = useRef<bigint | null>(null);
   const currentPoolIdRef = useRef<string | null>(null);
@@ -230,14 +222,6 @@ export function useNotes(
           keypair.masterPublicKey,
           {
             onProgress: (progress) => {
-              // Update progress state
-              setScanProgress(progress);
-
-              // Update totalNotesInPool immediately when available (after event query)
-              if (progress.totalNotesInPool !== undefined) {
-                setTotalNotesInPool(progress.totalNotesInPool);
-              }
-
               // Extract scan stats from the final progress message
               if (progress.current === 60) {
                 const match = progress.message.match(/Scanned (\d+) events.*Decrypted (\d+) notes/);
@@ -346,17 +330,10 @@ export function useNotes(
           setNotes(mergedNotes);
           // Mark which pool these notes are from
           setNotesPoolId(poolId);
-          // Clear progress after completion
-          setScanProgress(null);
-          // Update total notes in pool
-          if (result.totalNotesInPool !== undefined) {
-            setTotalNotesInPool(result.totalNotesInPool);
-          }
         }
       } catch (err) {
         if (!isCancelled) {
           setError(err instanceof Error ? err.message : "Failed to scan notes");
-          setScanProgress(null);
         }
       } finally {
         // Ensure minimum loading duration for better UX
@@ -460,10 +437,8 @@ export function useNotes(
     loading,
     error,
     refresh,
-    forceFullRefresh, // Force full cache clear (use after operations)
-    scanProgress, // Include progress in return value
-    lastScanStats, // Include scan statistics
-    totalNotesInPool, // Total notes in pool (Shield - Unshield)
+    forceFullRefresh,
+    lastScanStats,
   };
 }
 

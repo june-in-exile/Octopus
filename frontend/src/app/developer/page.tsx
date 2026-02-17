@@ -1,34 +1,10 @@
 "use client";
 
-import { useState } from "react";
 import Image from "next/image";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 
 export default function DeveloperPage() {
-  const [debugMessage, setDebugMessage] = useState<string | null>(null);
-
-  const handleClearSpentNotes = () => {
-    try {
-      // Find all localStorage keys related to spent nullifiers
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('octopus_spent_nullifiers_')) {
-          keysToRemove.push(key);
-        }
-      }
-
-      // Remove all spent nullifier records
-      keysToRemove.forEach(key => {
-        localStorage.removeItem(key);
-      });
-
-      setDebugMessage(`✅ Cleared ${keysToRemove.length} spent nullifier record(s). Please refresh the page to re-scan your notes.`);
-    } catch (err) {
-      setDebugMessage(`❌ Error: ${err instanceof Error ? err.message : 'Failed to clear cache'}`);
-    }
-  };
   return (
     <div className="min-h-screen">
       <Header />
@@ -140,13 +116,24 @@ export default function DeveloperPage() {
           <div className="mt-6 p-4 bg-cyber-blue/5 border border-cyber-blue/30 rounded">
             <h3 className="text-sm font-bold text-cyber-blue mb-2 uppercase">KEY PROPERTIES</h3>
             <ul className="text-xs text-gray-400 font-mono space-y-2">
-              <li><span className="text-cyber-blue">•</span> <span className="text-yellow-400">spending_key</span>: Root secret, must be kept private</li>
-              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">nullifying_key</span>: Derived from spending_key, used to generate nullifiers</li>
-              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">MPK</span>: Master Public Key, can be shared publicly</li>
-              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">NSK</span>: Note Secret Key, unique per note</li>
-              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">commitment</span>: Public commitment to a note, stored in Merkle tree</li>
-              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">nullifier</span>: Unique identifier for spent notes, prevents double-spending</li>
+              <li><span className="text-red-400">•</span> <span className="text-yellow-400">spending_key</span>: Root secret — <span className="text-red-400">must be kept private and backed up</span>. It is the only way to recover your account; losing it means permanent loss of all shielded funds.</li>
+              <li><span className="text-red-400">•</span> <span className="text-cyber-purple">nullifying_key</span>: Derived from spending_key — <span className="text-red-400">must be kept private</span>. Exposure allows an attacker to generate your nullifiers and front-run your spends.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">MPK</span>: Master Public Key — safe to share. Senders need your MPK to create a note commitment addressed to you.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">viewing_private_key</span>: Derived via X25519(SHA256(spending_key)) — used locally to decrypt incoming notes. Never leave the client.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">viewing_public_key</span>: Safe to share. Senders need your VPK to encrypt the note payload so only you can read it. Together with MPK, it forms your <span className="text-white">transfer address</span>.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">NSK</span>: Note Secret Key — unique per note, derived from MPK and a random value.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">commitment</span>: Public commitment to a note, stored in the Merkle tree.</li>
+              <li><span className="text-cyber-blue">•</span> <span className="text-cyber-purple">nullifier</span>: Unique identifier for a spent note, prevents double-spending.</li>
             </ul>
+          </div>
+
+          <div className="mt-4 p-4 bg-yellow-500/5 border border-yellow-500/30 rounded">
+            <h3 className="text-sm font-bold text-yellow-400 mb-2 uppercase">SENDING A TRANSFER</h3>
+            <p className="text-xs text-gray-400 font-mono leading-relaxed">
+              To send tokens to another user, you need their <span className="text-cyber-purple">MPK</span> and <span className="text-cyber-purple">viewing_public_key (VPK)</span>.
+              MPK is used to derive the output note commitment; VPK is used to encrypt the note payload via ECDH so only the recipient can decrypt it.
+              Both values together act as the recipient&apos;s <span className="text-white">shielded address</span>.
+            </p>
           </div>
         </div>
 
@@ -332,7 +319,7 @@ export default function DeveloperPage() {
           </div>
 
           <p className="text-gray-400 text-sm font-mono mb-6">
-            Send tokens privately to another user using 2-input, 2-output UTXO model
+            Privately transfer tokens using 2 inputs to generate a recipient note and optional change, completely hiding sender, receiver, and value from observers.
           </p>
 
           <div className="space-y-4">
@@ -418,205 +405,98 @@ export default function DeveloperPage() {
           </div>
         </div>
 
-        {/* ZK Proof System */}
+        {/* Swap Operation */}
         <div className="card mb-8">
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-1 h-6 bg-gradient-to-b from-cyber-purple to-transparent" />
-            <h2 className="text-xl font-black uppercase tracking-wider text-cyber-purple">
-              ZERO-KNOWLEDGE PROOF SYSTEM
+            <div className="w-1 h-6 bg-gradient-to-b from-cyber-blue to-transparent" />
+            <h2 className="text-xl font-black uppercase tracking-wider text-cyber-blue">
+              ⇌ SWAP OPERATION
             </h2>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-sm font-bold text-cyber-purple uppercase mb-3">PROOF SYSTEM</h3>
-              <div className="space-y-2 text-xs font-mono text-gray-400">
-                <div className="flex justify-between">
-                  <span>Scheme:</span>
-                  <span className="text-cyber-purple">Groth16</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Curve:</span>
-                  <span className="text-cyber-purple">BN254</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Hash Function:</span>
-                  <span className="text-cyber-purple">Poseidon</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Proof Size:</span>
-                  <span className="text-cyber-purple">128 bytes</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Verification:</span>
-                  <span className="text-cyber-purple">On-chain (Move)</span>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <h3 className="text-sm font-bold text-cyber-purple uppercase mb-3">CIRCUIT STATS</h3>
-              <div className="space-y-3">
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <div className="text-xs font-bold text-gray-300 mb-1">Unshield</div>
-                  <div className="text-xs text-gray-400 font-mono">~11,000 constraints</div>
-                </div>
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <div className="text-xs font-bold text-gray-300 mb-1">Transfer</div>
-                  <div className="text-xs text-gray-400 font-mono">~21,649 constraints</div>
-                </div>
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <div className="text-xs font-bold text-gray-300 mb-1">Swap</div>
-                  <div className="text-xs text-gray-400 font-mono">~22,553 constraints</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Note Encryption */}
-        <div className="card mb-8">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-1 h-6 bg-gradient-to-b from-cyber-purple to-transparent" />
-            <h2 className="text-xl font-black uppercase tracking-wider text-cyber-purple">
-              NOTE ENCRYPTION SYSTEM
-            </h2>
-          </div>
+          <p className="text-gray-400 text-sm font-mono mb-6">
+            Exchange tokens privately via DeepBook V3, spending shielded input notes and receiving shielded output notes
+          </p>
 
           <div className="space-y-4">
-            <div className="bg-gray-900/50 border border-gray-800 rounded p-4">
-              <h3 className="text-sm font-bold text-cyber-purple uppercase mb-3">ENCRYPTION SCHEME</h3>
-              <div className="space-y-2 text-xs font-mono text-gray-400">
-                <div><span className="text-cyber-purple">Algorithm:</span> ChaCha20-Poly1305 (AEAD)</div>
-                <div><span className="text-cyber-purple">Key Exchange:</span> X25519 (ECDH)</div>
-                <div><span className="text-cyber-purple">Key Derivation:</span> SHA-256(spending_key)</div>
-                <div><span className="text-cyber-purple">Encrypted Data:</span> (NSK, token, value, random)</div>
-              </div>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="border border-gray-800 p-4 clip-corner">
-                <h3 className="text-sm font-bold text-cyber-purple mb-2 uppercase">ENCRYPTION FLOW</h3>
-                <ol className="text-xs text-gray-400 font-mono space-y-1 list-decimal list-inside">
-                  <li>Derive shared secret via ECDH</li>
-                  <li>Generate random nonce</li>
-                  <li>Encrypt note data with ChaCha20</li>
-                  <li>Authenticate with Poly1305 MAC</li>
-                  <li>Store encrypted blob on-chain</li>
-                </ol>
-              </div>
-
-              <div className="border border-gray-800 p-4 clip-corner">
-                <h3 className="text-sm font-bold text-cyber-purple mb-2 uppercase">DECRYPTION FLOW</h3>
-                <ol className="text-xs text-gray-400 font-mono space-y-1 list-decimal list-inside">
-                  <li>Fetch encrypted notes from chain</li>
-                  <li>Derive shared secret via ECDH</li>
-                  <li>Verify Poly1305 MAC</li>
-                  <li>Decrypt with ChaCha20</li>
-                  <li>Reconstruct note parameters</li>
-                </ol>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Debug Tools */}
-        <div className="card">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-1 h-6 bg-gradient-to-b from-red-500 to-transparent" />
-            <h2 className="text-xl font-black uppercase tracking-wider text-red-400">
-              🔧 DEBUG TOOLS
-            </h2>
-          </div>
-
-          <div className="space-y-4">
-            <div className="p-4 bg-yellow-500/10 border border-yellow-500/30 rounded">
-              <h3 className="text-sm font-bold text-yellow-400 mb-2 uppercase">⚠️ Warning</h3>
-              <p className="text-xs text-gray-400 font-mono">
-                These tools are for debugging only. Use with caution in development/testing environments.
-              </p>
-            </div>
-
-            <div className="border border-gray-800 p-4 clip-corner">
-              <h3 className="text-sm font-bold text-red-400 mb-3 uppercase">Clear Spent Notes Cache</h3>
-              <p className="text-xs text-gray-400 font-mono mb-4">
-                If you're encountering E_DOUBLE_SPEND errors or notes appear incorrectly marked as spent,
-                this tool will clear the localStorage cache and force a re-sync with on-chain state.
-              </p>
-
+            <div>
+              <h3 className="text-sm font-bold text-cyber-blue uppercase mb-3">PROCESS FLOW</h3>
               <div className="space-y-3">
-                <button
-                  onClick={handleClearSpentNotes}
-                  className="btn-primary w-full md:w-auto"
-                  style={{
-                    backgroundColor: 'transparent',
-                    color: '#ef4444',
-                    borderColor: '#ef4444',
-                  }}
-                >
-                  🗑️ CLEAR SPENT NOTES CACHE
-                </button>
-
-                {debugMessage && (
-                  <div className={`p-3 border rounded ${
-                    debugMessage.startsWith('✅')
-                      ? 'border-green-500/30 bg-green-500/10'
-                      : 'border-red-500/30 bg-red-500/10'
-                  }`}>
-                    <p className={`text-xs font-mono ${
-                      debugMessage.startsWith('✅') ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {debugMessage}
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30 flex-shrink-0">
+                    <span className="text-cyber-blue text-xs font-bold">1</span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-300 mb-1">Select Input Notes</h4>
+                    <p className="text-xs text-gray-400 font-mono">
+                      Choose up to 2 unspent notes of the input token with sufficient total balance
                     </p>
                   </div>
-                )}
-              </div>
+                </div>
 
-              <div className="mt-4 p-3 bg-gray-900/50 border border-gray-800 rounded">
-                <h4 className="text-xs font-bold text-gray-300 mb-2 uppercase">What This Does:</h4>
-                <ul className="text-xs text-gray-400 font-mono space-y-1 list-disc list-inside">
-                  <li>Removes all cached spent nullifier records from localStorage</li>
-                  <li>Forces the app to re-query on-chain spent status</li>
-                  <li>Fixes incorrect "already spent" errors</li>
-                  <li>Safe to use - on-chain state is the source of truth</li>
-                </ul>
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30 flex-shrink-0">
+                    <span className="text-cyber-blue text-xs font-bold">2</span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-300 mb-1">Compute Swap Data Hash</h4>
+                    <p className="text-xs text-gray-400 font-mono">
+                      Hash swap parameters (token_in, token_out, amount_in, min_amount_out) to bind them to the proof
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30 flex-shrink-0">
+                    <span className="text-cyber-blue text-xs font-bold">3</span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-300 mb-1">Create Output Notes</h4>
+                    <p className="text-xs text-gray-400 font-mono mb-1">
+                      Output note: recipient commitment for the swapped token_out amount
+                    </p>
+                    <p className="text-xs text-gray-400 font-mono">
+                      Change note: sender's change commitment if input exceeds amount_in
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30 flex-shrink-0">
+                    <span className="text-cyber-blue text-xs font-bold">4</span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-300 mb-1">Generate ZK Proof</h4>
+                    <p className="text-xs text-gray-400 font-mono">
+                      Prove: (1) ownership of input notes, (2) inputs exist in Merkle tree,
+                      (3) correct nullifiers, (4) valid swap_data_hash, (5) valid output commitments
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-cyber-blue/10 flex items-center justify-center border border-cyber-blue/30 flex-shrink-0">
+                    <span className="text-cyber-blue text-xs font-bold">5</span>
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-300 mb-1">Submit to Pool</h4>
+                    <p className="text-xs text-gray-400 font-mono">
+                      Call pool::swap(pool_in, pool_out, deepbook_pool, proof, public_inputs, amount_in, min_amount_out, encrypted_output_note, encrypted_change_note)
+                    </p>
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="border border-gray-800 p-4 clip-corner">
-              <h3 className="text-sm font-bold text-red-400 mb-3 uppercase">Common Issues & Solutions</h3>
-
-              <div className="space-y-3">
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <h4 className="text-xs font-bold text-yellow-400 mb-1">E_DOUBLE_SPEND Error</h4>
-                  <p className="text-xs text-gray-400 font-mono mb-2">
-                    <span className="text-red-400">Symptom:</span> Transfer fails with "E_DOUBLE_SPEND" error
-                  </p>
-                  <p className="text-xs text-gray-400 font-mono">
-                    <span className="text-green-400">Solution:</span> Clear spent notes cache, then refresh the page
-                  </p>
-                </div>
-
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <h4 className="text-xs font-bold text-yellow-400 mb-1">No Unspent Notes Available</h4>
-                  <p className="text-xs text-gray-400 font-mono mb-2">
-                    <span className="text-red-400">Symptom:</span> All notes appear spent even after shielding
-                  </p>
-                  <p className="text-xs text-gray-400 font-mono">
-                    <span className="text-green-400">Solution:</span> Clear spent notes cache and wait for re-scan
-                  </p>
-                </div>
-
-                <div className="bg-gray-900/50 border border-gray-800 rounded p-3">
-                  <h4 className="text-xs font-bold text-yellow-400 mb-1">Stale Merkle Proofs</h4>
-                  <p className="text-xs text-gray-400 font-mono mb-2">
-                    <span className="text-red-400">Symptom:</span> "No notes with Merkle proofs available"
-                  </p>
-                  <p className="text-xs text-gray-400 font-mono">
-                    <span className="text-green-400">Solution:</span> Click refresh button in the app to fetch latest proofs
-                  </p>
-                </div>
-              </div>
+            <div className="p-4 bg-green-500/5 border border-green-500/30 rounded">
+              <h3 className="text-sm font-bold text-green-400 mb-2 uppercase">RESULT</h3>
+              <ul className="text-xs text-gray-400 font-mono space-y-1">
+                <li><span className="text-green-400">•</span> ZK proof verified on-chain</li>
+                <li><span className="text-green-400">•</span> Input nullifiers marked as spent</li>
+                <li><span className="text-green-400">•</span> Swap executed via DeepBook V3</li>
+                <li><span className="text-green-400">•</span> Output and change commitments added to Merkle tree</li>
+                <li><span className="text-green-400">•</span> Token amounts and identities remain hidden</li>
+              </ul>
             </div>
           </div>
         </div>

@@ -23,7 +23,7 @@ const FIELD_MODULUS = BigInt(
  * @param point - G1 point as [x, y] string array from snarkjs
  * @returns 32-byte compressed representation
  */
-export function compressG1(point: string[]): Uint8Array {
+function compressG1(point: string[]): Uint8Array {
   const x = BigInt(point[0]);
   const y = BigInt(point[1]);
 
@@ -50,7 +50,7 @@ export function compressG1(point: string[]): Uint8Array {
  * @param point - G2 point as [[x.c0, x.c1], [y.c0, y.c1]] from snarkjs
  * @returns 64-byte compressed representation
  */
-export function compressG2(point: string[][]): Uint8Array {
+function compressG2(point: string[][]): Uint8Array {
   const x0 = BigInt(point[0][0]);
   const x1 = BigInt(point[0][1]);
   const y0 = BigInt(point[1][0]);
