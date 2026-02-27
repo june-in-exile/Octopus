@@ -68,6 +68,8 @@ export interface UnshieldInput {
   changeNote: Note;
   /** Token type */
   token: bigint;
+  /** Recipient Sui address as hex string (e.g. "0x...") — bound to the ZK proof */
+  recipient: string;
 }
 
 /**
@@ -87,6 +89,9 @@ export interface UnshieldCircuitInput {
   change_amount: string;            // Change amount (private input)
 
   nullifiers: string[];             // [2] - Precomputed nullifiers (constrained by circuit)
+
+  recipient_addr_lo: string;        // Private: bytes[0..16] of recipient address as LE u128
+  recipient_addr_hi: string;        // Private: bytes[16..32] of recipient address as LE u128
 
   // Public inputs
   unshield_amount: string;          // Amount to unshield

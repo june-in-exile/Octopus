@@ -40,6 +40,10 @@ template Unshield(levels) {
     // Nullifiers (precomputed off-chain, constrained by circuit)
     signal input nullifiers[2];          // Poseidon(nullifying_key, leaf_index) for each input note
 
+    // Recipient address split into two 128-bit halves (private — only the hash is public)
+    signal input recipient_addr_lo;      // Private: bytes[0..16] of recipient address as LE u128
+    signal input recipient_addr_hi;      // Private: bytes[16..32] of recipient address as LE u128
+
     // ============ Public Inputs ============
     signal input unshield_amount;        // Amount to unshield to public address
     signal input token;                  // Token identifier (address hash)
@@ -48,6 +52,7 @@ template Unshield(levels) {
     // ============ Public Outputs ============
     signal output nullifiers_hash;       // Poseidon hash of both nullifiers
     signal output change_commitment;     // Commitment for change note (0 if no change)
+    signal output recipient_hash;        // Poseidon(addr_lo, addr_hi) — binds proof to recipient
 
     // ============ Step 1: Range Check ============
     // Unshield amount > 0
@@ -81,6 +86,11 @@ template Unshield(levels) {
     signal real_change_commitment <== Poseidon(3)([change_nsk, token, change_amount]);
     signal no_change <== IsZero()(change_amount);
     change_commitment <== real_change_commitment * (1 - no_change);
+
+    // ============ Step 6: Commit to Recipient ============
+    // Binds this proof to a specific recipient address.
+    // A relayer cannot substitute a different recipient without invalidating the proof.
+    recipient_hash <== Poseidon(2)([recipient_addr_lo, recipient_addr_hi]);
 }
 
 // Main circuit with 16 levels (supports 2^16 = 65,536 notes)

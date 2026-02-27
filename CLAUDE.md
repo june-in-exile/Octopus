@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the Octopus project, its arch
 
 Before we dive into the formal project description, let’s establish a few ground rules:
 
-Start every interaction with 'June' (the username). For example: 'Hi June, the job is done...', 'Yes, June. ...', 'Good morning June, ...'
+Start every interaction with 'June' (the username) and reply in Mandarin. For example: '嗨 June, 工作已完成...', '是的, June, 你的理解正確. ...'. But write the comments and documents in English.
 
 Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
 
@@ -100,7 +100,9 @@ The application will be available at `http://localhost:3000`.
   * `npm run build`: Creates a production build of the frontend.
   * `npm run lint`: Lints the frontend codebase.
 
-## Key Cryptographic Formulas
+## 4. Technical Details
+
+### Key Cryptographic Formulas
 
 ``` txt
 // Key Derivation Hierarchy
@@ -119,15 +121,30 @@ commitment = Poseidon(NSK, token, value)       // Note Commitment
 nullifier = Poseidon(nullifying_key, leaf_index)
 ```
 
-## Move Contract Entry Points
+### Unshield Recipient Encoding
+
+Sui addresses are 32 bytes (256-bit). BN254 scalar field is ~254.85 bits — directly encoding a 32-byte address as a field element overflows ~1.4% of addresses. The fix splits the address into two 128-bit halves and hashes with Poseidon:
+
+```txt
+addr_lo        = recipient_bytes[0..16]  as LE u128
+addr_hi        = recipient_bytes[16..32] as LE u128
+recipient_hash = Poseidon(addr_lo, addr_hi)          // public output in unshield proof
+```
+
+`recipient_addr_lo` / `recipient_addr_hi` are **private** circuit inputs — only `recipient_hash` is a public output, so the recipient address is not revealed on-chain. The contract recomputes `Poseidon(lo, hi)` from the `recipient` parameter and asserts it matches the proof's public output.
+
+> **Sui Move gotcha:** `address::to_bytes(recipient)` does not exist in Sui Move. Use `bcs::to_bytes(&recipient)` (via `use sui::bcs`) to obtain the canonical 32-byte representation of an address.
+
+### Move Contract Entry Points
 
 **Shield** (deposit): `pool::shield<T>(pool, coin, commitment, encrypted_note, ctx)`
 
 * No ZK proof required, adds commitment to Merkle tree
 
-**Unshield** (withdraw): `pool::unshield<T>(pool, proof_bytes, public_inputs_bytes, recipient, encrypted_change_note, ctx)`
+**Unshield** (withdraw): `pool::unshield<T>(pool, proof_bytes, public_inputs_bytes, nullifiers, recipient, encrypted_change_note, ctx)`
 
-* Requires 128-byte Groth16 proof + 128-byte public inputs (nullifier, root, change_commitment, amount)
+* Requires 128-byte Groth16 proof + **192-byte** public inputs (6 × 32 bytes): `[nullifiers_hash, change_commitment, recipient_hash, unshield_amount, token, merkle_root]`
+* `recipient_hash = Poseidon(addr_lo, addr_hi)` — proof is cryptographically bound to recipient, preventing relayer substitution
 * Supports automatic change note creation (no fund loss)
 * Amount is extracted from public inputs (no separate parameter needed)
 * Verifies proof, marks nullifier spent, transfers tokens, creates change note if needed
@@ -143,3 +160,5 @@ nullifier = Poseidon(nullifying_key, leaf_index)
 * Requires Groth16 proof for a private swap. Public inputs (256 bytes, 8 field elements): `token_in, token_out, merkle_root` (public inputs) + `nullifiers[2], swap_data_hash, output_commitment, change_commitment` (public outputs).
 * Verifies proof, spends input notes, executes swap via DeepBook pool, creates output and change notes.
 * For testing without a real DeepBook pool, use `pool::swap_for_testing` (skips proof verification, uses 1:1 mock swap).
+
+
