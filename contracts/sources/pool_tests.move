@@ -18,14 +18,17 @@ module octopus::pool_tests {
     // Test proof (valid proof for the test input)
     const TEST_PROOF: vector<u8> = x"aca940a9ad7c4beb620beb1b67cd111a2ff32b2f33945bd12cc017c721ec1b91083135faffb3ff4b3cfdcdd0a075154e80b245fa42d14655880096b4ef29fe13f274371b7b8b1d8382f61ba9b61d2901b3557944195ee34771eaee3f0019571cba7b3a4b43ffdd48945edd122d141734a262be4b49e6baf28abeea0c1484050a";
 
-    // Test public inputs (160-byte format, 5 field elements)
-    // Format: [nullifiers_hash, change_commitment, unshield_amount, token, merkle_root]
-    // nullifiers_hash: 50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926 (32 bytes, placeholder)
+    // Test public inputs (192-byte format, 6 field elements)
+    // Format: [nullifiers_hash, change_commitment, recipient_hash, unshield_amount, token, merkle_root]
+    // nullifiers_hash:   50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926 (32 bytes, placeholder)
     // change_commitment: 054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a (32 bytes)
-    // unshield_amount: 0046c32300000000000000000000000000000000000000000000000000000000 (32 bytes)
-    // token: 075bcd1500000000000000000000000000000000000000000000000000000000 (32 bytes)
-    // merkle_root: 2fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023 (32 bytes, invalid)
-    const TEST_PUBLIC_INPUTS: vector<u8> = x"50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a0046c32300000000000000000000000000000000000000000000000000000000075bcd15000000000000000000000000000000000000000000000000000000002fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023";
+    // recipient_hash:    0000000000000000000000000000000000000000000000000000000000000000 (32 bytes, placeholder)
+    // unshield_amount:   0046c32300000000000000000000000000000000000000000000000000000000 (32 bytes)
+    // token:             075bcd1500000000000000000000000000000000000000000000000000000000 (32 bytes)
+    // merkle_root:       2fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023 (32 bytes, invalid)
+    // NOTE: recipient_hash is a placeholder (zeros). Update after circuit recompilation with
+    //       the real Poseidon(lo, hi) value for the intended test recipient.
+    const TEST_PUBLIC_INPUTS: vector<u8> = x"50c899e811771f3b5b77a50bcde42ab8822a6c8b41b57e4cea8f0c00645da926054567511fffb1f0d4a306850419bc74ff3c12d24dbab06b01a454534b625a2a00000000000000000000000000000000000000000000000000000000000000000046c32300000000000000000000000000000000000000000000000000000000075bcd15000000000000000000000000000000000000000000000000000000002fcfefda413c3b48e0806fb76f38678760d9dc9e23eaecaec3c5c62652982023";
 
     // Test commitment (from test input generation)
     // commitment = Poseidon(NSK, token, value)
@@ -161,24 +164,50 @@ module octopus::pool_tests {
             let coin = ts::take_from_sender<Coin<SUI>>(&scenario);
             let ctx = ts::ctx(&mut scenario);
 
-            // Shield with a different commitment
+            // Shield with a different commitment so the tree root != the root in TEST_PUBLIC_INPUTS
             pool::shield(&mut pool, coin, x"0000000000000000000000000000000000000000000000000000000000000099", x"99", ctx);
             ts::return_shared(pool);
         };
 
-        // Try to unshield - should fail because merkle root in proof doesn't match
-        ts::next_tx(&mut scenario, ALICE);
+        // Try to unshield - should fail at E_INVALID_ROOT (root check fires after recipient check).
+        // We inject BOB's correct recipient_hash so the recipient check passes first,
+        // ensuring this test truly reaches and exercises the root validation path.
+        ts::next_tx(&mut scenario, BOB);
         {
             let mut pool = ts::take_shared<PrivacyPool<SUI>>(&scenario);
             let ctx = ts::ctx(&mut scenario);
 
+            // Build public inputs: same as TEST_PUBLIC_INPUTS but with BOB's actual recipient hash
+            // at bytes[64..96], so the recipient check passes and the root check is reached.
+            // Format: [nullifiers_hash(32), change_commitment(32), recipient_hash(32), unshield_amount(32), token(32), merkle_root(32)]
+            let bob_recipient_hash = pool::compute_recipient_hash_for_testing(BOB);
+            let mut pi = vector::empty<u8>();
+            let mut i = 0u64;
+            // Copy nullifiers_hash + change_commitment (bytes 0..64)
+            while (i < 64) {
+                vector::push_back(&mut pi, *vector::borrow(&TEST_PUBLIC_INPUTS, i));
+                i = i + 1;
+            };
+            // Insert BOB's recipient_hash (bytes 64..96)
+            i = 0;
+            while (i < 32) {
+                vector::push_back(&mut pi, *vector::borrow(&bob_recipient_hash, i));
+                i = i + 1;
+            };
+            // Copy unshield_amount + token + merkle_root (bytes 96..192)
+            i = 96;
+            while (i < 192) {
+                vector::push_back(&mut pi, *vector::borrow(&TEST_PUBLIC_INPUTS, i));
+                i = i + 1;
+            };
+
             pool::unshield(
                 &mut pool,
                 TEST_PROOF,
-                TEST_PUBLIC_INPUTS,
-                vector[TEST_NULLIFIER, TEST_NULLIFIER], // placeholder nullifiers
+                pi,
+                vector[TEST_NULLIFIER, TEST_NULLIFIER],
                 BOB,
-                vector::empty<u8>(), // No change note for this test
+                vector::empty<u8>(),
                 ctx
             );
 
@@ -205,6 +234,40 @@ module octopus::pool_tests {
                 TEST_PROOF,
                 x"0102030405", // Invalid length (5 bytes, should be 192)
                 vector[TEST_NULLIFIER, TEST_NULLIFIER], // placeholder nullifiers
+                BOB,
+                vector::empty<u8>(),
+                ctx
+            );
+
+            ts::return_shared(pool);
+        };
+
+        ts::end(scenario);
+    }
+
+    // Tests that a relayer cannot substitute a different recipient address.
+    // TEST_PUBLIC_INPUTS embeds recipient_hash = all zeros (no real address).
+    // compute_recipient_hash(BOB) produces a non-zero Poseidon hash, so the
+    // assertion fires at step 2 (recipient check) — before the merkle root check —
+    // correctly exercising the relayer-substitution prevention path.
+    #[test]
+    #[expected_failure(abort_code = pool::E_INVALID_PUBLIC_INPUTS)]
+    fun test_unshield_wrong_recipient_rejected() {
+        let mut scenario = ts::begin(ADMIN);
+        create_test_pool(&mut scenario);
+
+        ts::next_tx(&mut scenario, ALICE);
+        {
+            let mut pool = ts::take_shared<PrivacyPool<SUI>>(&scenario);
+            let ctx = ts::ctx(&mut scenario);
+
+            // TEST_PUBLIC_INPUTS has recipient_hash = all zeros.
+            // BOB's Poseidon hash != zero → recipient check fires → E_INVALID_PUBLIC_INPUTS.
+            pool::unshield(
+                &mut pool,
+                TEST_PROOF,
+                TEST_PUBLIC_INPUTS,
+                vector[TEST_NULLIFIER, TEST_NULLIFIER],
                 BOB,
                 vector::empty<u8>(),
                 ctx

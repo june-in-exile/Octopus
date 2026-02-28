@@ -115,6 +115,31 @@ function getUnshieldCircuitPaths() {
 }
 
 /**
+ * Split a Sui address into two 128-bit LE field elements for Poseidon hashing.
+ *
+ * Sui addresses are 32 bytes (256-bit). BN254 scalar field is ~254.85 bits — direct
+ * encoding overflows ~1.4% of addresses. Splitting into 128-bit halves is safe.
+ * Mirrors compute_recipient_hash() in the Move contract.
+ */
+function recipientToFieldElements(recipientHex: string): { lo: bigint; hi: bigint } {
+  const clean = recipientHex.startsWith('0x') ? recipientHex.slice(2) : recipientHex;
+  if (clean.length !== 64) {
+    throw new Error(`Invalid Sui address: expected 64 hex chars, got ${clean.length}`);
+  }
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  // lo: bytes[0..16] as little-endian u128
+  let lo = 0n;
+  for (let i = 15; i >= 0; i--) lo = (lo << 8n) | BigInt(bytes[i]);
+  // hi: bytes[16..32] as little-endian u128
+  let hi = 0n;
+  for (let i = 31; i >= 16; i--) hi = (hi << 8n) | BigInt(bytes[i]);
+  return { lo, hi };
+}
+
+/**
  * Build circuit input for unshield proof
  */
 function buildUnshieldCircuitInput(unshieldInput: UnshieldInput): UnshieldCircuitInput {
@@ -125,7 +150,8 @@ function buildUnshieldCircuitInput(unshieldInput: UnshieldInput): UnshieldCircui
     inputPathElements,
     unshieldAmount,
     changeNote,
-    token
+    token,
+    recipient
   } = unshieldInput;
 
   validateInputs(inputNotes, inputLeafIndices, inputPathElements, token, "Unshield");
@@ -160,6 +186,8 @@ function buildUnshieldCircuitInput(unshieldInput: UnshieldInput): UnshieldCircui
   );
   const nullifiers = nullifierValues.map(v => v.toString());
 
+  const { lo: recipientAddrLo, hi: recipientAddrHi } = recipientToFieldElements(recipient);
+
   const circuitInput: UnshieldCircuitInput = {
     // Private inputs
     spending_key: keypair.spendingKey.toString(),
@@ -174,6 +202,9 @@ function buildUnshieldCircuitInput(unshieldInput: UnshieldInput): UnshieldCircui
     change_amount: changeNote.amount.toString(),
 
     nullifiers,
+
+    recipient_addr_lo: recipientAddrLo.toString(),
+    recipient_addr_hi: recipientAddrHi.toString(),
 
     // Public inputs
     unshield_amount: unshieldAmount.toString(),

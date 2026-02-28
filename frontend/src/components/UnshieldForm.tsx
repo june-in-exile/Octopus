@@ -138,6 +138,7 @@ export function UnshieldForm({
         unshieldAmount: amountBase,
         changeNote,
         token: notesWithProofs[0].note.token,
+        recipient,
       });
 
       // 4. Encrypt output note using viewing public keys

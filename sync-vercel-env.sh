@@ -58,6 +58,8 @@ while IFS='=' read -r key value || [[ -n "$key" ]]; do
   value="${value%\'}" && value="${value#\'}"
 
   for env in "${ENVIRONMENTS[@]}"; do
+    # Remove first to avoid "already exists" error
+    vercel env rm "$key" "$env" -y 2>/dev/null || true
     echo "  Adding: $key ($env)"
     printf '%s' "$value" | vercel env add "$key" "$env"
   done

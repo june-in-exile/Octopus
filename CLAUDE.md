@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the Octopus project, its arch
 
 Before we dive into the formal project description, let’s establish a few ground rules:
 
-Start every interaction with 'June' (the username). For example: 'Hi June, the job is done...', 'Yes, June. ...', 'Good morning June, ...'
+Start every interaction with 'June' (the username) and reply in Mandarin. For example: '嗨 June, 工作已完成...', '是的, June, 你的理解正確. ...'. But write the comments and documents in English.
 
 Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
 
@@ -68,7 +68,7 @@ sui move build
 sui move test
 ```
 
-*Expect around 28 tests to pass.*
+*Expect around 29 tests to pass.*
 
 ### 3. Build SDK (Required for Frontend)
 
@@ -100,7 +100,9 @@ The application will be available at `http://localhost:3000`.
   * `npm run build`: Creates a production build of the frontend.
   * `npm run lint`: Lints the frontend codebase.
 
-## Key Cryptographic Formulas
+## 4. Technical Details
+
+### Key Cryptographic Formulas
 
 ``` txt
 // Key Derivation Hierarchy
@@ -119,15 +121,33 @@ commitment = Poseidon(NSK, token, value)       // Note Commitment
 nullifier = Poseidon(nullifying_key, leaf_index)
 ```
 
-## Move Contract Entry Points
+### Unshield Recipient Encoding
+
+Sui addresses are 32 bytes (256-bit). BN254 scalar field is ~254.85 bits — directly encoding a 32-byte address as a field element overflows ~1.4% of addresses. The fix splits the address into two 128-bit halves and hashes with Poseidon:
+
+```txt
+addr_lo        = recipient_bytes[0..16]  as LE u128
+addr_hi        = recipient_bytes[16..32] as LE u128
+recipient_hash = Poseidon(addr_lo, addr_hi)          // public output in unshield proof
+```
+
+`recipient_addr_lo` / `recipient_addr_hi` are **private** circuit inputs (wire values internal to the ZK circuit). Note that the `recipient` address is still passed as a plain parameter to `pool::unshield` and is visible on-chain. The purpose of the split encoding is twofold:
+
+1. Avoid BN254 field overflow for full 32-byte addresses.
+2. Bind the proof to a specific recipient via `recipient_hash`, so a relayer cannot substitute a different address without invalidating the proof. The contract recomputes `Poseidon(lo, hi)` from the `recipient` parameter and asserts it matches the proof's public output.
+
+> **Sui Move gotcha:** `address::to_bytes(recipient)` does not exist in Sui Move. Use `bcs::to_bytes(&recipient)` (via `use sui::bcs`) to obtain the canonical 32-byte representation of an address.
+
+### Move Contract Entry Points
 
 **Shield** (deposit): `pool::shield<T>(pool, coin, commitment, encrypted_note, ctx)`
 
 * No ZK proof required, adds commitment to Merkle tree
 
-**Unshield** (withdraw): `pool::unshield<T>(pool, proof_bytes, public_inputs_bytes, recipient, encrypted_change_note, ctx)`
+**Unshield** (withdraw): `pool::unshield<T>(pool, proof_bytes, public_inputs_bytes, nullifiers, recipient, encrypted_change_note, ctx)`
 
-* Requires 128-byte Groth16 proof + 128-byte public inputs (nullifier, root, change_commitment, amount)
+* Requires 128-byte Groth16 proof + **192-byte** public inputs (6 × 32 bytes): `[nullifiers_hash, change_commitment, recipient_hash, unshield_amount, token, merkle_root]`
+* `recipient_hash = Poseidon(addr_lo, addr_hi)` — proof is cryptographically bound to recipient, preventing relayer substitution
 * Supports automatic change note creation (no fund loss)
 * Amount is extracted from public inputs (no separate parameter needed)
 * Verifies proof, marks nullifier spent, transfers tokens, creates change note if needed
@@ -143,47 +163,3 @@ nullifier = Poseidon(nullifying_key, leaf_index)
 * Requires Groth16 proof for a private swap. Public inputs (256 bytes, 8 field elements): `token_in, token_out, merkle_root` (public inputs) + `nullifiers[2], swap_data_hash, output_commitment, change_commitment` (public outputs).
 * Verifies proof, spends input notes, executes swap via DeepBook pool, creates output and change notes.
 * For testing without a real DeepBook pool, use `pool::swap_for_testing` (skips proof verification, uses 1:1 mock swap).
-
-## Deployment Info
-
-### Mainnet
-
-```txt
-Package ID:  0x76c4ce9b941bc9d2988b07a38d8a72147c8275b95007ebb84c97b762c5a5d37e
-SUI Pool:    0x375608b40591a0c2ab275dcc1f6b9341a16e1c3b04603d44515535d41ccfdd06
-USDC Pool:   0x1cc65740f79fa1dace7d7b11b8c29a37b7c1750ac840ad17d36c3794e5165313
-```
-
-### Testnet
-
-```txt
-Package ID:  0x13bde5f943246578a98ce1da85350b2a8bc2304a2581ec8cf1eea9fb266724ce
-SUI Pool:    0x33d00746b1053c4bb94d4513003ade8b82a9790b486246b7628d56a8600baf25
-USDC Pool:   0x4a9bcb0999beebc31dd133f6be78780283a50168a0034af97a50f5987174d002
-DBUSDC Pool: 0x3b74a9b4850ea59e9dc5f75ea4138731ce6cab275cd7bfc1b36fc1bef0d38e28 (testnet-only)
-```
-
-### Milestones
-
-Detailed implementation plans are available in the [milestones/](milestones/) directory:
-
-1. **[Private Transfers](milestones/01-private-transfers.md)** ✅ Complete
-   * 2-input, 2-output private transfer circuit
-   * Foundation for all other features
-
-2. **[DeFi Integration](milestones/02-defi-integration.md)** ✅ Complete
-   * Private swaps via DeepBook V3
-   * Bi-directional estimation, lot size enforcement, slippage protection
-   * Active on mainnet (SUI ↔ USDC) and testnet (SUI ↔ DBUSDC)
-
-3. **[Relayer Network](milestones/03-relayer-network.md)** (Future)
-   * Improves privacy by hiding transaction origin
-   * Decentralized broadcaster network
-   * Fee payment in shielded tokens
-
-4. **[Compliance Features](milestones/04-compliance-features.md)** (Future)
-   * Private Proofs of Innocence (PPOI)
-   * View keys for selective disclosure
-   * Tax reporting tools
-
-See [docs/](docs/) for detailed milestone documentation.
