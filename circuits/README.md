@@ -4,11 +4,64 @@ This directory contains the Zero-Knowledge Succinct Non-Interactive Argument of 
 
 ## Circuits Overview
 
-- `unshield.circom`: Unshield circuit with automatic change support (1-input, 1-output design). Proves knowledge of an input note's private keys and its existence in a Merkle tree, allowing a user to "unshield" any amount from a note. Automatically creates an encrypted change note if unshield amount < note value, preventing fund loss.
-  - **Public Input**: `unshield_amount` (amount to withdraw)
-  - **Public Outputs**: `nullifier`, `merkle_root`, `change_commitment`
-- `transfer.circom`: A private transfer circuit. Allows a user to transfer funds privately between two notes (which can belong to the same or different users), preserving balance conservation. Supports 2-input, 2-output transfers.
-- `swap.circom`: A private swap circuit. Enables users to perform private token swaps through an external DEX (e.g., DeepBook), proving ownership of input notes and correct swap parameters.
+All Octopus circuits share a common foundation:
+
+- **Merkle Tree**: Used for membership proofs (depth: 16).
+- **Poseidon Hash**: Used for commitments and nullifiers.
+- **UTXO Model**: All circuits support a 2-input model (where one or both can be dummy notes with zero value).
+
+### Unshield Circuit (`unshield.circom`)
+
+| Property       | Value                                                                  |
+| -------------- | ---------------------------------------------------------------------- |
+| Public Inputs  | `unshield_amount`, `token`, `merkle_root`                              |
+| Public Outputs | `nullifiers_hash`, `change_commitment`, `recipient_hash`               |
+| Private Inputs | Keys, 2 input notes, Merkle paths, change amount/random, recipient address |
+| Input Model    | 2-input (1 real + 1 dummy, or 2 real notes)                            |
+| Merkle Depth   | 16 levels                                                              |
+
+The circuit proves:
+
+1. Knowledge of spending_key and nullifying_key (ownership)
+2. Input notes exist in Merkle tree
+3. Correct nullifier derivation (prevents double-spend)
+4. Balance conservation: `sum(inputs) = unshield_amount + change_amount`
+5. Correct change commitment computation
+6. Integrity of the recipient address (bound by `recipient_hash`)
+
+### Transfer Circuit (`transfer.circom`)
+
+| Property          | Value                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| Public Inputs     | `token`, `merkle_root`                                                                            |
+| Public Outputs    | `nullifiers_hash`, `recipient_commitment`, `change_commitment`                                    |
+| Private Inputs    | Keys, 2 input notes, Merkle paths, recipient MPK/amount/random, change amount/random              |
+| Transaction Model | 2-input, 2-output UTXO                                                                            |
+
+The circuit proves:
+
+1. Ownership of 2 input notes (or 1 note + 1 dummy)
+2. Input notes exist in Merkle tree
+3. Correct nullifier derivation for spent notes
+4. Balance conservation: `sum(inputs) = recipient_amount + change_amount`
+5. Valid output commitments for recipient and change notes
+
+### Swap Circuit (`swap.circom`)
+
+> ⚠️ **DeepBook V3 is only available on Mainnet.** Swap functionality is currently limited to Mainnet deployments.
+
+| Property       | Value                                                                             |
+| -------------- | --------------------------------------------------------------------------------- |
+| Public Inputs  | `token_in`, `token_out`, `amount_in`, `min_amount_out`, `merkle_root`             |
+| Public Outputs | `nullifiers_hash`, `swap_commitment`, `change_commitment`                         |
+| Private Inputs | Keys, 2 input notes, Merkle paths, swap random, change amount/random              |
+| Input Model    | 2-input (same token type as `token_in`)                                         |
+
+The circuit proves:
+
+1. Ownership and validity of input notes
+2. Correct swap execution with slippage protection (`min_amount_out`)
+3. Valid output notes (swapped tokens in `token_out` + change in `token_in`)
 
 ## Scripts Usage
 

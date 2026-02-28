@@ -68,7 +68,7 @@ sui move build
 sui move test
 ```
 
-*Expect around 28 tests to pass.*
+*Expect around 29 tests to pass.*
 
 ### 3. Build SDK (Required for Frontend)
 
