@@ -20,12 +20,14 @@ import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
 import { RecipientInput } from "@/components/RecipientInput";
+import { RelayerSelector } from "@/components/RelayerSelector";
 import {
   createTransferOutputs,
   generateTransferProof,
   importViewingPublicKey,
   deriveViewingPublicKey,
   encryptNote,
+  RelayerClient,
   type RecipientProfile,
 } from "@june_zk/octopus-sdk";
 
@@ -61,6 +63,8 @@ export function TransferForm({
   const [state, setState] = useState<TransferState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  const [useRelayer, setUseRelayer] = useState(false);
+  const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
 
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
@@ -73,10 +77,15 @@ export function TransferForm({
       case "generating-proof":
         return "// Proof generation in progress (30-60s)";
       case "submitting":
-        return "// Awaiting wallet confirmation";
+        return useRelayer ? "// Sending to relayer" : "// Awaiting wallet confirmation";
       default:
         return "";
     }
+  };
+
+  const handleRelayerToggle = (enabled: boolean, url: string | null) => {
+    setUseRelayer(enabled);
+    setRelayerUrl(url);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -148,23 +157,36 @@ export function TransferForm({
       const myViewingPk = deriveViewingPublicKey(keypair.spendingKey);
       const encryptedChangeNote = encryptNote(changeNote, myViewingPk);
 
-      // 5. Build and submit transaction
+      // 5. Submit via relayer or direct wallet
       setState("submitting");
-      const tx = new Transaction();
+      let txDigest: string;
 
-      tx.moveCall({
-        target: `${packageId}::pool::transfer`,
-        typeArguments: [tokenConfig.type],
-        arguments: [
-          tx.object(tokenConfig.poolId),
-          tx.pure.vector("u8", Array.from(proof.proofBytes)),
-          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure(nullifiers),
-          tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize([encryptedRecipientNote, encryptedChangeNote]).toBytes()),
-        ],
-      });
-
-      const result = await signAndExecute({ transaction: tx });
+      if (useRelayer && relayerUrl) {
+        const relayerClient = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
+        txDigest = await relayerClient.submitTransfer({
+          poolId: tokenConfig.poolId,
+          tokenType: tokenConfig.type,
+          proofBytes: proof.proofBytes,
+          publicInputsBytes: proof.publicInputsBytes,
+          nullifiers,
+          encryptedNotes: [encryptedRecipientNote, encryptedChangeNote],
+        });
+      } else {
+        const tx = new Transaction();
+        tx.moveCall({
+          target: `${packageId}::pool::transfer`,
+          typeArguments: [tokenConfig.type],
+          arguments: [
+            tx.object(tokenConfig.poolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize([encryptedRecipientNote, encryptedChangeNote]).toBytes()),
+          ],
+        });
+        const result = await signAndExecute({ transaction: tx });
+        txDigest = result.digest;
+      }
 
       // 6. Success!
       setState("success");
@@ -174,7 +196,7 @@ export function TransferForm({
       }
       setSuccess({
         message: successMessage,
-        txDigest: result.digest
+        txDigest,
       });
       setRecipientProfile(null);
       setAmount("");
@@ -182,7 +204,6 @@ export function TransferForm({
       // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
-      console.error("Transfer failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Transfer failed");
     }
@@ -235,6 +256,13 @@ export function TransferForm({
             <span className="text-cyber-blue font-bold">AUTO SELECT:</span> SDK automatically selects notes to cover transfer amount
           </p>
         </div>
+
+        {/* Relayer Selector */}
+        <RelayerSelector
+          network={network}
+          disabled={isProcessing}
+          onToggle={handleRelayerToggle}
+        />
       </div>
 
       {/* Progress indicator */}

@@ -18,11 +18,13 @@ import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
+import { RelayerSelector } from "@/components/RelayerSelector";
 import {
   createUnshieldOutputs,
   generateUnshieldProof,
   deriveViewingPublicKey,
   encryptNote,
+  RelayerClient,
 } from "@june_zk/octopus-sdk";
 
 interface UnshieldFormProps {
@@ -57,6 +59,8 @@ export function UnshieldForm({
   const [state, setState] = useState<UnshieldState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  const [useRelayer, setUseRelayer] = useState(false);
+  const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
 
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
@@ -69,10 +73,15 @@ export function UnshieldForm({
       case "generating-proof":
         return "// Proof generation in progress (30-60s)";
       case "submitting":
-        return "// Awaiting wallet confirmation";
+        return useRelayer ? "// Sending to relayer" : "// Awaiting wallet confirmation";
       default:
         return "";
     }
+  };
+
+  const handleRelayerToggle = (enabled: boolean, url: string | null) => {
+    setUseRelayer(enabled);
+    setRelayerUrl(url);
   };
 
   // Auto-fill recipient with connected wallet
@@ -143,26 +152,40 @@ export function UnshieldForm({
 
       // 4. Encrypt output note using viewing public keys
       const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const encryptedChangeNote = encryptNote(changeNote, viewingPk)
+      const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
-      // 5. Build and submit transaction
+      // 5. Submit via relayer or direct wallet
       setState("submitting");
-      const tx = new Transaction();
+      let txDigest: string;
 
-      tx.moveCall({
-        target: `${packageId}::pool::unshield`,
-        typeArguments: [tokenConfig.type],
-        arguments: [
-          tx.object(tokenConfig.poolId),
-          tx.pure.vector("u8", Array.from(proof.proofBytes)),
-          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure(nullifiers),
-          tx.pure.address(recipient),
-          tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-        ],
-      });
-
-      const result = await signAndExecute({ transaction: tx });
+      if (useRelayer && relayerUrl) {
+        const relayerClient = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
+        txDigest = await relayerClient.submitUnshield({
+          poolId: tokenConfig.poolId,
+          tokenType: tokenConfig.type,
+          proofBytes: proof.proofBytes,
+          publicInputsBytes: proof.publicInputsBytes,
+          nullifiers,
+          encryptedNotes: [encryptedChangeNote],
+          recipient,
+        });
+      } else {
+        const tx = new Transaction();
+        tx.moveCall({
+          target: `${packageId}::pool::unshield`,
+          typeArguments: [tokenConfig.type],
+          arguments: [
+            tx.object(tokenConfig.poolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.pure.address(recipient),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+        const result = await signAndExecute({ transaction: tx });
+        txDigest = result.digest;
+      }
 
       // 6. Success!
       setState("success");
@@ -172,7 +195,7 @@ export function UnshieldForm({
       }
       setSuccess({
         message: successMessage,
-        txDigest: result.digest
+        txDigest,
       });
       setAmount("");
       setRecipient("");
@@ -180,7 +203,6 @@ export function UnshieldForm({
       // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
-      console.error("Unshield failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Unshield failed");
     }
@@ -251,6 +273,13 @@ export function UnshieldForm({
             </button>
           </div>
         </div>
+
+        {/* Relayer Selector */}
+        <RelayerSelector
+          network={network}
+          disabled={isProcessing}
+          onToggle={handleRelayerToggle}
+        />
       </div>
 
       {/* Progress indicator */}
