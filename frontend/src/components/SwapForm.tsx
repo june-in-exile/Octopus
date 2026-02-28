@@ -36,7 +36,7 @@ import {
   deriveViewingPublicKey,
   RelayerClient,
 } from "@june_zk/octopus-sdk";
-import { RelayerSelector } from "@/components/RelayerSelector";
+import { RelayerSelector, type RelayerStatus } from "@/components/RelayerSelector";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
@@ -99,13 +99,15 @@ export function SwapForm({
   const [minSize, setMinSize] = useState<bigint>(1n);
   const [useRelayer, setUseRelayer] = useState(false);
   const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
+  const [relayerStatus, setRelayerStatus] = useState<RelayerStatus>("idle");
 
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
-  const handleRelayerToggle = (enabled: boolean, url: string | null) => {
+  const handleRelayerToggle = (enabled: boolean, url: string | null, status: RelayerStatus) => {
     setUseRelayer(enabled);
     setRelayerUrl(url);
+    setRelayerStatus(status);
   };
 
   const isProcessing = state !== "idle" && state !== "error" && state !== "success";
@@ -447,7 +449,17 @@ export function SwapForm({
       }
     }
 
+    if (useRelayer && relayerStatus !== "online") {
+      setError("Relayer is offline. Please check the relayer connection.");
+      return;
+    }
+
     try {
+      if (useRelayer && relayerUrl) {
+        const client = new RelayerClient({ url: relayerUrl, network: network === "mainnet" ? "mainnet" : "testnet" });
+        await client.checkHealth();
+      }
+
       // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(

@@ -12,13 +12,13 @@ import {
 } from "@/lib/relayerConfig";
 import { RelayerClient } from "@june_zk/octopus-sdk";
 
+export type RelayerStatus = "idle" | "checking" | "online" | "offline";
+
 interface RelayerSelectorProps {
   network: string;
   disabled?: boolean;
-  onToggle: (enabled: boolean, url: string | null) => void;
+  onToggle: (enabled: boolean, url: string | null, status: RelayerStatus) => void;
 }
-
-type RelayerStatus = "idle" | "checking" | "online" | "offline";
 
 export function RelayerSelector({
   network,
@@ -39,7 +39,7 @@ export function RelayerSelector({
     setEnabled(savedEnabled);
     setUrl(savedUrl);
     if (savedEnabled) {
-      onToggle(true, savedUrl);
+      onToggle(true, savedUrl, "checking");
     }
   }, [network]);
 
@@ -66,17 +66,24 @@ export function RelayerSelector({
     checkRelayerStatus(url);
   }, [enabled, url, checkRelayerStatus]);
 
+  // Notify parent whenever status changes while enabled
+  useEffect(() => {
+    if (enabled) {
+      onToggle(true, url, status);
+    }
+  }, [status]);
+
   const handleToggle = (checked: boolean) => {
     setEnabled(checked);
     saveRelayerEnabled(network, checked);
-    onToggle(checked, checked ? url : null);
+    onToggle(checked, checked ? url : null, checked ? status : "idle");
   };
 
   const handleUrlChange = (newUrl: string) => {
     setUrl(newUrl);
     saveRelayerUrl(network, newUrl);
     if (enabled) {
-      onToggle(true, newUrl);
+      onToggle(true, newUrl, status);
     }
   };
 

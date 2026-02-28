@@ -1,6 +1,6 @@
 export const RELAYER_URLS: Record<string, string | null> = {
-  testnet: process.env.NEXT_PUBLIC_TESTNET_RELAYER_URL ?? null,
-  mainnet: process.env.NEXT_PUBLIC_MAINNET_RELAYER_URL ?? null,
+  testnet: process.env.NEXT_PUBLIC_TESTNET_RELAYER_URL || null,
+  mainnet: process.env.NEXT_PUBLIC_MAINNET_RELAYER_URL || null,
 };
 
 const DEFAULT_LOCAL_RELAYER = "http://localhost:3001";

@@ -81,6 +81,21 @@ export class RelayerClient {
     return data[this.config.network];
   }
 
+  async checkHealth(timeoutMs = 5000): Promise<void> {
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const res = await fetch(`${this.config.url}/relayer-info`, { signal });
+      if (!res.ok) {
+        throw new Error(`Relayer returned status ${res.status}`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        throw new Error(`Relayer did not respond within ${timeoutMs / 1000}s`);
+      }
+      throw new Error(`Relayer unreachable at ${this.config.url}`);
+    }
+  }
+
   async getFeeQuote(
     type: "transfer" | "unshield" | "swap",
     tokenType: string,

@@ -1,5 +1,6 @@
 import { SuiJsonRpcClient as SuiClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
+import { bcs } from "@mysten/sui/bcs";
 import type { RelayerConfig } from "../config/relayer-config.js";
 import type {
   TransferSubmitRequest,
@@ -37,8 +38,6 @@ export class Relayer {
   async submitTransfer(req: TransferSubmitRequest): Promise<string> {
     const tx = new Transaction();
 
-    const encryptedNoteBytes = req.encryptedNotes.map(hexToBytes);
-
     tx.moveCall({
       target: `${this.config.packageId}::pool::transfer`,
       typeArguments: [req.tokenType],
@@ -46,10 +45,8 @@ export class Relayer {
         tx.object(req.poolId),
         tx.pure.vector("u8", Array.from(hexToBytes(req.proofBytes))),
         tx.pure.vector("u8", Array.from(hexToBytes(req.publicInputsBytes))),
-        // nullifiers is already BCS-encoded vector<vector<u8>> from the SDK prover
         tx.pure(hexToBytes(req.nullifiers)),
-        // encrypted notes: re-encode as vector<vector<u8>> using bcs
-        tx.pure(buildEncryptedNotesBytes(encryptedNoteBytes)),
+        tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize(req.encryptedNotes.map(hexToBytes)).toBytes()),
       ],
     });
 
@@ -66,9 +63,6 @@ export class Relayer {
   async submitUnshield(req: UnshieldSubmitRequest): Promise<string> {
     const tx = new Transaction();
 
-    // encryptedNotes[0] is the encrypted change note
-    const encryptedChangeNoteBytes = hexToBytes(req.encryptedNotes[0]);
-
     tx.moveCall({
       target: `${this.config.packageId}::pool::unshield`,
       typeArguments: [req.tokenType],
@@ -78,7 +72,7 @@ export class Relayer {
         tx.pure.vector("u8", Array.from(hexToBytes(req.publicInputsBytes))),
         tx.pure(hexToBytes(req.nullifiers)),
         tx.pure.address(req.recipient),
-        tx.pure.vector("u8", Array.from(encryptedChangeNoteBytes)),
+        tx.pure.vector("u8", Array.from(hexToBytes(req.encryptedNotes[0]))),
       ],
     });
 
@@ -158,23 +152,6 @@ export class Relayer {
   }
 }
 
-// BCS-encode a vector<vector<u8>>:
-// [outer_len] ([inner_len] [inner_bytes...])...
-function buildEncryptedNotesBytes(notes: Uint8Array[]): Uint8Array {
-  const parts: Uint8Array[] = [new Uint8Array([notes.length])];
-  for (const note of notes) {
-    parts.push(new Uint8Array([note.length]));
-    parts.push(note);
-  }
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    result.set(p, offset);
-    offset += p.length;
-  }
-  return result;
-}
 
 function assertSuccess(effects: { status?: { status: string; error?: string } } | null | undefined): void {
   if (effects?.status?.status !== "success") {

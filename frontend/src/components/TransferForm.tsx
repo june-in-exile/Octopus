@@ -20,7 +20,7 @@ import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
 import { RecipientInput } from "@/components/RecipientInput";
-import { RelayerSelector } from "@/components/RelayerSelector";
+import { RelayerSelector, type RelayerStatus } from "@/components/RelayerSelector";
 import {
   createTransferOutputs,
   generateTransferProof,
@@ -65,6 +65,7 @@ export function TransferForm({
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
   const [useRelayer, setUseRelayer] = useState(false);
   const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
+  const [relayerStatus, setRelayerStatus] = useState<RelayerStatus>("idle");
 
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
@@ -83,9 +84,10 @@ export function TransferForm({
     }
   };
 
-  const handleRelayerToggle = (enabled: boolean, url: string | null) => {
+  const handleRelayerToggle = (enabled: boolean, url: string | null, status: RelayerStatus) => {
     setUseRelayer(enabled);
     setRelayerUrl(url);
+    setRelayerStatus(status);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -114,7 +116,17 @@ export function TransferForm({
     }
     const amountBase = parseTokenAmount(amount, tokenConfig.decimals);
 
+    if (useRelayer && relayerStatus !== "online") {
+      setError("Relayer is offline. Please check the relayer connection.");
+      return;
+    }
+
     try {
+      if (useRelayer && relayerUrl) {
+        const client = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
+        await client.checkHealth();
+      }
+
       // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
