@@ -131,7 +131,10 @@ addr_hi        = recipient_bytes[16..32] as LE u128
 recipient_hash = Poseidon(addr_lo, addr_hi)          // public output in unshield proof
 ```
 
-`recipient_addr_lo` / `recipient_addr_hi` are **private** circuit inputs — only `recipient_hash` is a public output, so the recipient address is not revealed on-chain. The contract recomputes `Poseidon(lo, hi)` from the `recipient` parameter and asserts it matches the proof's public output.
+`recipient_addr_lo` / `recipient_addr_hi` are **private** circuit inputs (wire values internal to the ZK circuit). Note that the `recipient` address is still passed as a plain parameter to `pool::unshield` and is visible on-chain. The purpose of the split encoding is twofold:
+
+1. Avoid BN254 field overflow for full 32-byte addresses.
+2. Bind the proof to a specific recipient via `recipient_hash`, so a relayer cannot substitute a different address without invalidating the proof. The contract recomputes `Poseidon(lo, hi)` from the `recipient` parameter and asserts it matches the proof's public output.
 
 > **Sui Move gotcha:** `address::to_bytes(recipient)` does not exist in Sui Move. Use `bcs::to_bytes(&recipient)` (via `use sui::bcs`) to obtain the canonical 32-byte representation of an address.
 
@@ -160,5 +163,3 @@ recipient_hash = Poseidon(addr_lo, addr_hi)          // public output in unshiel
 * Requires Groth16 proof for a private swap. Public inputs (256 bytes, 8 field elements): `token_in, token_out, merkle_root` (public inputs) + `nullifiers[2], swap_data_hash, output_commitment, change_commitment` (public outputs).
 * Verifies proof, spends input notes, executes swap via DeepBook pool, creates output and change notes.
 * For testing without a real DeepBook pool, use `pool::swap_for_testing` (skips proof verification, uses 1:1 mock swap).
-
-

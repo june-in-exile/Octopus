@@ -287,31 +287,33 @@ module octopus::pool {
         let (nullifiers_hash, change_commitment, proof_recipient_hash, unshield_amount_bytes, _token, merkle_root) =
             parse_unshield_public_inputs(&public_inputs_bytes);
 
-        // 2. Verify merkle root is valid (current or in history) — checked early to fail fast
+        // 2. Verify the proof is bound to the claimed recipient (prevents relayer substitution).
+        //    Checked before the root lookup: cheap Poseidon + comparison, and a wrong recipient
+        //    should be rejected immediately regardless of whether the root is valid.
+        let computed_recipient_hash = compute_recipient_hash(recipient);
+        assert!(computed_recipient_hash == proof_recipient_hash, E_INVALID_PUBLIC_INPUTS);
+
+        // 3. Verify merkle root is valid (current or in history)
         assert!(is_valid_root(pool, &merkle_root), E_INVALID_ROOT);
 
         let nullifier1 = *vector::borrow(&nullifiers, 0);
         let nullifier2 = *vector::borrow(&nullifiers, 1);
 
-        // 3. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
+        // 4. Verify the explicitly-passed nullifiers match the nullifiers_hash in the proof
         let n1_u256 = field_element_to_u256(&nullifier1);
         let n2_u256 = field_element_to_u256(&nullifier2);
         let computed_hash = poseidon::poseidon_bn254(&vector[n1_u256, n2_u256]);
         let computed_hash_bytes = u256_to_field_element(computed_hash);
         assert!(computed_hash_bytes == nullifiers_hash, E_INVALID_PUBLIC_INPUTS);
 
-        // 4. Verify the proof is bound to the claimed recipient (prevents relayer substitution)
-        let computed_recipient_hash = compute_recipient_hash(recipient);
-        assert!(computed_recipient_hash == proof_recipient_hash, E_INVALID_PUBLIC_INPUTS);
-
         // Convert unshield_amount from field element to u64
         let amount = field_element_to_u64(&unshield_amount_bytes);
 
-        // 4. Check both nullifiers have not been spent (prevent double-spend)
+        // 5. Check both nullifiers have not been spent (prevent double-spend)
         assert!(!nullifier::is_spent(&pool.nullifiers, nullifier1), E_DOUBLE_SPEND);
         assert!(!nullifier::is_spent(&pool.nullifiers, nullifier2), E_DOUBLE_SPEND);
 
-        // 5. Verify Groth16 ZK proof
+        // 6. Verify Groth16 ZK proof
         let pvk = groth16::prepare_verifying_key(&groth16::bn254(), &pool.vk_bytes);
         let public_inputs = groth16::public_proof_inputs_from_bytes(public_inputs_bytes);
         let proof_points = groth16::proof_points_from_bytes(proof_bytes);
@@ -321,18 +323,18 @@ module octopus::pool {
             E_INVALID_PROOF
         );
 
-        // 6. Mark nullifiers as spent
+        // 7. Mark nullifiers as spent
         nullifier::mark_spent(&mut pool.nullifiers, nullifier1);
         if (!is_zero_commitment(&nullifier2)) {
             nullifier::mark_spent(&mut pool.nullifiers, nullifier2);
         };
 
-        // 7. Transfer tokens to recipient
+        // 8. Transfer tokens to recipient
         assert!(balance::value(&pool.balance) >= amount, E_INSUFFICIENT_BALANCE);
         let withdrawn = coin::take(&mut pool.balance, amount, ctx);
         transfer::public_transfer(withdrawn, recipient);
 
-        // 8. Handle change note (if any)
+        // 9. Handle change note (if any)
         if (!is_zero_commitment(&change_commitment)) {
             // Save current root to history before inserting change
             save_historical_root(pool);
@@ -931,6 +933,12 @@ module octopus::pool {
     }
 
     // ============ Test Helpers ============
+
+    /// Expose compute_recipient_hash for use in tests that need to construct valid public inputs.
+    #[test_only]
+    public fun compute_recipient_hash_for_testing(recipient: address): vector<u8> {
+        compute_recipient_hash(recipient)
+    }
 
     /// Swap for testing only: skips proof verification and uses a 1:1 mock swap.
     /// Public inputs format (256 bytes): [token_in, token_out, merkle_root, nullifier1, nullifier2, swap_data_hash, output_commitment, change_commitment]

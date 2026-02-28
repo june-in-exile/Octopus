@@ -14,6 +14,7 @@ include "./lib/verify_note.circom";
 /// 3. Correct nullifier computation
 /// 4. Balance conservation: amount = unshield_amount + change_amount
 /// 5. Correct change commitment computation
+/// 6. Proof is bound to recipient address
 ///
 /// Based on cryptographic formulas:
 /// - MPK = Poseidon(spending_key, nullifying_key)

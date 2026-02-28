@@ -164,24 +164,50 @@ module octopus::pool_tests {
             let coin = ts::take_from_sender<Coin<SUI>>(&scenario);
             let ctx = ts::ctx(&mut scenario);
 
-            // Shield with a different commitment
+            // Shield with a different commitment so the tree root != the root in TEST_PUBLIC_INPUTS
             pool::shield(&mut pool, coin, x"0000000000000000000000000000000000000000000000000000000000000099", x"99", ctx);
             ts::return_shared(pool);
         };
 
-        // Try to unshield - should fail because merkle root in proof doesn't match
-        ts::next_tx(&mut scenario, ALICE);
+        // Try to unshield - should fail at E_INVALID_ROOT (root check fires after recipient check).
+        // We inject BOB's correct recipient_hash so the recipient check passes first,
+        // ensuring this test truly reaches and exercises the root validation path.
+        ts::next_tx(&mut scenario, BOB);
         {
             let mut pool = ts::take_shared<PrivacyPool<SUI>>(&scenario);
             let ctx = ts::ctx(&mut scenario);
 
+            // Build public inputs: same as TEST_PUBLIC_INPUTS but with BOB's actual recipient hash
+            // at bytes[64..96], so the recipient check passes and the root check is reached.
+            // Format: [nullifiers_hash(32), change_commitment(32), recipient_hash(32), unshield_amount(32), token(32), merkle_root(32)]
+            let bob_recipient_hash = pool::compute_recipient_hash_for_testing(BOB);
+            let mut pi = vector::empty<u8>();
+            let mut i = 0u64;
+            // Copy nullifiers_hash + change_commitment (bytes 0..64)
+            while (i < 64) {
+                vector::push_back(&mut pi, *vector::borrow(&TEST_PUBLIC_INPUTS, i));
+                i = i + 1;
+            };
+            // Insert BOB's recipient_hash (bytes 64..96)
+            i = 0;
+            while (i < 32) {
+                vector::push_back(&mut pi, *vector::borrow(&bob_recipient_hash, i));
+                i = i + 1;
+            };
+            // Copy unshield_amount + token + merkle_root (bytes 96..192)
+            i = 96;
+            while (i < 192) {
+                vector::push_back(&mut pi, *vector::borrow(&TEST_PUBLIC_INPUTS, i));
+                i = i + 1;
+            };
+
             pool::unshield(
                 &mut pool,
                 TEST_PROOF,
-                TEST_PUBLIC_INPUTS,
-                vector[TEST_NULLIFIER, TEST_NULLIFIER], // placeholder nullifiers
+                pi,
+                vector[TEST_NULLIFIER, TEST_NULLIFIER],
                 BOB,
-                vector::empty<u8>(), // No change note for this test
+                vector::empty<u8>(),
                 ctx
             );
 
@@ -220,17 +246,12 @@ module octopus::pool_tests {
     }
 
     // Tests that a relayer cannot substitute a different recipient address.
-    // Uses TEST_PUBLIC_INPUTS which has recipient_hash = all zeros.
-    // Any real address produces a non-zero Poseidon hash, so the assertion
-    // compute_recipient_hash(BOB) == zero_hash always fails.
-    //
-    // NOTE: This test currently verifies E_INVALID_ROOT because the merkle root
-    // check fires before the recipient check. After circuit recompilation:
-    //   1. Replace TEST_PUBLIC_INPUTS with a proof committed to ALICE as recipient
-    //   2. Pass BOB as the recipient parameter
-    //   3. Remove #[expected_failure] and add the correct E_INVALID_PUBLIC_INPUTS
+    // TEST_PUBLIC_INPUTS embeds recipient_hash = all zeros (no real address).
+    // compute_recipient_hash(BOB) produces a non-zero Poseidon hash, so the
+    // assertion fires at step 2 (recipient check) — before the merkle root check —
+    // correctly exercising the relayer-substitution prevention path.
     #[test]
-    #[expected_failure(abort_code = pool::E_INVALID_ROOT)]
+    #[expected_failure(abort_code = pool::E_INVALID_PUBLIC_INPUTS)]
     fun test_unshield_wrong_recipient_rejected() {
         let mut scenario = ts::begin(ADMIN);
         create_test_pool(&mut scenario);
@@ -240,11 +261,8 @@ module octopus::pool_tests {
             let mut pool = ts::take_shared<PrivacyPool<SUI>>(&scenario);
             let ctx = ts::ctx(&mut scenario);
 
-            // TEST_PUBLIC_INPUTS has recipient_hash = all zeros (committed to no real address).
-            // Passing BOB as recipient: compute_recipient_hash(BOB) != zero_hash.
-            // Currently fails at E_INVALID_ROOT first; once TEST_PUBLIC_INPUTS is updated
-            // with a valid root and ALICE's recipient_hash, this should fail with
-            // E_INVALID_PUBLIC_INPUTS when BOB is passed instead of ALICE.
+            // TEST_PUBLIC_INPUTS has recipient_hash = all zeros.
+            // BOB's Poseidon hash != zero → recipient check fires → E_INVALID_PUBLIC_INPUTS.
             pool::unshield(
                 &mut pool,
                 TEST_PROOF,
