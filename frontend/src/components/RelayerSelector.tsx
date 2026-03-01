@@ -145,9 +145,14 @@ export function RelayerSelector({
           {relayerAddress && (
             <p className="text-[10px] text-gray-500 font-mono">
               <span className="text-gray-600">ADDR:</span>{" "}
-              <span className="text-cyber-blue">
+              <a
+                href={`https://suivision.xyz/account/${relayerAddress}${network === "testnet" ? "?network=testnet" : ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-cyber-blue hover:underline"
+              >
                 {relayerAddress.slice(0, 10)}...{relayerAddress.slice(-6)}
-              </span>
+              </a>
             </p>
           )}
         </div>
