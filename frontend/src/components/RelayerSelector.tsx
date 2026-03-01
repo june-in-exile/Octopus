@@ -146,7 +146,7 @@ export function RelayerSelector({
             <p className="text-[10px] text-gray-500 font-mono">
               <span className="text-gray-600">ADDR:</span>{" "}
               <a
-                href={`https://suivision.xyz/account/${relayerAddress}${network === "testnet" ? "?network=testnet" : ""}`}
+                href={`https://${network === "testnet" ? "testnet." : ""}suivision.xyz/account/${relayerAddress}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-cyber-blue hover:underline"
