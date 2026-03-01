@@ -11,7 +11,7 @@ import {
   SwapSubmitSchema,
 } from "./validator.js";
 
-const RELAYER_PORT = parseInt(process.env.RELAYER_PORT ?? "3001", 10)
+const RELAYER_PORT = parseInt(process.env.RELAYER_PORT || "3001", 10)
 
 async function main(): Promise<void> {
   const configs = loadAllConfigs();

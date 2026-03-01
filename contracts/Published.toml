@@ -4,18 +4,18 @@
 
 [published.mainnet]
 chain-id = "35834a8a"
-published-at = "0x0383dfe4fa8e64fc026e582cf5364563b0ee7d3200747ec7e657fc8d7be5d44d"
-original-id = "0x0383dfe4fa8e64fc026e582cf5364563b0ee7d3200747ec7e657fc8d7be5d44d"
+published-at = "0x496aec9674522499cbf83604625ccd79d03c1ff691ffebd3dbbbd2e92737d08f"
+original-id = "0x496aec9674522499cbf83604625ccd79d03c1ff691ffebd3dbbbd2e92737d08f"
 version = 1
 toolchain-version = "1.65.2"
 build-config = { flavor = "sui", edition = "2024" }
-upgrade-capability = "0x6b90c1291f6d28233c43134841666131440a746243e66193593c8bbf20012077"
+upgrade-capability = "0x273ecb8b18c35fd0e8751e7ec2050842d2ba774951095e25eac7df03948d10f4"
 
 [published.testnet]
 chain-id = "4c78adac"
-published-at = "0xe5e74552a78acc957534618e4d18dac4fc49c5860c2c4e646941f53e02473108"
-original-id = "0xe5e74552a78acc957534618e4d18dac4fc49c5860c2c4e646941f53e02473108"
+published-at = "0x6d189759ebc1bffc274aca95a97578c66ff3a2c152e2f0018c8417e3a3cff885"
+original-id = "0x6d189759ebc1bffc274aca95a97578c66ff3a2c152e2f0018c8417e3a3cff885"
 version = 1
 toolchain-version = "1.65.2"
 build-config = { flavor = "sui", edition = "2024" }
-upgrade-capability = "0xd0265395a023f5952fc6deca2711aecd0a010cd39656c80498d0a441f280b90e"
+upgrade-capability = "0xa43a673dcb4ad897a75e40dd162e39dc307d70966d0d92491cd858e14f6e0558"

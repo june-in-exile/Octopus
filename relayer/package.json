@@ -5,9 +5,9 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "tsx watch --env-file=../.env src/server.ts",
+    "dev": "tsx watch --env-file=.env src/server.ts",
     "build": "tsc",
-    "start": "node --env-file=../.env dist/server.js"
+    "start": "node --env-file=.env dist/server.js"
   },
   "dependencies": {
     "@mysten/sui": "^2.4.0",
