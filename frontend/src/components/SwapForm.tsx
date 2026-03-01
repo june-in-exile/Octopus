@@ -21,7 +21,10 @@ import {
   NETWORK_CONFIG,
   CLOCK_OBJECT_ID,
   ESTIMATED_DEEP_FEE,
+  getDeepBookPairConfig,
 } from "@/lib/constants";
+
+type SwapToken = "SUI" | "USDC" | "DBUSDC" | "DEEP";
 import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
@@ -42,7 +45,7 @@ interface SwapFormProps {
   keypair: OctopusKeypair | null;
   notes: OwnedNote[];
   loading: boolean;
-  selectedToken?: "SUI" | "USDC" | "DBUSDC";
+  selectedToken?: SwapToken;
   onSuccess?: () => void | Promise<void>;
 }
 
@@ -67,12 +70,11 @@ export function SwapForm({
   const { network } = useSuiClientContext();
   const isMainnet = network === "mainnet";
 
-  // Determine available tokens based on network
-  const availableTokens = isMainnet ? ["SUI", "USDC"] as const : ["SUI", "DBUSDC"] as const;
-  const defaultTokenOut = isMainnet ? "USDC" : "DBUSDC";
+  const networkKey = (network === "mainnet" ? "mainnet" : "testnet") as "mainnet" | "testnet";
+  const defaultTokenOut: SwapToken = isMainnet ? "USDC" : "DBUSDC";
 
-  const [tokenInSymbol, setTokenInSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(selectedToken ?? "SUI");
-  const [tokenOutSymbol, setTokenOutSymbol] = useState<"SUI" | "USDC" | "DBUSDC">(
+  const [tokenInSymbol, setTokenInSymbol] = useState<SwapToken>(selectedToken ?? "SUI");
+  const [tokenOutSymbol, setTokenOutSymbol] = useState<SwapToken>(
     selectedToken && selectedToken !== "SUI" ? "SUI" : defaultTokenOut
   );
 
@@ -100,6 +102,19 @@ export function SwapForm({
   const [useRelayer, setUseRelayer] = useState(false);
   const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
   const [relayerStatus, setRelayerStatus] = useState<RelayerStatus>("idle");
+
+  // Derived: available swap pairs based on configured DeepBook pools
+  const allCandidateTokens: SwapToken[] = isMainnet
+    ? ["SUI", "USDC", "DEEP"]
+    : ["SUI", "DBUSDC", "DEEP"];
+  const swappableTokens = allCandidateTokens.filter((t) =>
+    allCandidateTokens.some((other) => other !== t && !!getDeepBookPairConfig(t, other, networkKey))
+  );
+  const tokenOutOptions = allCandidateTokens.filter(
+    (t) => t !== tokenInSymbol && !!getDeepBookPairConfig(tokenInSymbol, t, networkKey)
+  );
+  const pairConfig = getDeepBookPairConfig(tokenInSymbol, tokenOutSymbol, networkKey);
+  const isBid = pairConfig ? tokenInSymbol === pairConfig.quote : false;
 
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
@@ -190,10 +205,11 @@ export function SwapForm({
           return;
         }
 
-        const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
-        if (!deepbookPoolId || deepbookPoolId === "0x...") {
-          throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
+        const effectPairConfig = getDeepBookPairConfig(tokenInSymbol, tokenOutSymbol, networkKey);
+        if (!effectPairConfig) {
+          throw new Error(`No DeepBook pool for ${tokenInSymbol}/${tokenOutSymbol}`);
         }
+        const deepbookPoolId = effectPairConfig.poolId;
 
         // Convert to smallest units
         const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
@@ -203,12 +219,11 @@ export function SwapForm({
           Math.floor(amountInFloat * Math.pow(10, tokenInDecimals))
         );
 
-        // Estimate swap using DeepBook
-        // isBid = buying base (SUI) with quote (DBUSDC/USDC)
-        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+        // isBid = tokenIn is the quote token (buying base with quote)
+        const effectIsBid = tokenInSymbol === effectPairConfig.quote;
         // DeepBook pool base/quote are fixed regardless of swap direction
-        const baseType = isBid ? tokenOutConfig?.type : tokenInConfig?.type;
-        const quoteType = isBid ? tokenInConfig?.type : tokenOutConfig?.type;
+        const baseType = effectIsBid ? tokenOutConfig?.type : tokenInConfig?.type;
+        const quoteType = effectIsBid ? tokenInConfig?.type : tokenOutConfig?.type;
         if (!baseType || !quoteType) {
           throw new Error("Token type not configured");
         }
@@ -221,7 +236,7 @@ export function SwapForm({
             deepbookPoolId,
             baseType,
             quoteType,
-            network === "mainnet" ? "mainnet" : "testnet",
+            networkKey,
           );
           currentLotSize = params.lotSize;
           setLotSize(params.lotSize);
@@ -233,7 +248,7 @@ export function SwapForm({
         // Align amountIn to nearest lot size (round down) so DeepBook doesn't silently truncate.
         // For bid (USDC→SUI), amountInRaw is in quote units — lotSize is in base (SUI) units,
         // so alignment must be skipped to avoid dividing a small USDC amount by a large SUI lot size (→ 0).
-        const amountInBigInt = (!isBid && currentLotSize > 1n)
+        const amountInBigInt = (!effectIsBid && currentLotSize > 1n)
           ? (amountInRaw / currentLotSize) * currentLotSize
           : amountInRaw;
 
@@ -241,10 +256,10 @@ export function SwapForm({
           client,
           deepbookPoolId,
           amountInBigInt,
-          isBid,
+          effectIsBid,
           baseType,
           quoteType,
-          (network === "mainnet" ? "mainnet" : "testnet"),
+          networkKey,
         );
 
         // Convert output to display units
@@ -299,10 +314,9 @@ export function SwapForm({
           return;
         }
 
-        const deepbookPoolId = network === "mainnet"
-          ? NETWORK_CONFIG.mainnet.suiusdcPoolId
-          : NETWORK_CONFIG.testnet.suidbusdcPoolId;
-        if (!deepbookPoolId || deepbookPoolId === "0x...") return;
+        const effectPairConfig = getDeepBookPairConfig(tokenInSymbol, tokenOutSymbol, networkKey);
+        if (!effectPairConfig) return;
+        const deepbookPoolId = effectPairConfig.poolId;
 
         const tokenInCfg = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
         const tokenOutCfg = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
@@ -310,10 +324,9 @@ export function SwapForm({
 
         const tokenInDecimals = tokenInCfg.decimals ?? 9;
         const tokenOutDecimals = tokenOutCfg.decimals ?? 9;
-        const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
-        const baseType = isBid ? tokenOutCfg.type : tokenInCfg.type;
-        const quoteType = isBid ? tokenInCfg.type : tokenOutCfg.type;
-        const networkKey = network === "mainnet" ? "mainnet" as const : "testnet" as const;
+        const effectIsBid = tokenInSymbol === effectPairConfig.quote;
+        const baseType = effectIsBid ? tokenOutCfg.type : tokenInCfg.type;
+        const quoteType = effectIsBid ? tokenInCfg.type : tokenOutCfg.type;
 
         // Fetch lot size
         let currentLotSize = lotSize;
@@ -325,14 +338,14 @@ export function SwapForm({
         } catch { /* keep existing lotSize */ }
 
         const alignToLot = (raw: bigint) =>
-          !isBid && currentLotSize > 1n ? (raw / currentLotSize) * currentLotSize : raw;
+          !effectIsBid && currentLotSize > 1n ? (raw / currentLotSize) * currentLotSize : raw;
 
         // Step 1: Get exchange rate — bootstrap with 1 unit if not yet available
         let currentRate = exchangeRate;
         if (!currentRate) {
           const probeRaw = alignToLot(BigInt(Math.pow(10, tokenInDecimals)));
           if (probeRaw > 0n) {
-            const probeEst = await estimateDeepBookSwap(client, deepbookPoolId, probeRaw, isBid, baseType, quoteType, networkKey);
+            const probeEst = await estimateDeepBookSwap(client, deepbookPoolId, probeRaw, effectIsBid, baseType, quoteType, networkKey);
             if (probeEst.isApproximate) {
               setAmountIn("");
               setExchangeRate(null);
@@ -353,7 +366,7 @@ export function SwapForm({
         if (approxInRaw <= 0n) return;
 
         // Step 3: Run forward estimation to refine and get price impact
-        const refined = await estimateDeepBookSwap(client, deepbookPoolId, approxInRaw, isBid, baseType, quoteType, networkKey);
+        const refined = await estimateDeepBookSwap(client, deepbookPoolId, approxInRaw, effectIsBid, baseType, quoteType, networkKey);
         if (refined.isApproximate) {
           setAmountIn("");
           setExchangeRate(null);
@@ -427,7 +440,6 @@ export function SwapForm({
     }
 
     // lotSize is in base asset (SUI) units — only align for ask (SUI→USDC), not bid (USDC→SUI)
-    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
     const amountInBase = (!isBid && lotSize > 1n)
       ? (amountInSmallest / lotSize) * lotSize
       : amountInSmallest;
@@ -504,10 +516,10 @@ export function SwapForm({
       const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
       // 5. Get DeepBook pool ID
-      const deepbookPoolId = (network === "mainnet" ? NETWORK_CONFIG.mainnet.suiusdcPoolId : NETWORK_CONFIG.testnet.suidbusdcPoolId);
-      if (!deepbookPoolId || deepbookPoolId === "0x...") {
-        throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
+      if (!pairConfig) {
+        throw new Error(`No DeepBook pool for ${tokenInSymbol}/${tokenOutSymbol}`);
       }
+      const deepbookPoolId = pairConfig.poolId;
 
       // Relayer handles its own DEEP — only validate when submitting directly
       if (!useRelayer) {
@@ -615,8 +627,8 @@ export function SwapForm({
   const unspentNotes = notes.filter((n) => !n.spent);
 
   const tokenInConfig = tokenConfig?.[tokenInSymbol as keyof typeof tokenConfig];
-  // lotSize is in base asset (SUI) units; don't apply it as step for bid (USDC input)
-  const isBidForStep = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+  // lotSize is in base asset (SUI) units; don't apply it as step for bid (quote-token input)
+  const isBidForStep = isBid;
   const tokenInDecimals = tokenInConfig?.decimals ?? 9;
   const lotSizeStep = (!isBidForStep && lotSize > 1n)
     ? Number(lotSize) / Math.pow(10, tokenInDecimals)
@@ -650,7 +662,7 @@ export function SwapForm({
             <select
               value={tokenInSymbol}
               onChange={(e) => {
-                const newTokenIn = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                const newTokenIn = e.target.value as SwapToken;
                 setTokenInSymbol(newTokenIn);
                 if (newTokenIn === tokenOutSymbol) {
                   setTokenOutSymbol(tokenInSymbol);
@@ -659,7 +671,7 @@ export function SwapForm({
               className="input w-24"
               disabled={isProcessing}
             >
-              {availableTokens.map(token => (
+              {swappableTokens.map(token => (
                 <option key={token} value={token}>{token}</option>
               ))}
             </select>
@@ -693,7 +705,7 @@ export function SwapForm({
           {amountIn && (() => {
             const decimals = tokenInConfig?.decimals ?? 9;
             const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
-            const isBidInline = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+            const isBidInline = isBid;
             // For bid (USDC→SUI): minSize is in SUI output terms — warn using estimated output
             if (isBidInline && minSize > 1n && !isEstimating && amountOut && parseFloat(amountOut) > 0) {
               const tokenOutConfig = tokenConfig?.[tokenOutSymbol as keyof typeof tokenConfig];
@@ -765,7 +777,7 @@ export function SwapForm({
             <select
               value={tokenOutSymbol}
               onChange={(e) => {
-                const newTokenOut = e.target.value as "SUI" | "USDC" | "DBUSDC";
+                const newTokenOut = e.target.value as SwapToken;
                 setTokenOutSymbol(newTokenOut);
                 setIsTargetAmount(false);
                 if (newTokenOut === tokenInSymbol) {
@@ -775,7 +787,7 @@ export function SwapForm({
               className="input w-24"
               disabled={isProcessing}
             >
-              {availableTokens.map(token => (
+              {tokenOutOptions.map(token => (
                 <option key={token} value={token}>{token}</option>
               ))}
             </select>
