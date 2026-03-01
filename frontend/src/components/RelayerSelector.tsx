@@ -150,9 +150,6 @@ export function RelayerSelector({
               </span>
             </p>
           )}
-          <p className="text-[10px] text-gray-500 font-mono leading-relaxed">
-            <span className="text-cyber-blue">◉</span> Transactions submitted by relayer — your wallet address never touches the pool
-          </p>
         </div>
       )}
     </div>
