@@ -36,6 +36,11 @@ export function usePoolInfo(poolId: string) {
     let isCancelled = false;
 
     async function fetchPoolInfo() {
+      if (!poolId) {
+        setLoading(false);
+        return;
+      }
+
       try {
         setLoading(true);
         setError(null);

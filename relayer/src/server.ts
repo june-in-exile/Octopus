@@ -112,8 +112,9 @@ async function main(): Promise<void> {
       const txHash = await relayer.submitTransfer(parsed.data);
       res.json({ txHash });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Submission failed";
       console.error("[transfer] Submission error:", err);
-      res.status(500).json({ error: "Submission failed" });
+      res.status(500).json({ error: message });
     }
   });
 
@@ -133,8 +134,9 @@ async function main(): Promise<void> {
       const txHash = await relayer.submitUnshield(parsed.data);
       res.json({ txHash });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Submission failed";
       console.error("[unshield] Submission error:", err);
-      res.status(500).json({ error: "Submission failed" });
+      res.status(500).json({ error: message });
     }
   });
 
@@ -154,8 +156,9 @@ async function main(): Promise<void> {
       const txHash = await relayer.submitSwap(parsed.data);
       res.json({ txHash });
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Submission failed";
       console.error("[swap] Submission error:", err);
-      res.status(500).json({ error: "Submission failed" });
+      res.status(500).json({ error: message });
     }
   });
 

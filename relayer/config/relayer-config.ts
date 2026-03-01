@@ -34,7 +34,7 @@ const NETWORK_DEFAULTS: Record<Network, NetworkDefaults> = {
   mainnet: {
     rpcUrl: "https://fullnode.mainnet.sui.io",
     deepCoinType:
-      "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946501f::deep::DEEP",
+      "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946c270::deep::DEEP",
     poolEnvVars: [
       "MAINNET_SUI_POOL_ID",
       "MAINNET_USDC_POOL_ID",
@@ -103,7 +103,7 @@ export function loadNetworkConfig(network: Network): RelayerConfig {
       ...defaults.nativeTokenTypes,
       ...collectEnvValues(defaults.tokenTypeEnvVars),
     ],
-    deepCoinType: defaults.deepCoinType,
+    deepCoinType: process.env[`${networkKey}_DEEP_TYPE`] ?? defaults.deepCoinType,
     estimatedDeepFee: 10_000n,
     allowedPools: new Set(collectEnvValues(defaults.poolEnvVars)),
     allowedDeepbookPools: new Set(collectEnvValues(defaults.deepbookPoolEnvVars)),
