@@ -1,26 +1,86 @@
 #!/usr/bin/env bash
 # sync-vercel-env.sh
-# Deletes all existing Vercel env vars across all environments and re-uploads from a local .env file.
+# Deletes all existing Vercel env vars across specified environments and re-uploads from a local .env file.
 #
 # Usage:
-#   ./sync-vercel-env.sh                    # defaults to frontend/.env
-#   ./sync-vercel-env.sh frontend/.env.local
+#   ./sync-vercel-env.sh                              # defaults to frontend/.env, all environments
+#   ./sync-vercel-env.sh frontend/.env.local          # custom env file, all environments
+#   ./sync-vercel-env.sh --env prod                   # production only
+#   ./sync-vercel-env.sh --env preview frontend/.env  # preview only, custom file
+#   ./sync-vercel-env.sh --remove                     # remove all vars from all environments
+#   ./sync-vercel-env.sh --env dev --remove           # remove all vars from development only
+#
+# --env options:
+#   prod | production   → production only
+#   pre  | preview      → preview only
+#   dev  | development  → development only
+#   (omit)              → all three environments
+#
+# --remove: only remove vars, skip uploading
 
 set -euo pipefail
 
-ENV_FILE="${1:-frontend/.env}"
-ENVIRONMENTS=("production" "preview" "development")
+# ── Parse arguments ───────────────────────────────────────────────────────────
+ENV_FILTER=""
+ENV_FILE=""
+REMOVE_ONLY=false
 
-if [[ ! -f "$ENV_FILE" ]]; then
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      shift
+      case "${1:-}" in
+        prod|production)  ENV_FILTER="production" ;;
+        pre|preview)      ENV_FILTER="preview" ;;
+        dev|development)  ENV_FILTER="development" ;;
+        *)
+          echo "Error: unknown --env value '${1:-}'. Valid: prod, production, pre, preview, dev, development"
+          exit 1
+          ;;
+      esac
+      shift
+      ;;
+    --remove)
+      REMOVE_ONLY=true
+      shift
+      ;;
+    -*)
+      echo "Error: unknown option '$1'"
+      exit 1
+      ;;
+    *)
+      ENV_FILE="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ "$REMOVE_ONLY" == false ]]; then
+  ENV_FILE="${ENV_FILE:-frontend/.env}"
+fi
+
+if [[ -n "$ENV_FILTER" ]]; then
+  ENVIRONMENTS=("$ENV_FILTER")
+else
+  ENVIRONMENTS=("production" "preview" "development")
+fi
+
+# ── Validate ──────────────────────────────────────────────────────────────────
+if [[ "$REMOVE_ONLY" == false && ! -f "$ENV_FILE" ]]; then
   echo "Error: env file '$ENV_FILE' not found."
   exit 1
 fi
 
-echo ">>> Syncing '$ENV_FILE' to Vercel (all environments)"
+ENV_LABEL=$(IFS=', '; echo "${ENVIRONMENTS[*]}")
+if [[ "$REMOVE_ONLY" == true ]]; then
+  echo ">>> Removing all Vercel env vars ($ENV_LABEL)"
+else
+  echo ">>> Syncing '$ENV_FILE' to Vercel ($ENV_LABEL)"
+fi
 echo ""
 
-# ── 1. Delete all existing env vars across all environments ──────────────────
-echo "Step 1: Removing existing Vercel env vars from all environments..."
+# ── 1. Delete existing env vars from specified environments ───────────────────
+echo "Step 1: Removing existing Vercel env vars from: $ENV_LABEL..."
 
 EXISTING=$(vercel env ls 2>/dev/null | tail -n +3 | awk '{print $1}' | sort -u | grep -v '^$' || true)
 
@@ -37,8 +97,13 @@ fi
 
 echo ""
 
-# ── 2. Upload from .env file to all environments ─────────────────────────────
-echo "Step 2: Uploading vars from '$ENV_FILE' to all environments..."
+if [[ "$REMOVE_ONLY" == true ]]; then
+  echo "Done. All vars have been removed from Vercel ($ENV_LABEL)."
+  exit 0
+fi
+
+# ── 2. Upload from .env file to specified environments ────────────────────────
+echo "Step 2: Uploading vars from '$ENV_FILE' to: $ENV_LABEL..."
 
 while IFS='=' read -r key value || [[ -n "$key" ]]; do
   # Skip comments and blank lines
@@ -66,4 +131,4 @@ while IFS='=' read -r key value || [[ -n "$key" ]]; do
 done < "$ENV_FILE"
 
 echo ""
-echo "Done. All vars from '$ENV_FILE' have been synced to Vercel (production, preview, development)."
+echo "Done. All vars from '$ENV_FILE' have been synced to Vercel ($ENV_LABEL)."
