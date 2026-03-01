@@ -19,6 +19,7 @@ import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
+import { NoteBalanceDisplay } from "@/components/NoteBalanceDisplay";
 import { RecipientInput } from "@/components/RecipientInput";
 import { RelayerSelector, type RelayerStatus } from "@/components/RelayerSelector";
 import {
@@ -238,22 +239,13 @@ export function TransferForm({
             disabled={isProcessing}
             onMax={() => setAmount((Number(maxAmount) / 10 ** tokenConfig.decimals).toFixed(tokenConfig.decimals))}
           />
-          <p className="mt-2 text-[10px] text-gray-500 font-mono">
-            {notesLoading ? (
-              <>LOADING NOTES...</>
-            ) : notes.length > 0 ? (
-              <>
-                TOTAL: {formatTokenAmount(maxAmount, tokenConfig.decimals)}
-                {notes.filter((n: OwnedNote) => !n.spent).length > 1 && (
-                  <span className="text-gray-600">
-                    {" "}// {notes.filter((n: OwnedNote) => !n.spent).length} NOTES
-                  </span>
-                )}
-              </>
-            ) : (
-              <>NO NOTES // Shield tokens first</>
-            )}
-          </p>
+          <NoteBalanceDisplay
+            loading={notesLoading}
+            noteCount={notes.filter((n) => !n.spent).length}
+            total={maxAmount}
+            decimals={tokenConfig.decimals}
+            tokenSymbol={tokenConfig.symbol}
+          />
         </div>
 
         {/* Recipient Profile Input */}
@@ -261,13 +253,6 @@ export function TransferForm({
           onRecipientChange={setRecipientProfile}
           disabled={isProcessing}
         />
-
-        {/* Note Selection Info */}
-        <div className="p-3 border border-cyber-blue/30 bg-cyber-blue/10 clip-corner">
-          <p className="text-[10px] text-gray-300 font-mono leading-relaxed">
-            <span className="text-cyber-blue font-bold">AUTO SELECT:</span> SDK automatically selects notes to cover transfer amount
-          </p>
-        </div>
 
         {/* Relayer Selector */}
         <RelayerSelector

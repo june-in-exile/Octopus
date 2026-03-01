@@ -27,6 +27,7 @@ import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
+import { NoteBalanceDisplay } from "@/components/NoteBalanceDisplay";
 import {
   createSwapOutputs,
   generateSwapProof,
@@ -639,31 +640,6 @@ export function SwapForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {/* DEEP Token Status */}
-      <div className={cn(
-        "p-3 border clip-corner",
-        selectedDeepCoin
-          ? "border-green-600/40 bg-green-900/20"
-          : "border-yellow-600/40 bg-yellow-900/20"
-      )}>
-        <div className="flex items-start gap-2">
-          <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
-            {selectedDeepCoin ? "✓" : "!"}
-          </span>
-          <div className="flex-1">
-            <p className={cn(
-              "text-xs font-mono leading-relaxed",
-              selectedDeepCoin ? "text-green-400" : "text-yellow-400"
-            )}>
-              {selectedDeepCoin
-                ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
-                : "DEEP tokens required for swap fees. Please acquire DEEP tokens."
-              }
-            </p>
-          </div>
-        </div>
-      </div>
-
       <div className="space-y-4">
         {/* Token In */}
         <div>
@@ -700,6 +676,20 @@ export function SwapForm({
             disabled={isEstimatingReverse || isProcessing}
             onMax={handleMaxIn}
           />
+          {(() => {
+            const tokenNotes = unspentNotes.filter(
+              (n) => tokenInConfig && n.note.token === getTokenIdFromCoinType(tokenInConfig.type)
+            );
+            return (
+              <NoteBalanceDisplay
+                loading={_notesLoading}
+                noteCount={tokenNotes.length}
+                total={maxAmountIn}
+                decimals={tokenInConfig?.decimals ?? 9}
+                tokenSymbol={tokenInSymbol}
+              />
+            );
+          })()}
           {amountIn && (() => {
             const decimals = tokenInConfig?.decimals ?? 9;
             const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
@@ -743,7 +733,7 @@ export function SwapForm({
         </div>
 
         {/* Swap Direction Button */}
-        <div className="flex justify-center">
+        <div className="relative flex justify-center">
           <button
             type="button"
             onClick={handleSwitchTokens}
@@ -754,6 +744,16 @@ export function SwapForm({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
             </svg>
           </button>
+          {!useRelayer && (
+            <p className={cn(
+              "absolute right-0 bottom-0 text-[10px] font-mono",
+              selectedDeepCoin ? "text-gray-500" : "text-yellow-600"
+            )}>
+              {selectedDeepCoin
+                ? `DEEP: ${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))}`
+                : "⚠ DEEP required"}
+            </p>
+          )}
         </div>
 
         {/* Token Out */}
