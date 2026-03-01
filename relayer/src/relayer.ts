@@ -98,22 +98,11 @@ export class Relayer {
       );
     }
 
-    const hasEnoughDeep = deepCoins.data.some(
-      (c) => BigInt(c.balance) >= this.config.estimatedDeepFee,
-    );
-    if (!hasEnoughDeep) {
-      throw new Error(
-        `Relayer has insufficient DEEP balance. Minimum required: ${this.config.estimatedDeepFee}`,
-      );
-    }
-
     const tx = new Transaction();
 
-    // Split the estimated DEEP fee from the relayer's coin
-    const [deepCoin] = tx.splitCoins(
-      tx.object(deepCoins.data[0].coinObjectId),
-      [tx.pure.u64(this.config.estimatedDeepFee)],
-    );
+    // Pass the full DEEP coin so DeepBook has enough to cover the actual fee.
+    // Unused DEEP is returned to the relayer by the contract after the swap.
+    const deepCoinId = deepCoins.data[0].coinObjectId;
 
     // isBid=false → ask (base→quote): pool::swap<TokenIn, TokenOut>
     // isBid=true  → bid (quote→base): pool::swap_bid<TokenOut, TokenIn> (type args reversed)
@@ -134,7 +123,7 @@ export class Relayer {
         tx.pure.vector("u8", Array.from(hexToBytes(req.proofBytes))),
         tx.pure.vector("u8", Array.from(hexToBytes(req.publicInputsBytes))),
         tx.pure(hexToBytes(req.nullifiers)),
-        deepCoin,
+        tx.object(deepCoinId),
         tx.object(CLOCK_OBJECT_ID),
         tx.pure.vector("u8", Array.from(hexToBytes(req.encryptedOutputNote))),
         tx.pure.vector("u8", Array.from(hexToBytes(req.encryptedChangeNote))),
