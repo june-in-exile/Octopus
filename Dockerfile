@@ -32,5 +32,6 @@ ENV RELAYER_PORT=8080
 EXPOSE 8080
 
 # 6. Start the Relayer using the compiled distribution
+# Based on tsconfig.json, src/server.ts is compiled to dist/src/server.js
 WORKDIR /app/relayer
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/src/server.js"]
