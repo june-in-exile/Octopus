@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
@@ -104,11 +104,11 @@ export function SwapForm({
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
-  const handleRelayerToggle = (enabled: boolean, url: string | null, status: RelayerStatus) => {
+  const handleRelayerToggle = useCallback((enabled: boolean, url: string | null, status: RelayerStatus) => {
     setUseRelayer(enabled);
     setRelayerUrl(url);
     setRelayerStatus(status);
-  };
+  }, []);
 
   const isProcessing = state !== "idle" && state !== "error" && state !== "success";
 
@@ -427,8 +427,8 @@ export function SwapForm({
     }
 
     // lotSize is in base asset (SUI) units — only align for ask (SUI→USDC), not bid (USDC→SUI)
-    const isBidSubmit = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
-    const amountInBase = (!isBidSubmit && lotSize > 1n)
+    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    const amountInBase = (!isBid && lotSize > 1n)
       ? (amountInSmallest / lotSize) * lotSize
       : amountInSmallest;
     const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
@@ -436,7 +436,6 @@ export function SwapForm({
     const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
 
     // Validate minimum order size (minSize is always in base asset / SUI units)
-    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
     if (!isBid) {
       // Ask (SUI→USDC): amountIn is base asset, compare directly
       if (amountInSmallest < minSize) {
@@ -460,12 +459,11 @@ export function SwapForm({
       return;
     }
 
-    try {
-      if (useRelayer && relayerUrl) {
-        const client = new RelayerClient({ url: relayerUrl, network: network === "mainnet" ? "mainnet" : "testnet" });
-        await client.checkHealth();
-      }
+    const relayerClient = useRelayer && relayerUrl
+      ? new RelayerClient({ url: relayerUrl, network: network === "mainnet" ? "mainnet" : "testnet" })
+      : null;
 
+    try {
       // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
@@ -529,12 +527,9 @@ export function SwapForm({
       // 6. Build and submit transaction
       setState("submitting");
 
-      // isBid = tokenIn is the quote token (e.g. DBUSDC → SUI)
-      const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
       let txDigest: string;
 
-      if (useRelayer && relayerUrl) {
-        const relayerClient = new RelayerClient({ url: relayerUrl, network: network === "mainnet" ? "mainnet" : "testnet" });
+      if (relayerClient) {
         txDigest = await relayerClient.submitSwap({
           poolInId: tokenInConfig.poolId,
           poolOutId: tokenOutConfig.poolId,

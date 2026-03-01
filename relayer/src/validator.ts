@@ -2,8 +2,9 @@ import { z } from "zod";
 
 const hexString = z
   .string()
-  .min(1)
-  .regex(/^[0-9a-fA-F]+$/, "Must be a non-empty hex string");
+  .min(2)
+  .regex(/^[0-9a-fA-F]+$/, "Must be a non-empty hex string")
+  .refine((s) => s.length % 2 === 0, "Hex string must have even length");
 
 const network = z.enum(["mainnet", "testnet"]);
 

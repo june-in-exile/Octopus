@@ -11,20 +11,63 @@ export interface RelayerConfig {
   supportedTokens: string[];
   deepCoinType: string;
   estimatedDeepFee: bigint;
+  /** Octopus pool object IDs this relayer will interact with. Empty = no restriction. */
+  allowedPools: Set<string>;
+  /** DeepBook pool object IDs this relayer will route swaps through. Empty = no restriction. */
+  allowedDeepbookPools: Set<string>;
 }
 
-const NETWORK_DEFAULTS: Record<Network, { rpcUrl: string; deepCoinType: string }> = {
+interface NetworkDefaults {
+  rpcUrl: string;
+  deepCoinType: string;
+  /** Env var names whose values are Octopus pool object IDs */
+  poolEnvVars: string[];
+  /** Env var names whose values are DeepBook pool object IDs */
+  deepbookPoolEnvVars: string[];
+  /** Env var names whose values are token type strings */
+  tokenTypeEnvVars: string[];
+  /** Native token types that are always supported (no env var needed) */
+  nativeTokenTypes: string[];
+}
+
+const NETWORK_DEFAULTS: Record<Network, NetworkDefaults> = {
   mainnet: {
     rpcUrl: "https://fullnode.mainnet.sui.io",
     deepCoinType:
       "0xdeeb7a4662eec9f2f3def03fb937a663dddaa2e215b8078a284d026b7946501f::deep::DEEP",
+    poolEnvVars: [
+      "MAINNET_SUI_POOL_ID",
+      "MAINNET_USDC_POOL_ID",
+    ],
+    deepbookPoolEnvVars: ["MAINNET_DEEPBOOK_SUI_USDC"],
+    tokenTypeEnvVars: [
+      "MAINNET_USDC_TYPE",
+      "MAINNET_DEEP_TYPE",
+    ],
+    nativeTokenTypes: ["0x2::sui::SUI"],
   },
   testnet: {
     rpcUrl: "https://fullnode.testnet.sui.io",
     deepCoinType:
       "0x36dbef866a1d62bf7328989a10fb2f07d769f4ee587c0de4a0a256e57e0a58a8::deep::DEEP",
+    poolEnvVars: [
+      "TESTNET_SUI_POOL_ID",
+      "TESTNET_USDC_POOL_ID",
+      "TESTNET_DBUSDC_POOL_ID",
+    ],
+    deepbookPoolEnvVars: ["TESTNET_DEEPBOOK_SUI_DBUSDC"],
+    tokenTypeEnvVars: [
+      "TESTNET_USDC_TYPE",
+      "TESTNET_DBUSDC_TYPE",
+      "TESTNET_DEEP_TYPE",
+    ],
+    nativeTokenTypes: ["0x2::sui::SUI"],
   },
 };
+
+function collectEnvValues(envVars: string[]): string[] {
+  return envVars.map((v) => process.env[v]).filter((v): v is string => !!v);
+}
 
 function loadKeypair(network: Network): Ed25519Keypair {
   const networkKey = network.toUpperCase();
@@ -43,10 +86,10 @@ export function loadNetworkConfig(network: Network): RelayerConfig {
 
   const rpcUrl = process.env[`${networkKey}_RPC_URL`] ?? defaults.rpcUrl;
 
-  const packageId = process.env[`NEXT_PUBLIC_${networkKey}_PACKAGE_ID`];
+  const packageId = process.env[`${networkKey}_PACKAGE_ID`];
   if (!packageId) {
     throw new Error(
-      `NEXT_PUBLIC_${networkKey}_PACKAGE_ID environment variable is not set`,
+      `${networkKey}_PACKAGE_ID environment variable is not set`,
     );
   }
 
@@ -56,15 +99,32 @@ export function loadNetworkConfig(network: Network): RelayerConfig {
     packageId,
     keypair: loadKeypair(network),
     feePremium: 0,
-    supportedTokens: [],
+    supportedTokens: [
+      ...defaults.nativeTokenTypes,
+      ...collectEnvValues(defaults.tokenTypeEnvVars),
+    ],
     deepCoinType: defaults.deepCoinType,
     estimatedDeepFee: 10_000n,
+    allowedPools: new Set(collectEnvValues(defaults.poolEnvVars)),
+    allowedDeepbookPools: new Set(collectEnvValues(defaults.deepbookPoolEnvVars)),
   };
 }
 
-export function loadAllConfigs(): Record<Network, RelayerConfig> {
-  return {
-    mainnet: loadNetworkConfig("mainnet"),
-    testnet: loadNetworkConfig("testnet"),
-  };
+export function loadAllConfigs(): Partial<Record<Network, RelayerConfig>> {
+  const configs: Partial<Record<Network, RelayerConfig>> = {};
+  for (const network of ["mainnet", "testnet"] as Network[]) {
+    try {
+      configs[network] = loadNetworkConfig(network);
+    } catch (err) {
+      console.warn(
+        `[relayer] Skipping ${network}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+  if (Object.keys(configs).length === 0) {
+    throw new Error(
+      "No networks configured. Set at least one network's RELAYER_PRIVATE_KEY and PACKAGE_ID.",
+    );
+  }
+  return configs;
 }

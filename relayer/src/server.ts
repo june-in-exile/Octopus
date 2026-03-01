@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { loadAllConfigs } from "../config/relayer-config.js";
+import type { Network } from "../config/relayer-config.js";
 import { Relayer } from "./relayer.js";
 import {
   TransferSubmitSchema,
@@ -10,19 +11,35 @@ import {
   SwapSubmitSchema,
 } from "./validator.js";
 
-const RELAYER_PORT = parseInt("3001", 10);
+const RELAYER_PORT = parseInt(process.env.RELAYER_PORT ?? "3001", 10)
 
 async function main(): Promise<void> {
   const configs = loadAllConfigs();
-  const relayers = {
-    mainnet: new Relayer(configs.mainnet),
-    testnet: new Relayer(configs.testnet),
-  };
+  const relayers: Partial<Record<Network, Relayer>> = {};
+  for (const [network, config] of Object.entries(configs) as [Network, (typeof configs)[Network]][]) {
+    if (config) relayers[network] = new Relayer(config);
+  }
 
   const app = express();
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:3000")
+    .split(",")
+    .map((o) => o.trim());
+
   app.use(express.json());
   app.use(helmet());
-  app.use(cors());
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin) {
+          return callback(null, process.env.NODE_ENV !== "production");
+        }
+        if (allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        callback(new Error(`CORS: origin ${origin} not allowed`));
+      },
+    })
+  );
 
   // Rate limiters
   const submitLimiter = rateLimit({
@@ -42,20 +59,19 @@ async function main(): Promise<void> {
 
   // GET /relayer-info
   app.get("/relayer-info", infoLimiter, (_req, res) => {
-    res.json({
-      mainnet: {
-        address: relayers.mainnet.address,
-        feePremium: configs.mainnet.feePremium,
-        supportedTokens: configs.mainnet.supportedTokens,
-        uptime: relayers.mainnet.uptime,
-      },
-      testnet: {
-        address: relayers.testnet.address,
-        feePremium: configs.testnet.feePremium,
-        supportedTokens: configs.testnet.supportedTokens,
-        uptime: relayers.testnet.uptime,
-      },
-    });
+    const info: Record<string, unknown> = {};
+    for (const [network, relayer] of Object.entries(relayers) as [Network, Relayer][]) {
+      const config = configs[network];
+      if (relayer && config) {
+        info[network] = {
+          address: relayer.address,
+          feePremium: config.feePremium,
+          supportedTokens: config.supportedTokens,
+          uptime: relayer.uptime,
+        };
+      }
+    }
+    res.json(info);
   });
 
   // GET /fee-quote?network=mainnet|testnet
@@ -66,6 +82,10 @@ async function main(): Promise<void> {
       return;
     }
     const config = configs[network];
+    if (!config) {
+      res.status(503).json({ error: `${network} is not configured on this relayer` });
+      return;
+    }
     res.json({
       network,
       baseFee: 0,
@@ -82,13 +102,17 @@ async function main(): Promise<void> {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+    const relayer = relayers[parsed.data.network];
+    if (!relayer) {
+      res.status(503).json({ error: `${parsed.data.network} is not configured on this relayer` });
+      return;
+    }
     try {
-      const txHash = await relayers[parsed.data.network].submitTransfer(parsed.data);
+      const txHash = await relayer.submitTransfer(parsed.data);
       res.json({ txHash });
     } catch (err) {
-      res
-        .status(500)
-        .json({ error: err instanceof Error ? err.message : "Submission failed" });
+      console.error("[transfer] Submission error:", err);
+      res.status(500).json({ error: "Submission failed" });
     }
   });
 
@@ -99,13 +123,17 @@ async function main(): Promise<void> {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+    const relayer = relayers[parsed.data.network];
+    if (!relayer) {
+      res.status(503).json({ error: `${parsed.data.network} is not configured on this relayer` });
+      return;
+    }
     try {
-      const txHash = await relayers[parsed.data.network].submitUnshield(parsed.data);
+      const txHash = await relayer.submitUnshield(parsed.data);
       res.json({ txHash });
     } catch (err) {
-      res
-        .status(500)
-        .json({ error: err instanceof Error ? err.message : "Submission failed" });
+      console.error("[unshield] Submission error:", err);
+      res.status(500).json({ error: "Submission failed" });
     }
   });
 
@@ -116,20 +144,27 @@ async function main(): Promise<void> {
       res.status(400).json({ error: parsed.error.message });
       return;
     }
+    const relayer = relayers[parsed.data.network];
+    if (!relayer) {
+      res.status(503).json({ error: `${parsed.data.network} is not configured on this relayer` });
+      return;
+    }
     try {
-      const txHash = await relayers[parsed.data.network].submitSwap(parsed.data);
+      const txHash = await relayer.submitSwap(parsed.data);
       res.json({ txHash });
     } catch (err) {
-      res
-        .status(500)
-        .json({ error: err instanceof Error ? err.message : "Submission failed" });
+      console.error("[swap] Submission error:", err);
+      res.status(500).json({ error: "Submission failed" });
     }
   });
 
+  const activeNetworks = Object.keys(relayers).join(", ");
   app.listen(RELAYER_PORT, () => {
     console.log(`Relayer running on port ${RELAYER_PORT}`);
-    console.log(`Mainnet relayer address: ${relayers.mainnet.address}`);
-    console.log(`Testnet relayer address: ${relayers.testnet.address}`);
+    console.log(`Active networks: ${activeNetworks}`);
+    for (const [network, relayer] of Object.entries(relayers) as [Network, Relayer][]) {
+      console.log(`  ${network} relayer address: ${relayer.address}`);
+    }
   });
 }
 

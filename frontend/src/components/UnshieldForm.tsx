@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
@@ -81,11 +81,11 @@ export function UnshieldForm({
     }
   };
 
-  const handleRelayerToggle = (enabled: boolean, url: string | null, status: RelayerStatus) => {
+  const handleRelayerToggle = useCallback((enabled: boolean, url: string | null, status: RelayerStatus) => {
     setUseRelayer(enabled);
     setRelayerUrl(url);
     setRelayerStatus(status);
-  };
+  }, []);
 
   // Auto-fill recipient with connected wallet
   const handleUseMyAddress = () => {
@@ -125,12 +125,11 @@ export function UnshieldForm({
       return;
     }
 
-    try {
-      if (useRelayer && relayerUrl) {
-        const client = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
-        await client.checkHealth();
-      }
+    const relayerClient = useRelayer && relayerUrl
+      ? new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" })
+      : null;
 
+    try {
       // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
@@ -171,8 +170,7 @@ export function UnshieldForm({
       setState("submitting");
       let txDigest: string;
 
-      if (useRelayer && relayerUrl) {
-        const relayerClient = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
+      if (relayerClient) {
         txDigest = await relayerClient.submitUnshield({
           poolId: tokenConfig.poolId,
           tokenType: tokenConfig.type,
@@ -366,11 +364,6 @@ export function UnshieldForm({
           "btn-primary w-full",
           isProcessing && "cursor-wait opacity-70"
         )}
-        style={{
-          backgroundColor: 'transparent',
-          color: '#00d9ff',
-          borderColor: '#00d9ff',
-        }}
       >
         {isProcessing ? "◉ PROCESSING..." : "▼ UNSHIELD TOKENS"}
       </button>

@@ -103,11 +103,11 @@ This generates the SDK TypeScript library that the frontend depends on.
 
 ### 4. Run Frontend (Web UI)
 
-> **Environment Setup**: The frontend reads contract addresses from a `.env.local` file.
-> Create a symlink to the root `.env` before running:
+> **Environment Setup**: The frontend reads contract addresses from `frontend/.env`.
+> Copy the example file and fill in any values you need to override:
 >
 > ```bash
-> ln -s ../.env frontend/.env.local
+> cp frontend/.env.example frontend/.env
 > ```
 
 ```bash
@@ -136,14 +136,19 @@ The relayer submits transactions on behalf of users so the gas payer address is 
 ```bash
 cd relayer
 npm install
+cp relayer/.env.example relayer/.env
 ```
 
-Configure environment variables (copy from `.env.example`):
+Configure environment variables in `relayer/.env`:
 
 ```bash
 # Per-network Ed25519 keypairs — fund these addresses with SUI (and DEEP for swaps)
 MAINNET_RELAYER_PRIVATE_KEY=
 TESTNET_RELAYER_PRIVATE_KEY=
+
+# Allowed CORS origins (comma-separated). Only these origins may call the relayer from a browser.
+# In production, requests without a matching Origin header are also blocked.
+ALLOWED_ORIGINS=http://localhost:3000,https://www.sui-octopus.com/
 ```
 
 **Run:**

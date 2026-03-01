@@ -41,7 +41,7 @@ export function RelayerSelector({
     if (savedEnabled) {
       onToggle(true, savedUrl, "checking");
     }
-  }, [network]);
+  }, [network, onToggle]);
 
   const checkRelayerStatus = useCallback(async (relayerUrl: string) => {
     setStatus("checking");
@@ -54,7 +54,7 @@ export function RelayerSelector({
     } catch {
       setStatus("offline");
     }
-  }, []);
+  }, [network]);
 
   // Check status when enabled or URL changes
   useEffect(() => {
@@ -71,7 +71,7 @@ export function RelayerSelector({
     if (enabled) {
       onToggle(true, url, status);
     }
-  }, [status]);
+  }, [enabled, url, status, onToggle]);
 
   const handleToggle = (checked: boolean) => {
     setEnabled(checked);

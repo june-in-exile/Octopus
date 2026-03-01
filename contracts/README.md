@@ -82,7 +82,7 @@ cd ../../contracts/scripts
 ./create_pool.sh --coin usdc --network mainnet # USDC, mainnet
 ```
 
-All scripts auto-update the relevant `NEXT_PUBLIC_*` vars in `.env`.
+All scripts auto-update the relevant `NEXT_PUBLIC_*` vars in `frontend/.env` and the corresponding unprefixed vars in `relayer/.env` (if present).
 
 ### Scripts Reference
 
@@ -90,7 +90,7 @@ All scripts auto-update the relevant `NEXT_PUBLIC_*` vars in `.env`.
 | ------------------- | ------------------------ | --------------------------------------------------------------- |
 | `deploy_package.sh` | Publish Move package     | `./deploy_package.sh [--network testnet\|mainnet]`              |
 | `create_pool.sh`    | Create privacy pool(s)   | `./create_pool.sh [--coin sui\|usdc\|both] [--network ...]`     |
-| `update_vk.sh`      | Update verification keys | `./update_vk.sh [unshield\|transfer\|swap] [sui\|usdc\|both]`  |
+| `update_vk.sh`      | Update verification keys | `./update_vk.sh [unshield\|transfer\|swap] [sui\|usdc\|both]`   |
 
 ## Updating Verification Keys
 

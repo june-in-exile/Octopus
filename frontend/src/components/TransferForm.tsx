@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
@@ -85,11 +85,11 @@ export function TransferForm({
     }
   };
 
-  const handleRelayerToggle = (enabled: boolean, url: string | null, status: RelayerStatus) => {
+  const handleRelayerToggle = useCallback((enabled: boolean, url: string | null, status: RelayerStatus) => {
     setUseRelayer(enabled);
     setRelayerUrl(url);
     setRelayerStatus(status);
-  };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,12 +122,11 @@ export function TransferForm({
       return;
     }
 
-    try {
-      if (useRelayer && relayerUrl) {
-        const client = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
-        await client.checkHealth();
-      }
+    const relayerClient = useRelayer && relayerUrl
+      ? new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" })
+      : null;
 
+    try {
       // 1. Select notes and fetch proofs
       setState("fetching-merkle-proofs");
       const notesWithProofs = await selectNotesWithProofs(
@@ -174,8 +173,7 @@ export function TransferForm({
       setState("submitting");
       let txDigest: string;
 
-      if (useRelayer && relayerUrl) {
-        const relayerClient = new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" });
+      if (relayerClient) {
         txDigest = await relayerClient.submitTransfer({
           poolId: tokenConfig.poolId,
           tokenType: tokenConfig.type,
@@ -342,11 +340,6 @@ export function TransferForm({
           "btn-primary w-full",
           isProcessing && "cursor-wait opacity-70"
         )}
-        style={{
-          backgroundColor: 'transparent',
-          color: '#00d9ff',
-          borderColor: '#00d9ff',
-        }}
       >
         {isProcessing ? "◉ PROCESSING..." : "⇄ PRIVATE TRANSFER"}
       </button>

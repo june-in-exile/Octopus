@@ -70,7 +70,7 @@ export interface RelayerInfo {
 }
 
 export class RelayerClient {
-  constructor(private readonly config: RelayerConfig) {}
+  constructor(private readonly config: RelayerConfig) { }
 
   async getRelayerInfo(): Promise<RelayerInfo> {
     const res = await fetch(`${this.config.url}/relayer-info`);
@@ -96,11 +96,8 @@ export class RelayerClient {
     }
   }
 
-  async getFeeQuote(
-    type: "transfer" | "unshield" | "swap",
-    tokenType: string,
-  ): Promise<FeeQuote> {
-    const params = new URLSearchParams({ type, tokenType, network: this.config.network });
+  async getFeeQuote(): Promise<FeeQuote> {
+    const params = new URLSearchParams({ network: this.config.network });
     const res = await fetch(`${this.config.url}/fee-quote?${params}`);
     if (!res.ok) {
       throw new Error(`Fee quote request failed: ${res.statusText}`);

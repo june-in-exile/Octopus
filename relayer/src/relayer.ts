@@ -11,6 +11,9 @@ import type {
 const CLOCK_OBJECT_ID = "0x6";
 
 function hexToBytes(hex: string): Uint8Array {
+  if (hex.length % 2 !== 0) {
+    throw new Error(`Invalid hex string: odd length (${hex.length})`);
+  }
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
@@ -35,7 +38,28 @@ export class Relayer {
     return Math.floor((Date.now() - this.startTime) / 1000);
   }
 
+  private requireInSet(set: Set<string>, value: string, label: string): void {
+    if (set.size > 0 && !set.has(value)) {
+      throw new Error(`${label} is not in the allowed list`);
+    }
+  }
+
+  private validatePool(poolId: string): void {
+    this.requireInSet(this.config.allowedPools, poolId, "Pool ID");
+  }
+
+  private validateTokenType(tokenType: string): void {
+    this.requireInSet(new Set(this.config.supportedTokens), tokenType, "Token type");
+  }
+
+  private validateDeepbookPool(deepbookPoolId: string): void {
+    this.requireInSet(this.config.allowedDeepbookPools, deepbookPoolId, "DeepBook pool ID");
+  }
+
   async submitTransfer(req: TransferSubmitRequest): Promise<string> {
+    this.validatePool(req.poolId);
+    this.validateTokenType(req.tokenType);
+
     const tx = new Transaction();
 
     tx.moveCall({
@@ -61,6 +85,9 @@ export class Relayer {
   }
 
   async submitUnshield(req: UnshieldSubmitRequest): Promise<string> {
+    this.validatePool(req.poolId);
+    this.validateTokenType(req.tokenType);
+
     const tx = new Transaction();
 
     tx.moveCall({
@@ -87,6 +114,12 @@ export class Relayer {
   }
 
   async submitSwap(req: SwapSubmitRequest): Promise<string> {
+    this.validatePool(req.poolInId);
+    this.validatePool(req.poolOutId);
+    this.validateDeepbookPool(req.deepbookPoolId);
+    this.validateTokenType(req.tokenTypeIn);
+    this.validateTokenType(req.tokenTypeOut);
+
     const deepCoins = await this.client.getCoins({
       owner: this.address,
       coinType: this.config.deepCoinType,
@@ -102,7 +135,9 @@ export class Relayer {
 
     // Pass the full DEEP coin so DeepBook has enough to cover the actual fee.
     // Unused DEEP is returned to the relayer by the contract after the swap.
-    const deepCoinId = deepCoins.data[0].coinObjectId;
+    const deepCoinId = deepCoins.data.reduce((max, coin) =>
+      BigInt(coin.balance) > BigInt(max.balance) ? coin : max
+    ).coinObjectId;
 
     // isBid=false → ask (base→quote): pool::swap<TokenIn, TokenOut>
     // isBid=true  → bid (quote→base): pool::swap_bid<TokenOut, TokenIn> (type args reversed)
