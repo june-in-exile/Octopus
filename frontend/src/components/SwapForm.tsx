@@ -13,7 +13,6 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   cn,
   parseTokenAmount,
-  formatSui,
   getTokenIdFromCoinType,
   formatTokenAmount,
   truncateAddress,
@@ -138,13 +137,19 @@ export function SwapForm({
     }
   );
 
-  // Auto-select DEEP coin with sufficient balance
+  // Auto-select the DEEP coin with the largest balance
   useEffect(() => {
     if (deepBalance?.data) {
-      const adequateCoin = deepBalance.data.find(
-        (coin) => BigInt(coin.balance) >= ESTIMATED_DEEP_FEE
+      const best = deepBalance.data.reduce<(typeof deepBalance.data)[0] | null>(
+        (max, coin) =>
+          !max || BigInt(coin.balance) > BigInt(max.balance) ? coin : max,
+        null
       );
-      setSelectedDeepCoin(adequateCoin?.coinObjectId || null);
+      setSelectedDeepCoin(
+        best && BigInt(best.balance) >= ESTIMATED_DEEP_FEE
+          ? best.coinObjectId
+          : null
+      );
     } else {
       setSelectedDeepCoin(null);
     }
@@ -750,8 +755,8 @@ export function SwapForm({
               selectedDeepCoin ? "text-gray-500" : "text-yellow-600"
             )}>
               {selectedDeepCoin
-                ? `DEEP: ${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))}`
-                : "⚠ DEEP required"}
+                ? `DEEP: ${formatTokenAmount(deepBalance?.data?.reduce((sum, c) => sum + BigInt(c.balance), 0n) ?? 0n, 6)}`
+                : "⚠ No DEEP (higher fees)"}
             </p>
           )}
         </div>
