@@ -4,22 +4,21 @@ FROM node:18-slim
 # Set working directory
 WORKDIR /app
 
-# 1. Copy package files first to leverage Docker layer caching
-# Note: This assumes context is the Project Root (/)
+# 1. Copy root and subdirectory package files to leverage caching
 COPY package*.json ./
 COPY sdk/package*.json ./sdk/
 COPY relayer/package*.json ./relayer/
 
-# 2. Install dependencies for both SDK and Relayer
+# 2. Install dependencies for everything
 RUN npm install
 RUN cd sdk && npm install
 RUN cd relayer && npm install
 
-# 3. Copy ALL source code from the build context
-# (This includes sdk/ and relayer/ if the context is /)
-COPY . .
+# 3. Copy source code for SDK and Relayer
+COPY sdk ./sdk
+COPY relayer ./relayer
 
-# 4. Build SDK (required as a dependency for the relayer)
+# 4. Build SDK (required for the relayer)
 RUN cd sdk && npm run build
 
 # 5. Build Relayer
