@@ -46,14 +46,14 @@ fi
 
 NETWORK_UPPER=$(echo "$NETWORK" | tr '[:lower:]' '[:upper:]')
 
-# Determine .env file path
+# Determine .env file path (frontend env — contains NEXT_PUBLIC_* variables)
 ENV_FILE=""
-if [ -f "../../.env" ]; then
-    ENV_FILE="../../.env"
-elif [ -f "../.env" ]; then
-    ENV_FILE="../.env"
+if [ -f "../../frontend/.env.local" ]; then
+    ENV_FILE="../../frontend/.env.local"
+elif [ -f "../../frontend/.env" ]; then
+    ENV_FILE="../../frontend/.env"
 else
-    echo "Error: No .env file found"
+    echo "Error: No frontend .env file found (expected frontend/.env.local or frontend/.env)"
     exit 1
 fi
 

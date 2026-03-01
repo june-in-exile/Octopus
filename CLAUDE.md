@@ -4,13 +4,11 @@ This document provides a comprehensive overview of the Octopus project, its arch
 
 Before we dive into the formal project description, let’s establish a few ground rules:
 
-Start every interaction with 'June' (the username) and reply in Mandarin. For example: '嗨 June, 工作已完成...', '是的, June, 你的理解正確. ...'. But write the comments and documents in English.
-
-Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
-
-When modifying features, do not leave deprecated versions; remove them directly.
-
-Sync all modifications with the existing documentation. If a change conflicts with files like README.md, CLAUDE.md, or GEMINI.md, ensure the documentation is updated accordingly.
+1. 所有回覆儘量使用中文
+2. Start every interaction with 'June' (the username) and reply in Mandarin. For example: '嗨 June, 工作已完成...', '是的, June, 你的理解正確. ...'. But write the comments and documents in English.
+3. Before writing any code, please check if the existing code can be used directly or refactored for the task, rather than jumping straight into writing new code every time.
+4. When modifying features, do not leave deprecated or backward-compatible versions; remove them directly.
+5. Sync all modifications with the existing documentation. If a change conflicts with files like README.md, CLAUDE.md, or GEMINI.md, ensure the documentation is updated accordingly.
 
 ## 1. Project Overview
 

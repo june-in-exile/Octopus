@@ -27,19 +27,29 @@ echo "Network: $NETWORK"
 # Change to contracts directory (parent of scripts/)
 cd "$(dirname "$0")/.."
 
-# Determine .env file path
+# Determine frontend .env file path (contains NEXT_PUBLIC_* variables)
 ENV_FILE=""
-if [ -f "../.env" ]; then
-    ENV_FILE="../.env"
-elif [ -f "../../.env" ]; then
-    ENV_FILE="../../.env"
+if [ -f "../frontend/.env.local" ]; then
+    ENV_FILE="../frontend/.env.local"
+elif [ -f "../frontend/.env" ]; then
+    ENV_FILE="../frontend/.env"
 else
     NETWORK_UPPER=$(echo "$NETWORK" | tr '[:lower:]' '[:upper:]')
-    echo "Warning: No .env file found. You'll need to manually update NEXT_PUBLIC_${NETWORK_UPPER}_PACKAGE_ID later."
+    echo "Warning: No frontend .env file found. You'll need to manually update NEXT_PUBLIC_${NETWORK_UPPER}_PACKAGE_ID later."
 fi
 
 if [ -n "$ENV_FILE" ]; then
-    echo "Using .env file: $ENV_FILE"
+    echo "Using frontend .env file: $ENV_FILE"
+fi
+
+# Determine relayer .env file path (contains server-side variables without NEXT_PUBLIC_ prefix)
+RELAYER_ENV_FILE=""
+if [ -f "../relayer/.env" ]; then
+    RELAYER_ENV_FILE="../relayer/.env"
+fi
+
+if [ -n "$RELAYER_ENV_FILE" ]; then
+    echo "Using relayer .env file: $RELAYER_ENV_FILE"
 fi
 
 echo ""
@@ -154,6 +164,16 @@ if [ -n "$ENV_FILE" ]; then
         fi
     else
         echo "⚠️  Warning: Could not extract original-id from Published.toml"
+    fi
+
+    # Sync package IDs to relayer .env
+    if [ -n "$RELAYER_ENV_FILE" ]; then
+        update_env_var "${NETWORK_UPPER}_PACKAGE_ID" "$NEXT_PUBLIC_PACKAGE_ID" "$RELAYER_ENV_FILE"
+        echo "✓ Updated ${NETWORK_UPPER}_PACKAGE_ID in relayer .env"
+        if [ -n "$ORIGINAL_PACKAGE_ID" ]; then
+            update_env_var "${NETWORK_UPPER}_ORIGINAL_PACKAGE_ID" "$ORIGINAL_PACKAGE_ID" "$RELAYER_ENV_FILE"
+            echo "✓ Updated ${NETWORK_UPPER}_ORIGINAL_PACKAGE_ID in relayer .env"
+        fi
     fi
 
     echo ""

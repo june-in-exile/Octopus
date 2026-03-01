@@ -11,7 +11,7 @@ interface NetworkConfigValue {
   usdcPoolId: string | null;
   usdcCoinType: string | null;
   graphqlUrl: string | null;
-  tokens: (Record<"SUI" | "USDC", TokenConfig> & Partial<Record<"DBUSDC", TokenConfig>>) | null;
+  tokens: (Record<"SUI" | "USDC", TokenConfig> & Partial<Record<"DBUSDC" | "DEEP", TokenConfig>>) | null;
   isConfigured: boolean;
   network: string;
 }
@@ -52,6 +52,16 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
             decimals: 6,
             poolId: (config as any).dbusdcPoolId!,
           },
+          ...((config as any).deepPoolId && config.deepCoinType
+            ? {
+                DEEP: {
+                  type: config.deepCoinType,
+                  symbol: "DEEP",
+                  decimals: 6,
+                  poolId: (config as any).deepPoolId,
+                } satisfies TokenConfig,
+              }
+            : {}),
         }
       : {
           SUI: {
@@ -66,6 +76,16 @@ export function NetworkConfigProvider({ children }: { children: ReactNode }) {
             decimals: 6,
             poolId: config.usdcPoolId!,
           },
+          ...((config as any).deepPoolId && config.deepCoinType
+            ? {
+                DEEP: {
+                  type: config.deepCoinType,
+                  symbol: "DEEP",
+                  decimals: 6,
+                  poolId: (config as any).deepPoolId,
+                } satisfies TokenConfig,
+              }
+            : {}),
         }
     : null;
 

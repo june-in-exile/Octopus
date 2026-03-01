@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
@@ -13,7 +13,6 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   cn,
   parseTokenAmount,
-  formatSui,
   getTokenIdFromCoinType,
   formatTokenAmount,
   truncateAddress,
@@ -27,6 +26,7 @@ import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
+import { NoteBalanceDisplay } from "@/components/NoteBalanceDisplay";
 import {
   createSwapOutputs,
   generateSwapProof,
@@ -34,7 +34,9 @@ import {
   getPoolBookParams,
   encryptNote,
   deriveViewingPublicKey,
+  RelayerClient,
 } from "@june_zk/octopus-sdk";
+import { RelayerSelector, type RelayerStatus } from "@/components/RelayerSelector";
 
 interface SwapFormProps {
   keypair: OctopusKeypair | null;
@@ -55,7 +57,7 @@ type SwapState =
 export function SwapForm({
   keypair,
   notes,
-  loading: notesLoading,
+  loading: _notesLoading,
   selectedToken,
   onSuccess,
 }: SwapFormProps) {
@@ -95,9 +97,18 @@ export function SwapForm({
   const [selectedDeepCoin, setSelectedDeepCoin] = useState<string | null>(null);
   const [lotSize, setLotSize] = useState<bigint>(1n);
   const [minSize, setMinSize] = useState<bigint>(1n);
+  const [useRelayer, setUseRelayer] = useState(false);
+  const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
+  const [relayerStatus, setRelayerStatus] = useState<RelayerStatus>("idle");
 
   const client = useSuiClient();
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
+
+  const handleRelayerToggle = useCallback((enabled: boolean, url: string | null, status: RelayerStatus) => {
+    setUseRelayer(enabled);
+    setRelayerUrl(url);
+    setRelayerStatus(status);
+  }, []);
 
   const isProcessing = state !== "idle" && state !== "error" && state !== "success";
 
@@ -126,13 +137,19 @@ export function SwapForm({
     }
   );
 
-  // Auto-select DEEP coin with sufficient balance
+  // Auto-select the DEEP coin with the largest balance
   useEffect(() => {
     if (deepBalance?.data) {
-      const adequateCoin = deepBalance.data.find(
-        (coin) => BigInt(coin.balance) >= ESTIMATED_DEEP_FEE
+      const best = deepBalance.data.reduce<(typeof deepBalance.data)[0] | null>(
+        (max, coin) =>
+          !max || BigInt(coin.balance) > BigInt(max.balance) ? coin : max,
+        null
       );
-      setSelectedDeepCoin(adequateCoin?.coinObjectId || null);
+      setSelectedDeepCoin(
+        best && BigInt(best.balance) >= ESTIMATED_DEEP_FEE
+          ? best.coinObjectId
+          : null
+      );
     } else {
       setSelectedDeepCoin(null);
     }
@@ -410,8 +427,8 @@ export function SwapForm({
     }
 
     // lotSize is in base asset (SUI) units — only align for ask (SUI→USDC), not bid (USDC→SUI)
-    const isBidSubmit = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
-    const amountInBase = (!isBidSubmit && lotSize > 1n)
+    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+    const amountInBase = (!isBid && lotSize > 1n)
       ? (amountInSmallest / lotSize) * lotSize
       : amountInSmallest;
     const amountOutBase = parseTokenAmount(amountOut, tokenOutConfig.decimals);
@@ -419,7 +436,6 @@ export function SwapForm({
     const minAmountOutBase = (amountOutBase * BigInt(10000 - slippage)) / 10000n;
 
     // Validate minimum order size (minSize is always in base asset / SUI units)
-    const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
     if (!isBid) {
       // Ask (SUI→USDC): amountIn is base asset, compare directly
       if (amountInSmallest < minSize) {
@@ -437,6 +453,15 @@ export function SwapForm({
         return;
       }
     }
+
+    if (useRelayer && relayerStatus !== "online") {
+      setError("Relayer is offline. Please check the relayer connection.");
+      return;
+    }
+
+    const relayerClient = useRelayer && relayerUrl
+      ? new RelayerClient({ url: relayerUrl, network: network === "mainnet" ? "mainnet" : "testnet" })
+      : null;
 
     try {
       // 1. Select notes and fetch proofs
@@ -484,65 +509,85 @@ export function SwapForm({
         throw new Error(`DeepBook pool not configured for ${tokenInSymbol}_${tokenOutSymbol}`);
       }
 
-      if (!selectedDeepCoin) {
-        throw new Error(
-          "DEEP tokens required for swap. Please acquire DEEP tokens."
+      // Relayer handles its own DEEP — only validate when submitting directly
+      if (!useRelayer) {
+        if (!selectedDeepCoin) {
+          throw new Error(
+            "DEEP tokens required for swap. Please acquire DEEP tokens."
+          );
+        }
+        const deepCoinBalance = deepBalance?.data?.find(
+          (c) => c.coinObjectId === selectedDeepCoin
         );
-      }
-      const deepCoinBalance = deepBalance?.data?.find(
-        (c) => c.coinObjectId === selectedDeepCoin
-      );
-      if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
-        throw new Error("Insufficient DEEP balance for swap fees");
+        if (!deepCoinBalance || BigInt(deepCoinBalance.balance) < ESTIMATED_DEEP_FEE) {
+          throw new Error("Insufficient DEEP balance for swap fees");
+        }
       }
 
       // 6. Build and submit transaction
       setState("submitting");
-      const tx = new Transaction();
 
-      // isBid = tokenIn is the quote token (e.g. DBUSDC → SUI)
-      const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC";
+      let txDigest: string;
 
-      if (isBid) {
-        // Bid: quote → base. Contract function swap_bid<Base, Quote>.
-        // Type args must be [baseType, quoteType] to match DeepBookPool<Base, Quote>.
-        tx.moveCall({
-          target: `${packageId}::pool::swap_bid`,
-          typeArguments: [tokenOutConfig.type, tokenInConfig.type], // [Base, Quote]
-          arguments: [
-            tx.object(tokenInConfig.poolId),   // pool_in = quote (DBUSDC) pool
-            tx.object(tokenOutConfig.poolId),  // pool_out = base (SUI) pool
-            tx.object(deepbookPoolId),
-            tx.pure.vector("u8", Array.from(proof.proofBytes)),
-            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-            tx.pure(nullifiers),
-            tx.object(selectedDeepCoin!),
-            tx.object(CLOCK_OBJECT_ID),
-            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
-            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-          ],
+      if (relayerClient) {
+        txDigest = await relayerClient.submitSwap({
+          poolInId: tokenInConfig.poolId,
+          poolOutId: tokenOutConfig.poolId,
+          deepbookPoolId,
+          tokenTypeIn: tokenInConfig.type,
+          tokenTypeOut: tokenOutConfig.type,
+          isBid,
+          proofBytes: proof.proofBytes,
+          publicInputsBytes: proof.publicInputsBytes,
+          nullifiers,
+          encryptedOutputNote,
+          encryptedChangeNote,
         });
       } else {
-        // Ask: base → quote (e.g. SUI → DBUSDC)
-        tx.moveCall({
-          target: `${packageId}::pool::swap`,
-          typeArguments: [tokenInConfig.type, tokenOutConfig.type],
-          arguments: [
-            tx.object(tokenInConfig.poolId),
-            tx.object(tokenOutConfig.poolId),
-            tx.object(deepbookPoolId),
-            tx.pure.vector("u8", Array.from(proof.proofBytes)),
-            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-            tx.pure(nullifiers),
-            tx.object(selectedDeepCoin!),
-            tx.object(CLOCK_OBJECT_ID),
-            tx.pure.vector("u8", Array.from(encryptedOutputNote)),
-            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-          ],
-        });
-      }
+        const tx = new Transaction();
 
-      const result = await signAndExecute({ transaction: tx });
+        if (isBid) {
+          // Bid: quote → base. Contract function swap_bid<Base, Quote>.
+          // Type args must be [baseType, quoteType] to match DeepBookPool<Base, Quote>.
+          tx.moveCall({
+            target: `${packageId}::pool::swap_bid`,
+            typeArguments: [tokenOutConfig.type, tokenInConfig.type], // [Base, Quote]
+            arguments: [
+              tx.object(tokenInConfig.poolId),   // pool_in = quote (DBUSDC) pool
+              tx.object(tokenOutConfig.poolId),  // pool_out = base (SUI) pool
+              tx.object(deepbookPoolId),
+              tx.pure.vector("u8", Array.from(proof.proofBytes)),
+              tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+              tx.pure(nullifiers),
+              tx.object(selectedDeepCoin!),
+              tx.object(CLOCK_OBJECT_ID),
+              tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+              tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+            ],
+          });
+        } else {
+          // Ask: base → quote (e.g. SUI → DBUSDC)
+          tx.moveCall({
+            target: `${packageId}::pool::swap`,
+            typeArguments: [tokenInConfig.type, tokenOutConfig.type],
+            arguments: [
+              tx.object(tokenInConfig.poolId),
+              tx.object(tokenOutConfig.poolId),
+              tx.object(deepbookPoolId),
+              tx.pure.vector("u8", Array.from(proof.proofBytes)),
+              tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+              tx.pure(nullifiers),
+              tx.object(selectedDeepCoin!),
+              tx.object(CLOCK_OBJECT_ID),
+              tx.pure.vector("u8", Array.from(encryptedOutputNote)),
+              tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+            ],
+          });
+        }
+
+        const result = await signAndExecute({ transaction: tx });
+        txDigest = result.digest;
+      }
 
       // 7. Success!
       setState("success");
@@ -554,7 +599,7 @@ export function SwapForm({
       }
       setSuccess({
         message: successMessage,
-        txDigest: result.digest
+        txDigest,
       });
       setAmountIn("");
       setAmountOut("");
@@ -562,7 +607,6 @@ export function SwapForm({
       // 8. Trigger note rescan to pick up the output and change notes
       await onSuccess?.();
     } catch (err) {
-      console.error("Swap failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Swap failed");
     }
@@ -596,31 +640,6 @@ export function SwapForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {/* DEEP Token Status */}
-      <div className={cn(
-        "p-3 border clip-corner",
-        selectedDeepCoin
-          ? "border-green-600/40 bg-green-900/20"
-          : "border-yellow-600/40 bg-yellow-900/20"
-      )}>
-        <div className="flex items-start gap-2">
-          <span className={selectedDeepCoin ? "text-green-400" : "text-yellow-400"}>
-            {selectedDeepCoin ? "✓" : "!"}
-          </span>
-          <div className="flex-1">
-            <p className={cn(
-              "text-xs font-mono leading-relaxed",
-              selectedDeepCoin ? "text-green-400" : "text-yellow-400"
-            )}>
-              {selectedDeepCoin
-                ? `DEEP tokens available (${formatSui(BigInt(deepBalance?.data?.find(c => c.coinObjectId === selectedDeepCoin)?.balance || "0"))} DEEP)`
-                : "DEEP tokens required for swap fees. Please acquire DEEP tokens."
-              }
-            </p>
-          </div>
-        </div>
-      </div>
-
       <div className="space-y-4">
         {/* Token In */}
         <div>
@@ -657,6 +676,20 @@ export function SwapForm({
             disabled={isEstimatingReverse || isProcessing}
             onMax={handleMaxIn}
           />
+          {(() => {
+            const tokenNotes = unspentNotes.filter(
+              (n) => tokenInConfig && n.note.token === getTokenIdFromCoinType(tokenInConfig.type)
+            );
+            return (
+              <NoteBalanceDisplay
+                loading={_notesLoading}
+                noteCount={tokenNotes.length}
+                total={maxAmountIn}
+                decimals={tokenInConfig?.decimals ?? 9}
+                tokenSymbol={tokenInSymbol}
+              />
+            );
+          })()}
           {amountIn && (() => {
             const decimals = tokenInConfig?.decimals ?? 9;
             const raw = BigInt(Math.floor(parseFloat(amountIn) * Math.pow(10, decimals)));
@@ -700,7 +733,7 @@ export function SwapForm({
         </div>
 
         {/* Swap Direction Button */}
-        <div className="flex justify-center">
+        <div className="relative flex justify-center">
           <button
             type="button"
             onClick={handleSwitchTokens}
@@ -711,6 +744,16 @@ export function SwapForm({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
             </svg>
           </button>
+          {!useRelayer && (
+            <p className={cn(
+              "absolute right-0 bottom-0 text-[10px] font-mono",
+              selectedDeepCoin ? "text-gray-500" : "text-yellow-600"
+            )}>
+              {selectedDeepCoin
+                ? `DEEP: ${formatTokenAmount(deepBalance?.data?.reduce((sum, c) => sum + BigInt(c.balance), 0n) ?? 0n, 6)}`
+                : "⚠ No DEEP (higher fees)"}
+            </p>
+          )}
         </div>
 
         {/* Token Out */}
@@ -921,6 +964,13 @@ export function SwapForm({
           </div>
         )}
       </div>
+
+      {/* Relayer Selector */}
+      <RelayerSelector
+        network={network}
+        disabled={isProcessing}
+        onToggle={handleRelayerToggle}
+      />
 
       {/* Submit Button */}
       <button

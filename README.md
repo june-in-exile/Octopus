@@ -40,7 +40,7 @@ Octopus builds upon proven privacy protocols while introducing innovations for t
 
 ![Cryptographic Primitives Overview](frontend/public//technical.svg)
 
-```
+```txt
 nullifying_key = Poseidon(spending_key, 1)
 MPK = Poseidon(spending_key, nullifying_key)   // Master Public Key
 NSK = Poseidon(MPK, random)                    // Note Secret Key
@@ -103,11 +103,11 @@ This generates the SDK TypeScript library that the frontend depends on.
 
 ### 4. Run Frontend (Web UI)
 
-> **Environment Setup**: The frontend reads contract addresses from a `.env.local` file.
-> Create a symlink to the root `.env` before running:
+> **Environment Setup**: The frontend reads contract addresses from `frontend/.env`.
+> Copy the example file and fill in any values you need to override:
 >
 > ```bash
-> ln -s ../.env frontend/.env.local
+> cp frontend/.env.example frontend/.env
 > ```
 
 ```bash
@@ -126,6 +126,63 @@ Open <http://localhost:3000> to access the web interface.
 - **Shield/Unshield**: Deposit and withdraw with ZK proofs
 - **Private transfers**: Send tokens to other users (2-input, 2-output)
 - **Swap UI**: Token exchange interface with DeepBook V3 integration
+
+### 5. Run Relayer (Recommended for Full Privacy)
+
+The relayer submits transactions on behalf of users so the gas payer address is hidden from on-chain observers. Without a relayer, all operations (shield, unshield, transfer, swap) still work — the user's wallet signs and pays gas directly — but the wallet address becomes linkable to the private transaction on-chain. A single relayer instance serves both mainnet and testnet.
+
+**Setup:**
+
+```bash
+cd relayer
+npm install
+cp relayer/.env.example relayer/.env
+```
+
+Configure environment variables in `relayer/.env`:
+
+```bash
+# Per-network Ed25519 keypairs — fund these addresses with SUI (and DEEP for swaps)
+MAINNET_RELAYER_PRIVATE_KEY=
+TESTNET_RELAYER_PRIVATE_KEY=
+
+# Allowed CORS origins (comma-separated). Only these origins may call the relayer from a browser.
+# In production, requests without a matching Origin header are also blocked.
+ALLOWED_ORIGINS=http://localhost:3000,https://www.sui-octopus.com/
+```
+
+**Run:**
+
+```bash
+# Development (with hot reload)
+npm run dev
+
+# Production
+npm run build && npm start
+```
+
+**API Endpoints:**
+
+| Method  | Path                                     | Description                                              |
+| ------- | ---------------------------------------- | -------------------------------------------------------- |
+| `GET`   | `/relayer-info`                          | Returns relayer addresses and status for both networks   |
+| `GET`   | `/fee-quote?network=<mainnet\|testnet>`  | Returns current fee quote                                |
+| `POST`  | `/submit/transfer`                       | Submit a private transfer                                |
+| `POST`  | `/submit/unshield`                       | Submit an unshield (withdrawal)                          |
+| `POST`  | `/submit/swap`                           | Submit a private swap                                    |
+
+All submit endpoints require a `"network": "mainnet" | "testnet"` field in the request body.
+
+**Frontend Integration:**
+
+Point the frontend to your relayer by setting these env vars before running `npm run dev`:
+
+```bash
+NEXT_PUBLIC_TESTNET_RELAYER_URL=http://localhost:3001
+NEXT_PUBLIC_MAINNET_RELAYER_URL=https://your-relayer.example.com
+```
+
+Users can also configure and enable the relayer per-network from the UI's relayer settings panel.
 
 ## Acknowledgments
 

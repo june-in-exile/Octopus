@@ -3,12 +3,12 @@
 # Deletes all existing Vercel env vars across all environments and re-uploads from a local .env file.
 #
 # Usage:
-#   ./sync-vercel-env.sh              # defaults to .env
-#   ./sync-vercel-env.sh frontend/.env
+#   ./sync-vercel-env.sh                    # defaults to frontend/.env
+#   ./sync-vercel-env.sh frontend/.env.local
 
 set -euo pipefail
 
-ENV_FILE="${1:-.env}"
+ENV_FILE="${1:-frontend/.env}"
 ENVIRONMENTS=("production" "preview" "development")
 
 if [[ ! -f "$ENV_FILE" ]]; then

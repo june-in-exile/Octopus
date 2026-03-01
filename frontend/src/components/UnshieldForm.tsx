@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useNetworkConfig } from "@/providers/NetworkConfigProvider";
 import {
   useCurrentAccount,
@@ -18,11 +18,14 @@ import { selectNotesWithProofs } from "@/lib/noteSelection";
 import type { OctopusKeypair } from "@/hooks/useLocalKeypair";
 import type { OwnedNote } from "@/hooks/useNotes";
 import { NumberInput } from "@/components/NumberInput";
+import { NoteBalanceDisplay } from "@/components/NoteBalanceDisplay";
+import { RelayerSelector, type RelayerStatus } from "@/components/RelayerSelector";
 import {
   createUnshieldOutputs,
   generateUnshieldProof,
   deriveViewingPublicKey,
   encryptNote,
+  RelayerClient,
 } from "@june_zk/octopus-sdk";
 
 interface UnshieldFormProps {
@@ -57,6 +60,9 @@ export function UnshieldForm({
   const [state, setState] = useState<UnshieldState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ message: string; txDigest?: string } | null>(null);
+  const [useRelayer, setUseRelayer] = useState(false);
+  const [relayerUrl, setRelayerUrl] = useState<string | null>(null);
+  const [relayerStatus, setRelayerStatus] = useState<RelayerStatus>("idle");
 
   const { mutateAsync: signAndExecute } = useSignAndExecuteTransaction();
 
@@ -69,11 +75,17 @@ export function UnshieldForm({
       case "generating-proof":
         return "// Proof generation in progress (30-60s)";
       case "submitting":
-        return "// Awaiting wallet confirmation";
+        return useRelayer ? "// Sending to relayer" : "// Awaiting wallet confirmation";
       default:
         return "";
     }
   };
+
+  const handleRelayerToggle = useCallback((enabled: boolean, url: string | null, status: RelayerStatus) => {
+    setUseRelayer(enabled);
+    setRelayerUrl(url);
+    setRelayerStatus(status);
+  }, []);
 
   // Auto-fill recipient with connected wallet
   const handleUseMyAddress = () => {
@@ -107,6 +119,15 @@ export function UnshieldForm({
       return;
     }
     const amountBase = parseTokenAmount(amount, tokenConfig.decimals);
+
+    if (useRelayer && relayerStatus !== "online") {
+      setError("Relayer is offline. Please check the relayer connection.");
+      return;
+    }
+
+    const relayerClient = useRelayer && relayerUrl
+      ? new RelayerClient({ url: relayerUrl, network: network as "mainnet" | "testnet" })
+      : null;
 
     try {
       // 1. Select notes and fetch proofs
@@ -143,26 +164,39 @@ export function UnshieldForm({
 
       // 4. Encrypt output note using viewing public keys
       const viewingPk = deriveViewingPublicKey(keypair!.spendingKey);
-      const encryptedChangeNote = encryptNote(changeNote, viewingPk)
+      const encryptedChangeNote = encryptNote(changeNote, viewingPk);
 
-      // 5. Build and submit transaction
+      // 5. Submit via relayer or direct wallet
       setState("submitting");
-      const tx = new Transaction();
+      let txDigest: string;
 
-      tx.moveCall({
-        target: `${packageId}::pool::unshield`,
-        typeArguments: [tokenConfig.type],
-        arguments: [
-          tx.object(tokenConfig.poolId),
-          tx.pure.vector("u8", Array.from(proof.proofBytes)),
-          tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
-          tx.pure(nullifiers),
-          tx.pure.address(recipient),
-          tx.pure.vector("u8", Array.from(encryptedChangeNote)),
-        ],
-      });
-
-      const result = await signAndExecute({ transaction: tx });
+      if (relayerClient) {
+        txDigest = await relayerClient.submitUnshield({
+          poolId: tokenConfig.poolId,
+          tokenType: tokenConfig.type,
+          proofBytes: proof.proofBytes,
+          publicInputsBytes: proof.publicInputsBytes,
+          nullifiers,
+          encryptedNotes: [encryptedChangeNote],
+          recipient,
+        });
+      } else {
+        const tx = new Transaction();
+        tx.moveCall({
+          target: `${packageId}::pool::unshield`,
+          typeArguments: [tokenConfig.type],
+          arguments: [
+            tx.object(tokenConfig.poolId),
+            tx.pure.vector("u8", Array.from(proof.proofBytes)),
+            tx.pure.vector("u8", Array.from(proof.publicInputsBytes)),
+            tx.pure(nullifiers),
+            tx.pure.address(recipient),
+            tx.pure.vector("u8", Array.from(encryptedChangeNote)),
+          ],
+        });
+        const result = await signAndExecute({ transaction: tx });
+        txDigest = result.digest;
+      }
 
       // 6. Success!
       setState("success");
@@ -172,7 +206,7 @@ export function UnshieldForm({
       }
       setSuccess({
         message: successMessage,
-        txDigest: result.digest
+        txDigest,
       });
       setAmount("");
       setRecipient("");
@@ -180,7 +214,6 @@ export function UnshieldForm({
       // 7. Trigger note rescan to pick up the change note
       await onSuccess?.();
     } catch (err) {
-      console.error("Unshield failed:", err);
       setState("error");
       setError(err instanceof Error ? err.message : "Unshield failed");
     }
@@ -206,22 +239,13 @@ export function UnshieldForm({
             disabled={isProcessing}
             onMax={() => setAmount((Number(maxAmount) / 10 ** tokenConfig.decimals).toFixed(tokenConfig.decimals))}
           />
-          <p className="mt-2 text-[10px] text-gray-500 font-mono">
-            {notesLoading ? (
-              <>LOADING NOTES...</>
-            ) : notes.length > 0 ? (
-              <>
-                TOTAL: {formatTokenAmount(maxAmount, tokenConfig.decimals)}
-                {notes.filter((n: OwnedNote) => !n.spent).length > 1 && (
-                  <span className="text-gray-600">
-                    {" "}// {notes.filter((n: OwnedNote) => !n.spent).length} NOTES
-                  </span>
-                )}
-              </>
-            ) : (
-              <>NO NOTES // Shield tokens first</>
-            )}
-          </p>
+          <NoteBalanceDisplay
+            loading={notesLoading}
+            noteCount={notes.filter((n) => !n.spent).length}
+            total={maxAmount}
+            decimals={tokenConfig.decimals}
+            tokenSymbol={tokenConfig.symbol}
+          />
         </div>
 
         <div>
@@ -251,6 +275,13 @@ export function UnshieldForm({
             </button>
           </div>
         </div>
+
+        {/* Relayer Selector */}
+        <RelayerSelector
+          network={network}
+          disabled={isProcessing}
+          onToggle={handleRelayerToggle}
+        />
       </div>
 
       {/* Progress indicator */}
@@ -333,11 +364,6 @@ export function UnshieldForm({
           "btn-primary w-full",
           isProcessing && "cursor-wait opacity-70"
         )}
-        style={{
-          backgroundColor: 'transparent',
-          color: '#00d9ff',
-          borderColor: '#00d9ff',
-        }}
       >
         {isProcessing ? "◉ PROCESSING..." : "▼ UNSHIELD TOKENS"}
       </button>

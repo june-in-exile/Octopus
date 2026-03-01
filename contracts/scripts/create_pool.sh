@@ -41,19 +41,26 @@ if [ "$COIN_TYPE" = "dbusdc" ]; then
     fi
 fi
 
-# Determine .env file path
+# Determine frontend .env file path (contains NEXT_PUBLIC_* variables)
 ENV_FILE=""
-if [ -f "../.env" ]; then
-    ENV_FILE="../.env"
-elif [ -f "../../.env" ]; then
-    ENV_FILE="../../.env"
+if [ -f "../frontend/.env.local" ]; then
+    ENV_FILE="../frontend/.env.local"
+elif [ -f "../frontend/.env" ]; then
+    ENV_FILE="../frontend/.env"
 else
-    echo "Error: No .env file found"
-    echo "Please copy .env.example to .env and configure it."
+    echo "Error: No frontend .env file found (expected frontend/.env.local or frontend/.env)"
+    echo "Please copy frontend/.env.example to frontend/.env.local and configure it."
     exit 1
 fi
 
-echo "Using .env file: $ENV_FILE"
+echo "Using frontend .env file: $ENV_FILE"
+
+# Determine relayer .env file path (contains server-side variables without NEXT_PUBLIC_ prefix)
+RELAYER_ENV_FILE=""
+if [ -f "../relayer/.env" ]; then
+    RELAYER_ENV_FILE="../relayer/.env"
+    echo "Using relayer .env file: $RELAYER_ENV_FILE"
+fi
 echo "Network: $NETWORK"
 echo "Coin: $COIN_TYPE"
 
@@ -184,18 +191,29 @@ create_pool() {
     echo "✅ $coin_upper Privacy Pool created: $pool_id"
     echo ""
 
-    # Update .env with network-specific variable names
+    # Update frontend .env with network-specific variable names
     if [ "$coin" = "sui" ]; then
         update_env_var "NEXT_PUBLIC_${NETWORK_UPPER}_SUI_POOL_ID" "$pool_id" "$ENV_FILE"
         echo "✓ Updated NEXT_PUBLIC_${NETWORK_UPPER}_SUI_POOL_ID"
+        [ -n "$RELAYER_ENV_FILE" ] && update_env_var "${NETWORK_UPPER}_SUI_POOL_ID" "$pool_id" "$RELAYER_ENV_FILE" && echo "✓ Updated ${NETWORK_UPPER}_SUI_POOL_ID in relayer .env"
     elif [ "$coin" = "dbusdc" ]; then
         update_env_var "NEXT_PUBLIC_${NETWORK_UPPER}_DBUSDC_POOL_ID" "$pool_id" "$ENV_FILE"
         update_env_var "NEXT_PUBLIC_${NETWORK_UPPER}_DBUSDC_TYPE" "$type_args" "$ENV_FILE"
         echo "✓ Updated NEXT_PUBLIC_${NETWORK_UPPER}_DBUSDC_POOL_ID, NEXT_PUBLIC_${NETWORK_UPPER}_DBUSDC_TYPE"
+        if [ -n "$RELAYER_ENV_FILE" ]; then
+            update_env_var "${NETWORK_UPPER}_DBUSDC_POOL_ID" "$pool_id" "$RELAYER_ENV_FILE"
+            update_env_var "${NETWORK_UPPER}_DBUSDC_TYPE" "$type_args" "$RELAYER_ENV_FILE"
+            echo "✓ Updated ${NETWORK_UPPER}_DBUSDC_POOL_ID, ${NETWORK_UPPER}_DBUSDC_TYPE in relayer .env"
+        fi
     else
         update_env_var "NEXT_PUBLIC_${NETWORK_UPPER}_USDC_POOL_ID" "$pool_id" "$ENV_FILE"
         update_env_var "NEXT_PUBLIC_${NETWORK_UPPER}_USDC_TYPE" "$type_args" "$ENV_FILE"
         echo "✓ Updated NEXT_PUBLIC_${NETWORK_UPPER}_USDC_POOL_ID, NEXT_PUBLIC_${NETWORK_UPPER}_USDC_TYPE"
+        if [ -n "$RELAYER_ENV_FILE" ]; then
+            update_env_var "${NETWORK_UPPER}_USDC_POOL_ID" "$pool_id" "$RELAYER_ENV_FILE"
+            update_env_var "${NETWORK_UPPER}_USDC_TYPE" "$type_args" "$RELAYER_ENV_FILE"
+            echo "✓ Updated ${NETWORK_UPPER}_USDC_POOL_ID, ${NETWORK_UPPER}_USDC_TYPE in relayer .env"
+        fi
     fi
     echo ""
 
