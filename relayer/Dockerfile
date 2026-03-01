@@ -1,36 +1,36 @@
-# Use Node.js 18 image
+# Use Node.js 18 slim image
 FROM node:18-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and lock files (including root, sdk, and relayer)
+# 1. Copy package files first to leverage Docker layer caching
 COPY package*.json ./
 COPY sdk/package*.json ./sdk/
 COPY relayer/package*.json ./relayer/
 
-# Install dependencies (including sdk and relayer)
+# 2. Install dependencies for both SDK and Relayer
 RUN npm install
 RUN cd sdk && npm install
 RUN cd relayer && npm install
 
-# Copy source code
+# 3. Copy source code from the project root
 COPY sdk ./sdk
 COPY relayer ./relayer
 
-# Build SDK (if the relayer depends on it)
+# 4. Build SDK (required as a dependency for the relayer)
 RUN cd sdk && npm run build
 
-# Build Relayer
+# 5. Build Relayer
 RUN cd relayer && npm run build
 
 # Set environment variables
 ENV NODE_ENV=production
 ENV RELAYER_PORT=8080
 
-# Expose port
+# Expose the application port
 EXPOSE 8080
 
-# Start command (using built files)
+# 6. Start the Relayer using the compiled distribution
 WORKDIR /app/relayer
 CMD ["node", "dist/server.js"]
