@@ -26,12 +26,12 @@ RUN cd relayer && npm run build
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV RELAYER_PORT=8080
+# ✅ Unify port to 3001
+ENV RELAYER_PORT=3001
 
-# Expose the application port
-EXPOSE 8080
+# ✅ Expose port 3001
+EXPOSE 3001
 
 # 6. Start the Relayer using the compiled distribution
-# Based on tsconfig.json, src/server.ts is compiled to dist/src/server.js
 WORKDIR /app/relayer
 CMD ["node", "dist/src/server.js"]

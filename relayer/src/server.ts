@@ -11,7 +11,8 @@ import {
   SwapSubmitSchema,
 } from "./validator.js";
 
-const RELAYER_PORT = parseInt(process.env.RELAYER_PORT || "3001", 10)
+// Standard PORT env var for cloud platforms, then RELAYER_PORT, finally default to 3001
+const RELAYER_PORT = parseInt(process.env.PORT || process.env.RELAYER_PORT || "3001", 10)
 
 async function main(): Promise<void> {
   const configs = loadAllConfigs();
