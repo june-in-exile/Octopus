@@ -26,7 +26,7 @@ export class Relayer {
   private readonly startTime: number;
 
   constructor(private readonly config: RelayerConfig) {
-    this.client = new SuiClient({ url: config.rpcUrl });
+    this.client = new SuiClient({ url: config.rpcUrl, network: config.network });
     this.startTime = Date.now();
   }
 
