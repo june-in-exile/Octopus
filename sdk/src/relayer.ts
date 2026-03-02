@@ -86,17 +86,22 @@ export class RelayerClient {
   }
 
   async checkHealth(timeoutMs = 5000): Promise<void> {
-    const signal = AbortSignal.timeout(timeoutMs);
+    let res: Response;
     try {
-      const res = await fetch(`${this.config.url}/relayer-info`, { signal });
-      if (!res.ok) {
-        throw new Error(`Relayer returned status ${res.status}`);
-      }
+      const signal = AbortSignal.timeout(timeoutMs);
+      res = await fetch(`${this.config.url}/relayer-info`, { signal });
     } catch (err) {
       if (err instanceof Error && err.name === "TimeoutError") {
         throw new Error(`Relayer did not respond within ${timeoutMs / 1000}s`);
       }
       throw new Error(`Relayer unreachable at ${this.config.url}`);
+    }
+    if (!res.ok) {
+      throw new Error(`Relayer returned status ${res.status}`);
+    }
+    const data = (await res.json()) as Record<Network, RelayerInfo>;
+    if (!data[this.config.network]) {
+      throw new Error(`Relayer does not support network: ${this.config.network}`);
     }
   }
 
