@@ -1,7 +1,7 @@
 # Milestone 3: Relayer/Broadcaster Network
 
 **Priority:** 🟠 Medium-High
-**Status:** Planning
+**Status:** ✅ Implemented
 **Dependencies:** Private Transfers (Milestone 1) ✅
 
 ## Overview
@@ -29,6 +29,7 @@ Create a relayer server that submits transactions on behalf of users, so the use
 User (Browser)
   → { proofBytes, publicInputs, encryptedNotes, nullifiers, ... }
   → Relayer Server
+       ↓ validates pool/token whitelist
        ↓ builds Transaction (relayer is tx sender)
        ↓ signs with relayer keypair
        ↓ submits to Sui
@@ -46,6 +47,7 @@ User ← txHash
 | Storage | In-memory | MVP doesn't need Redis/PostgreSQL |
 | Operations | Transfer + Unshield + Swap | All 3 core operations supported |
 | Tech stack | Express + TypeScript + `@mysten/sui` ^2.4 | Consistent with SDK |
+| Multi-network | Graceful degradation | Missing private key → skip that network, not crash |
 
 ## Fee Mechanism (Future)
 
@@ -63,17 +65,17 @@ Until then, the relayer is subsidized. Add this to Milestone 3.5 or Milestone 4.
 
 ### Phase 1: Relayer Server
 
-**New directory:** `relayer/`
+**Directory:** `relayer/`
 
 ```
 relayer/
 ├── src/
-│   ├── server.ts           # Express app (port 3001)
-│   ├── relayer.ts          # Transaction building + Sui submission
+│   ├── server.ts           # Express app (default 8080)
+│   ├── relayer.ts          # Transaction building + Sui submission + whitelist validation
 │   ├── validator.ts        # Zod request schemas
 │   └── fee-calculator.ts   # Gas estimation (for fee-quote endpoint)
 ├── config/
-│   └── relayer-config.ts   # RPC URL, keypair path, fee premium
+│   └── relayer-config.ts   # RPC URL, keypair, whitelist, DEEP coin type
 ├── package.json
 └── tsconfig.json
 ```
@@ -95,47 +97,56 @@ relayer/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/relayer-info` | Address, supported tokens, fee premium |
-| GET | `/fee-quote` | Gas estimate for an operation type |
+| GET | `/relayer-info` | Address, supported tokens, fee premium, uptime (per configured network) |
+| GET | `/fee-quote?network=` | Gas estimate for an operation type |
 | POST | `/submit/transfer` | Submit private transfer |
 | POST | `/submit/unshield` | Submit unshield |
 | POST | `/submit/swap` | Submit private swap |
+
+Returns `503` if the requested network is not configured on this relayer instance.
 
 **Request schemas (Zod):**
 
 ```typescript
 // Transfer
-const TransferSubmitRequest = z.object({
-  poolId: z.string(),
-  tokenType: z.string(),
-  proofBytes: z.string(),              // hex
-  publicInputsBytes: z.string(),       // hex
-  nullifiers: z.array(z.string()),     // hex[]
-  encryptedNotes: z.array(z.string()), // hex[]
+const TransferSubmitSchema = z.object({
+  network: z.enum(["mainnet", "testnet"]),
+  poolId: z.string().min(1),
+  tokenType: z.string().min(1),
+  proofBytes: hexString,
+  publicInputsBytes: hexString,
+  nullifiers: hexString,              // BCS-encoded vector<vector<u8>>, NOT hex[]
+  encryptedNotes: z.array(hexString).min(1).max(2),
 })
 
-// Unshield
-const UnshieldSubmitRequest = TransferSubmitRequest.extend({
-  recipient: z.string(),
+// Unshield extends transfer with recipient address
+const UnshieldSubmitSchema = TransferSubmitSchema.extend({
+  recipient: z.string().startsWith("0x"),
 })
 
 // Swap
-const SwapSubmitRequest = z.object({
-  poolInId: z.string(),
-  poolOutId: z.string(),
-  deepbookPoolId: z.string(),
-  tokenTypeIn: z.string(),
-  tokenTypeOut: z.string(),
-  isBid: z.boolean(),                  // true = quote→base (swap_bid), false = base→quote (swap)
-  proofBytes: z.string(),
-  publicInputsBytes: z.string(),       // contains amount_in and min_amount_out
-  nullifiers: z.array(z.string()),
-  encryptedOutputNote: z.string(),     // hex
-  encryptedChangeNote: z.string(),     // hex
+const SwapSubmitSchema = z.object({
+  network: z.enum(["mainnet", "testnet"]),
+  poolInId: z.string().min(1),
+  poolOutId: z.string().min(1),
+  deepbookPoolId: z.string().min(1),
+  tokenTypeIn: z.string().min(1),
+  tokenTypeOut: z.string().min(1),
+  isBid: z.boolean(),
+  proofBytes: hexString,
+  publicInputsBytes: hexString,       // contains amount_in and min_amount_out
+  nullifiers: hexString,              // BCS-encoded vector<vector<u8>>
+  encryptedOutputNote: hexString,
+  encryptedChangeNote: hexString,
 })
+
+// hexString: non-empty, valid hex chars, even length
+const hexString = z.string().min(2).regex(/^[0-9a-fA-F]+$/).refine(s => s.length % 2 === 0)
 ```
 
-**Transaction building in `relayer.ts`** — uses `@mysten/sui` v2.4 API (not deprecated `TransactionBlock`):
+> **Note:** `nullifiers` is a single hex string containing BCS-encoded `vector<vector<u8>>`, pre-encoded by the SDK. This avoids double-encoding when passed to the Move contract.
+
+**Transaction building in `relayer.ts`:**
 
 ```typescript
 import { Transaction } from "@mysten/sui/transactions"
@@ -148,10 +159,10 @@ tx.moveCall({
   typeArguments: [tokenType],
   arguments: [
     tx.object(poolId),
-    tx.pure.vector("u8", hexToBytes(proofBytes)),
-    tx.pure.vector("u8", hexToBytes(publicInputsBytes)),
-    tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize(nullifierBytes).toBytes()),
-    tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize(encryptedNotes).toBytes()),
+    tx.pure.vector("u8", Array.from(hexToBytes(proofBytes))),
+    tx.pure.vector("u8", Array.from(hexToBytes(publicInputsBytes))),
+    tx.pure(hexToBytes(nullifiers)),  // BCS-encoded nullifiers passed as raw bytes
+    tx.pure(bcs.vector(bcs.vector(bcs.u8())).serialize(encryptedNotes.map(hexToBytes)).toBytes()),
   ]
 })
 const result = await client.signAndExecuteTransaction({
@@ -168,33 +179,66 @@ const result = await client.signAndExecuteTransaction({
 // isBid = true  → bid (e.g. USDC → SUI): pool::swap_bid<TokenOut, TokenIn>
 const target = isBid ? `${packageId}::pool::swap_bid` : `${packageId}::pool::swap`
 const typeArguments = isBid
-  ? [tokenTypeOut, tokenTypeIn]  // [Base, Quote] reversed for swap_bid
+  ? [tokenTypeOut, tokenTypeIn]  // type args reversed for swap_bid
   : [tokenTypeIn, tokenTypeOut]
 ```
 
-**DEEP token management** — swap functions require `deep_in: Coin<DEEP>` for DeepBook fees. The relayer must hold DEEP tokens and split the correct amount within the transaction:
+**DEEP token management** — swap functions require `deep_in: Coin<DEEP>` for DeepBook fees. The relayer selects the DEEP coin with the largest balance and passes it whole; the contract returns any unused DEEP after the swap:
 
 ```typescript
-// Fetch relayer's DEEP coins and split for fee
-const deepCoins = await client.getCoins({ owner: relayerKeypair.toSuiAddress(), coinType: DEEP_COIN_TYPE })
-const [deepCoin] = tx.splitCoins(tx.object(deepCoins.data[0].coinObjectId), [tx.pure.u64(ESTIMATED_DEEP_FEE)])
-// pass deepCoin as the deep_in argument
+const deepCoins = await client.getCoins({ owner: relayerAddress, coinType: DEEP_COIN_TYPE })
+const deepCoinId = deepCoins.data.reduce((max, coin) =>
+  BigInt(coin.balance) > BigInt(max.balance) ? coin : max
+).coinObjectId
+// deepCoinId is passed as tx.object(deepCoinId) — no splitCoins needed
 ```
 
 **Security:**
 
 - Rate limiting per IP: 10 req/min on `/submit/*`, 60 req/min on GET endpoints
 - Helmet for HTTP headers
-- Input validation via Zod before any processing
-- No logging of request IP by default
+- Input validation via Zod (format, length, hex encoding) before any processing
+- **Pool/token whitelist**: each submit endpoint validates `poolId`, `deepbookPoolId`, and `tokenType` against allowed sets before building a transaction; rejects unknown IDs outright
+
+**Whitelist configuration:**
+
+The whitelist is derived automatically from existing `NEXT_PUBLIC_*` env vars — no additional config required. In `relayer-config.ts`, `NETWORK_DEFAULTS` maps each network to the env var names for its pool IDs and token types:
+
+```typescript
+// Mainnet
+poolEnvVars:         ["NEXT_PUBLIC_MAINNET_SUI_POOL_ID", "NEXT_PUBLIC_MAINNET_USDC_POOL_ID"]
+deepbookPoolEnvVars: ["NEXT_PUBLIC_MAINNET_DEEPBOOK_SUI_USDC"]
+tokenTypeEnvVars:    ["NEXT_PUBLIC_MAINNET_USDC_TYPE", "NEXT_PUBLIC_MAINNET_DEEP_TYPE"]
+nativeTokenTypes:    ["0x2::sui::SUI"]  // always allowed
+
+// Testnet
+poolEnvVars:         ["NEXT_PUBLIC_TESTNET_SUI_POOL_ID", "NEXT_PUBLIC_TESTNET_USDC_POOL_ID",
+                      "NEXT_PUBLIC_TESTNET_DBUSDC_POOL_ID"]
+deepbookPoolEnvVars: ["NEXT_PUBLIC_TESTNET_DEEPBOOK_SUI_DBUSDC"]
+tokenTypeEnvVars:    ["NEXT_PUBLIC_TESTNET_USDC_TYPE", "NEXT_PUBLIC_TESTNET_DBUSDC_TYPE",
+                      "NEXT_PUBLIC_TESTNET_DEEP_TYPE"]
+```
+
+If a whitelist set is empty (env vars not set), the check is skipped (open mode). In production, ensure all `NEXT_PUBLIC_*` pool and type env vars are set.
+
+**Multi-network graceful degradation:**
+
+`loadAllConfigs()` returns `Partial<Record<Network, RelayerConfig>>`. If a network's private key or package ID is missing, it is skipped with a warning — the relayer still starts on the remaining networks.
+
+```text
+[relayer] Skipping mainnet: MAINNET_RELAYER_PRIVATE_KEY environment variable is not set
+Relayer running on port 8080
+Active networks: testnet
+```
 
 ### Phase 2: SDK — RelayerClient
 
-**New file:** `sdk/src/relayer.ts`
+**File:** `sdk/src/relayer.ts`
 
 ```typescript
 export interface RelayerConfig {
   url: string
+  network: "mainnet" | "testnet"
 }
 
 export interface TransferRelayRequest {
@@ -202,7 +246,7 @@ export interface TransferRelayRequest {
   tokenType: string
   proofBytes: Uint8Array
   publicInputsBytes: Uint8Array
-  nullifiers: Uint8Array[]
+  nullifiers: Uint8Array          // BCS-encoded vector<vector<u8>>
   encryptedNotes: Uint8Array[]
 }
 
@@ -216,19 +260,12 @@ export interface SwapRelayRequest {
   deepbookPoolId: string
   tokenTypeIn: string
   tokenTypeOut: string
-  isBid: boolean               // true = quote→base (swap_bid), false = base→quote (swap)
+  isBid: boolean
   proofBytes: Uint8Array
-  publicInputsBytes: Uint8Array  // contains amount_in and min_amount_out
-  nullifiers: Uint8Array[]
+  publicInputsBytes: Uint8Array
+  nullifiers: Uint8Array          // BCS-encoded vector<vector<u8>>
   encryptedOutputNote: Uint8Array
   encryptedChangeNote: Uint8Array
-}
-
-export interface FeeQuote {
-  baseFee: number
-  feePremium: number
-  totalFee: number
-  expiresAt: number
 }
 
 export interface RelayerInfo {
@@ -241,95 +278,64 @@ export interface RelayerInfo {
 export class RelayerClient {
   constructor(private config: RelayerConfig) {}
 
-  async getFeeQuote(type: "transfer" | "unshield" | "swap", tokenType: string): Promise<FeeQuote>
-  async submitTransfer(req: TransferRelayRequest): Promise<string>  // txHash
+  async getRelayerInfo(): Promise<RelayerInfo>
+  async getFeeQuote(): Promise<FeeQuote>
+  async submitTransfer(req: TransferRelayRequest): Promise<string>   // returns txHash
   async submitUnshield(req: UnshieldRelayRequest): Promise<string>
   async submitSwap(req: SwapRelayRequest): Promise<string>
-  async getRelayerInfo(): Promise<RelayerInfo>
 }
 ```
 
-**Export from `sdk/src/index.ts`:**
+**Exported from `sdk/src/index.ts`:**
 
 ```typescript
 export { RelayerClient } from "./relayer.js"
-export type {
-  RelayerConfig,
-  TransferRelayRequest,
-  UnshieldRelayRequest,
-  SwapRelayRequest,
-  FeeQuote,
-  RelayerInfo,
-} from "./relayer.js"
+export type { RelayerConfig, TransferRelayRequest, UnshieldRelayRequest,
+              SwapRelayRequest, FeeQuote, RelayerInfo } from "./relayer.js"
 ```
 
 ### Phase 3: Frontend Integration
 
-**New file:** `frontend/src/lib/relayerConfig.ts`
+**`frontend/src/lib/relayerConfig.ts`:**
 
 ```typescript
-export const DEFAULT_RELAYER_URLS: Record<string, string[]> = {
-  testnet: [process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:3001"],
-  mainnet: [],
-}
-
-export function getDefaultRelayerUrl(network: string): string | null {
-  return DEFAULT_RELAYER_URLS[network]?.[0] ?? null
+export const RELAYER_URLS: Record<string, string | null> = {
+  testnet: process.env.NEXT_PUBLIC_TESTNET_RELAYER_URL || null,
+  mainnet: process.env.NEXT_PUBLIC_MAINNET_RELAYER_URL || null,
 }
 ```
 
-**New component:** `frontend/src/components/RelayerSelector.tsx`
+**`frontend/src/components/RelayerSelector.tsx`:**
 
 - Toggle: "Direct Submission" vs "Via Relayer"
-- Shows relayer URL and status indicator (pings `/relayer-info`)
-- Saves preference to localStorage
+- Pings `/relayer-info` to check liveness and display relayer address
+- Saves preference + custom URL to localStorage
 
-**Modify `frontend/src/components/TransferForm.tsx`:**
+**`TransferForm.tsx`, `UnshieldForm.tsx`, `SwapForm.tsx`:** After proof generation, branch on relayer toggle:
 
 ```typescript
-// Add state
-const [useRelayer, setUseRelayer] = useState(false)
-const [relayerUrl, setRelayerUrl] = useState<string | null>(getDefaultRelayerUrl(NETWORK))
-
-// In submit handler, after proof generation:
 if (useRelayer && relayerUrl) {
-  const relayerClient = new RelayerClient({ url: relayerUrl })
-  const txHash = await relayerClient.submitTransfer({
-    poolId, tokenType, proofBytes, publicInputsBytes, nullifiers, encryptedNotes
-  })
-  // show success with txHash
+  const client = new RelayerClient({ url: relayerUrl, network })
+  txDigest = await client.submitSwap({ poolInId, poolOutId, deepbookPoolId, ... })
 } else {
   // existing signAndExecute path (unchanged)
   await signAndExecute({ transaction: tx })
 }
 ```
 
-**Modify `frontend/src/components/UnshieldForm.tsx`** — same pattern.
-
-**Modify `frontend/src/components/SwapForm.tsx`** — same pattern with `submitSwap`.
-
-**Modify `frontend/src/lib/constants.ts`:**
-
-```typescript
-export const RELAYER_URLS = {
-  testnet: process.env.NEXT_PUBLIC_TESTNET_RELAYER_URL ?? null,
-  mainnet: process.env.NEXT_PUBLIC_MAINNET_RELAYER_URL ?? null,
-}
-```
-
 ---
 
-## Files to Create / Modify
+## Files Created / Modified
 
 ### New Files
 
 | File | Purpose |
 |------|---------|
 | `relayer/src/server.ts` | Express server entry point |
-| `relayer/src/relayer.ts` | Sui transaction building and submission |
+| `relayer/src/relayer.ts` | Sui transaction building, submission, and whitelist validation |
 | `relayer/src/validator.ts` | Zod schemas for all request types |
 | `relayer/src/fee-calculator.ts` | Gas estimation |
-| `relayer/config/relayer-config.ts` | RPC URL, keypair, fee config, DEEP coin type |
+| `relayer/config/relayer-config.ts` | RPC URL, keypair, whitelist derivation from env vars |
 | `relayer/package.json` | Package definition |
 | `relayer/tsconfig.json` | TypeScript compiler config (ESM, node18) |
 | `sdk/src/relayer.ts` | RelayerClient class |
@@ -383,21 +389,24 @@ Requires circuit changes:
 
 ## Success Criteria
 
-- [ ] `GET /relayer-info` returns valid JSON with relayer address
-- [ ] `POST /submit/transfer` succeeds — returns txHash within 10 seconds
-- [ ] `POST /submit/unshield` succeeds — funds arrive at recipient
-- [ ] `POST /submit/swap` succeeds — tokens swapped via DeepBook
-- [ ] Transaction sender on-chain = relayer address, NOT user's wallet
-- [ ] Rate limiting rejects >10 req/min per IP on submit endpoints
-- [ ] Frontend relayer toggle visible in Transfer, Unshield, Swap forms
-- [ ] Direct submission path still works when relayer is disabled
+- [x] `GET /relayer-info` returns valid JSON with relayer address and supported tokens
+- [x] `POST /submit/transfer` succeeds — returns txHash within 10 seconds
+- [x] `POST /submit/unshield` succeeds — funds arrive at recipient
+- [x] `POST /submit/swap` succeeds — tokens swapped via DeepBook
+- [x] Transaction sender on-chain = relayer address, NOT user's wallet
+- [x] Rate limiting rejects >10 req/min per IP on submit endpoints
+- [x] Frontend relayer toggle visible in Transfer, Unshield, Swap forms
+- [x] Direct submission path still works when relayer is disabled
+- [x] Pool ID and token type whitelist rejects unknown IDs before tx submission
+- [x] Relayer starts gracefully when only one network is configured
 
 ## Verification Steps
 
-1. Start relayer: `cd relayer && npm run dev` (port 3001)
-2. Check `curl http://localhost:3001/relayer-info`
-3. Enable relayer toggle in frontend Transfer form
-4. Execute a private transfer — verify txHash returned
-5. Check Sui explorer: tx sender = relayer address
-6. Verify shielded balance updates correctly
-7. Run `cd relayer && npm test`
+1. Copy `.env.example` to `.env` and fill in `TESTNET_RELAYER_PRIVATE_KEY` and `NEXT_PUBLIC_TESTNET_PACKAGE_ID`
+2. Start relayer: `cd relayer && npm run dev` (listens on `PORT`, default 8080)
+3. Check `curl http://localhost:8080/relayer-info` — should return `{ testnet: { address, supportedTokens, ... } }`
+4. Enable relayer toggle in frontend Transfer form, set URL to `http://localhost:8080`
+5. Execute a private transfer — verify txHash returned
+6. Check Sui explorer: tx sender = relayer address, not user's wallet
+7. Verify shielded balance updates correctly
+8. Test whitelist rejection: send a request with an invalid `poolId` — relayer should return `{ error: "Submission failed" }` (500) without submitting any transaction

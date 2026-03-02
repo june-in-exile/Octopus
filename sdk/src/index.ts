@@ -64,3 +64,14 @@ export * from "./types.js";
 export {
   createUnshieldOutputs,
 } from "./unshield.js";
+
+// Relayer client
+export {
+  RelayerClient,
+  type RelayerConfig,
+  type TransferRelayRequest,
+  type UnshieldRelayRequest,
+  type SwapRelayRequest,
+  type FeeQuote,
+  type RelayerInfo,
+} from "./relayer.js";

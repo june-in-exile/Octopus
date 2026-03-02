@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "dev": "concurrently --names \"frontend,relayer\" --prefix-colors \"cyan,yellow\" \"npm run dev --prefix frontend\" \"npm run dev --prefix relayer\"",
     "build": "cd sdk && npm run build && cd ../frontend && npm run build",
     "build:all": "cd sdk && npm run build && cd ../frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
   }
 }

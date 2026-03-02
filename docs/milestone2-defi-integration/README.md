@@ -197,6 +197,112 @@ Swap pair:   SUI ↔ DBUSDC via DeepBook V3
 
 ---
 
+## DEEP Token Expansion Plan
+
+**Status:** Planned
+**Prerequisites:** On-chain `PrivacyPool<DEEP>` deployment + DeepBook DEEP/SUI pool IDs
+
+### Can existing code support DEEP swaps?
+
+The ZK circuit, Move contracts, and SDK are fully token-agnostic — adding DEEP requires **no changes** to circuits or contracts. Only configuration and frontend logic need updating.
+
+What's missing:
+
+| Item | Mainnet | Testnet |
+| ---- | ------- | ------- |
+| Octopus `PrivacyPool<DEEP>` | Not deployed | Not deployed |
+| DeepBook DEEP/SUI pool ID | Unknown (exists on-chain) | Unknown (may not exist) |
+| Frontend token config | Not included | Not included |
+
+### Required New Data
+
+1. **Octopus `PrivacyPool<DEEP>` Object ID** (mainnet + testnet)
+   - Must be created via `create_pool<DEEP>(...)` on-chain
+   - Will become `NEXT_PUBLIC_MAINNET_DEEP_POOL_ID` in `.env`
+
+2. **DeepBook DEEP/SUI pool ID** (mainnet + testnet)
+   - Mainnet pool exists; ID must be looked up via SuiScan or DeepBook docs
+   - Testnet availability is uncertain; may need to skip or mock
+
+3. **DEEP token decimals** — 9 (same as SUI), add to `NetworkConfigProvider.tsx`
+
+### Architecture Changes Required
+
+**`constants.ts`** — Add DEEP pool IDs
+
+```ts
+mainnet: {
+  // existing...
+  deepSuiPoolId: "...",   // DeepBook DEEP/SUI pool
+  deepPoolId: "...",      // Octopus PrivacyPool<DEEP>
+}
+```
+
+**`NetworkConfigProvider.tsx`** — Add DEEP token config
+
+```ts
+DEEP: {
+  type: deepCoinType,
+  symbol: "DEEP",
+  decimals: 9,
+  poolId: deepPoolId,   // Octopus PrivacyPool<DEEP>
+}
+```
+
+**`SwapForm.tsx`** — Three changes needed:
+
+*1. Expand available token list:*
+
+```ts
+// Before: ["SUI", "USDC"]
+// After:  ["SUI", "USDC", "DEEP"]   // mainnet
+//         ["SUI", "DEEP"]           // testnet (if DeepBook pool exists)
+```
+
+*2. Refactor `isBid` logic* (currently assumes SUI is always base):
+
+```ts
+// Before: hardcoded per stablecoin name
+const isBid = tokenInSymbol === "USDC" || tokenInSymbol === "DBUSDC"
+
+// After: derive from pair config
+const pairConfig = getDeepBookPairConfig(tokenInSymbol, tokenOutSymbol)
+const isBid = pairConfig.tokenIn === pairConfig.quote
+```
+
+*3. Refactor DeepBook pool selection* (currently one pool per network):
+
+```ts
+// Before: single hardcoded pool per network
+// After: map by token pair
+function getDeepBookPoolId(tokenA: string, tokenB: string, network: Network): string {
+  const key = [tokenA, tokenB].sort().join("_")
+  return DEEPBOOK_POOLS[network][key]
+}
+```
+
+**Relayer** — No changes needed. It accepts `tokenTypeIn/Out` and `isBid` as parameters and is fully token-agnostic.
+
+### Mainnet vs Testnet Differences
+
+| Aspect | Mainnet | Testnet |
+| ------ | ------- | ------- |
+| DEEP coin type | `0xdeeb7a...::deep::DEEP` | `0x36dbef...::deep::DEEP` |
+| DeepBook DEEP/SUI liquidity | Real, active market | Uncertain |
+| Octopus DEEP pool | Needs deployment | Needs deployment (or skip) |
+| Recommended priority | High | Low — mock with `swap_for_testing` if needed |
+
+### Implementation Steps
+
+1. Deploy `PrivacyPool<DEEP>` on mainnet (and optionally testnet) via Sui CLI
+2. Record pool Object ID; add to `.env` and `constants.ts`
+3. Look up DeepBook DEEP/SUI pool ID on mainnet (SuiScan / DeepBook registry)
+4. Update `NetworkConfigProvider.tsx` to include DEEP token config
+5. Refactor `SwapForm.tsx` — pool selection map and `isBid` logic
+6. Test on mainnet with a small amount before full release
+
+---
+
 ## Resources
 
 - [DeepBook V3 Documentation](https://docs.sui.io/standards/deepbook)

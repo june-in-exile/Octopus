@@ -17,6 +17,7 @@ node_modules/
 
 # SDK build outputs
 sdk/dist/
+relayer/dist/
 
 # Backup files
 *.backup
