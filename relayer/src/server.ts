@@ -58,6 +58,11 @@ async function main(): Promise<void> {
     legacyHeaders: false,
   });
 
+  // GET /health
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
   // GET /relayer-info
   app.get("/relayer-info", infoLimiter, (_req, res) => {
     const info: Record<string, unknown> = {};
