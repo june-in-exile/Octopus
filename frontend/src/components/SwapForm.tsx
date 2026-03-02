@@ -80,7 +80,7 @@ export function SwapForm({
     if (!selectedToken) return;
     setTokenInSymbol(selectedToken);
     setTokenOutSymbol(selectedToken === "SUI" ? defaultTokenOut : "SUI");
-  }, [selectedToken]);
+  }, [selectedToken, defaultTokenOut]);
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
   const [isTargetAmount, setIsTargetAmount] = useState(false);

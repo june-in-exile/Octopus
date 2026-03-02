@@ -26,9 +26,8 @@ export function RelayerSelector({
   onToggle,
 }: RelayerSelectorProps) {
   const [enabled, setEnabled] = useState(false);
-  const [url, setUrl] = useState(
-    DEFAULT_LOCAL_RELAYER,
-  );
+  const [draftUrl, setDraftUrl] = useState(DEFAULT_LOCAL_RELAYER);
+  const [url, setUrl] = useState(DEFAULT_LOCAL_RELAYER);
   const [status, setStatus] = useState<RelayerStatus>("idle");
   const [relayerAddress, setRelayerAddress] = useState<string | null>(null);
 
@@ -38,10 +37,21 @@ export function RelayerSelector({
     const savedUrl = getRelayerUrl(network) ?? getDefaultRelayerUrl(network) ?? DEFAULT_LOCAL_RELAYER;
     setEnabled(savedEnabled);
     setUrl(savedUrl);
+    setDraftUrl(savedUrl);
     if (savedEnabled) {
       onToggle(true, savedUrl, "checking");
     }
   }, [network, onToggle]);
+
+  // Debounce URL changes: save to localStorage and notify parent 500ms after typing stops
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setUrl(draftUrl);
+      saveRelayerUrl(network, draftUrl);
+      if (enabled) onToggle(true, draftUrl, "checking");
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [draftUrl, network, enabled, onToggle]);
 
   const checkRelayerStatus = useCallback(async (relayerUrl: string) => {
     setStatus("checking");
@@ -79,13 +89,7 @@ export function RelayerSelector({
     onToggle(checked, checked ? url : null, checked ? status : "idle");
   };
 
-  const handleUrlChange = (newUrl: string) => {
-    setUrl(newUrl);
-    saveRelayerUrl(network, newUrl);
-    if (enabled) {
-      onToggle(true, newUrl, "checking");
-    }
-  };
+  const handleUrlChange = (newUrl: string) => setDraftUrl(newUrl);
 
   return (
     <div className={cn(
@@ -136,7 +140,7 @@ export function RelayerSelector({
         <div className="mt-3 space-y-2">
           <input
             type="url"
-            value={url}
+            value={draftUrl}
             onChange={(e) => handleUrlChange(e.target.value)}
             placeholder={DEFAULT_LOCAL_RELAYER}
             className="input w-full text-[11px]"

@@ -227,7 +227,7 @@ If a whitelist set is empty (env vars not set), the check is skipped (open mode)
 
 ```text
 [relayer] Skipping mainnet: MAINNET_RELAYER_PRIVATE_KEY environment variable is not set
-Relayer running on port 3001
+Relayer running on port 8080
 Active networks: testnet
 ```
 
@@ -404,8 +404,8 @@ Requires circuit changes:
 
 1. Copy `.env.example` to `.env` and fill in `TESTNET_RELAYER_PRIVATE_KEY` and `NEXT_PUBLIC_TESTNET_PACKAGE_ID`
 2. Start relayer: `cd relayer && npm run dev` (listens on `PORT`, default 8080)
-3. Check `curl http://localhost:3001/relayer-info` — should return `{ testnet: { address, supportedTokens, ... } }`
-4. Enable relayer toggle in frontend Transfer form, set URL to `http://localhost:3001`
+3. Check `curl http://localhost:8080/relayer-info` — should return `{ testnet: { address, supportedTokens, ... } }`
+4. Enable relayer toggle in frontend Transfer form, set URL to `http://localhost:8080`
 5. Execute a private transfer — verify txHash returned
 6. Check Sui explorer: tx sender = relayer address, not user's wallet
 7. Verify shielded balance updates correctly

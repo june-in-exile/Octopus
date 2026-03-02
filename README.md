@@ -178,7 +178,7 @@ All submit endpoints require a `"network": "mainnet" | "testnet"` field in the r
 Point the frontend to your relayer by setting these env vars before running `npm run dev`:
 
 ```bash
-NEXT_PUBLIC_TESTNET_RELAYER_URL=http://localhost:3001
+NEXT_PUBLIC_TESTNET_RELAYER_URL=http://localhost:8080
 NEXT_PUBLIC_MAINNET_RELAYER_URL=https://your-relayer.example.com
 ```
 

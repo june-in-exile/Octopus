@@ -3,7 +3,7 @@ export const RELAYER_URLS: Record<string, string | null> = {
   mainnet: process.env.NEXT_PUBLIC_MAINNET_RELAYER_URL || null,
 };
 
-const DEFAULT_LOCAL_RELAYER = "http://localhost:3001";
+const DEFAULT_LOCAL_RELAYER = "http://localhost:8080";
 
 export function getDefaultRelayerUrl(network: string): string | null {
   return RELAYER_URLS[network] ?? null;
