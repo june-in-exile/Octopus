@@ -275,7 +275,7 @@ export function SwapForm({
 
     const debounce = setTimeout(estimateOutput, 500);
     return () => clearTimeout(debounce);
-  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, activeInput]);
+  }, [amountIn, tokenInSymbol, tokenOutSymbol, client, activeInput, tokenConfig, network]);
 
   // Estimate required input amount when output changes (reverse: TO → FROM)
   useEffect(() => {
@@ -387,7 +387,7 @@ export function SwapForm({
 
     const debounce = setTimeout(estimateInput, 500);
     return () => clearTimeout(debounce);
-  }, [amountOut, activeInput, tokenInSymbol, tokenOutSymbol, client]);
+  }, [amountOut, activeInput, tokenInSymbol, tokenOutSymbol, client, tokenConfig, network]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

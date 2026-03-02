@@ -93,6 +93,20 @@ export function loadNetworkConfig(network: Network): RelayerConfig {
     );
   }
 
+  const allowedPools = new Set(collectEnvValues(defaults.poolEnvVars));
+  const allowedDeepbookPools = new Set(collectEnvValues(defaults.deepbookPoolEnvVars));
+
+  if (allowedPools.size === 0) {
+    console.warn(
+      `[relayer:${network}] WARNING: No pool whitelist configured (${defaults.poolEnvVars.join(", ")} not set). All Octopus pool IDs will be accepted.`,
+    );
+  }
+  if (allowedDeepbookPools.size === 0) {
+    console.warn(
+      `[relayer:${network}] WARNING: No DeepBook pool whitelist configured (${defaults.deepbookPoolEnvVars.join(", ")} not set). All DeepBook pool IDs will be accepted.`,
+    );
+  }
+
   return {
     network,
     rpcUrl,
@@ -105,8 +119,8 @@ export function loadNetworkConfig(network: Network): RelayerConfig {
     ],
     deepCoinType: process.env[`${networkKey}_DEEP_TYPE`] ?? defaults.deepCoinType,
     estimatedDeepFee: 10_000n,
-    allowedPools: new Set(collectEnvValues(defaults.poolEnvVars)),
-    allowedDeepbookPools: new Set(collectEnvValues(defaults.deepbookPoolEnvVars)),
+    allowedPools,
+    allowedDeepbookPools,
   };
 }
 

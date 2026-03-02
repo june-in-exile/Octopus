@@ -83,7 +83,7 @@ export function RelayerSelector({
     setUrl(newUrl);
     saveRelayerUrl(network, newUrl);
     if (enabled) {
-      onToggle(true, newUrl, status);
+      onToggle(true, newUrl, "checking");
     }
   };
 

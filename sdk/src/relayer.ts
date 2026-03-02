@@ -78,7 +78,11 @@ export class RelayerClient {
       throw new Error(`Relayer info request failed: ${res.statusText}`);
     }
     const data = (await res.json()) as Record<Network, RelayerInfo>;
-    return data[this.config.network];
+    const info = data[this.config.network];
+    if (!info) {
+      throw new Error(`Relayer does not support network: ${this.config.network}`);
+    }
+    return info;
   }
 
   async checkHealth(timeoutMs = 5000): Promise<void> {

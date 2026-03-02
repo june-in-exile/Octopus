@@ -23,7 +23,7 @@ export const TransferSubmitSchema = z.object({
 
 // Unshield extends transfer with a recipient address
 export const UnshieldSubmitSchema = TransferSubmitSchema.extend({
-  recipient: z.string().startsWith("0x"),
+  recipient: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   // For unshield, encryptedNotes[0] is the encrypted change note
 });
 

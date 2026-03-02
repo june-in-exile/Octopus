@@ -70,7 +70,7 @@ Until then, the relayer is subsidized. Add this to Milestone 3.5 or Milestone 4.
 ```
 relayer/
 ├── src/
-│   ├── server.ts           # Express app (port from RELAYER_PORT env, default 3001)
+│   ├── server.ts           # Express app (default 8080)
 │   ├── relayer.ts          # Transaction building + Sui submission + whitelist validation
 │   ├── validator.ts        # Zod request schemas
 │   └── fee-calculator.ts   # Gas estimation (for fee-quote endpoint)
@@ -351,7 +351,6 @@ if (useRelayer && relayerUrl) {
 | `frontend/src/components/UnshieldForm.tsx` | Add relayer branch in submit |
 | `frontend/src/components/SwapForm.tsx` | Add relayer branch in submit |
 | `frontend/src/lib/constants.ts` | Add RELAYER_URLS config |
-| `.env.example` | Add `RELAYER_PORT`, relayer URL env vars |
 
 ### No Contract Changes
 
@@ -404,7 +403,7 @@ Requires circuit changes:
 ## Verification Steps
 
 1. Copy `.env.example` to `.env` and fill in `TESTNET_RELAYER_PRIVATE_KEY` and `NEXT_PUBLIC_TESTNET_PACKAGE_ID`
-2. Start relayer: `cd relayer && npm run dev` (listens on `RELAYER_PORT`, default 3001)
+2. Start relayer: `cd relayer && npm run dev` (listens on `PORT`, default 8080)
 3. Check `curl http://localhost:3001/relayer-info` — should return `{ testnet: { address, supportedTokens, ... } }`
 4. Enable relayer toggle in frontend Transfer form, set URL to `http://localhost:3001`
 5. Execute a private transfer — verify txHash returned

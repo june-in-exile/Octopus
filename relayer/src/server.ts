@@ -11,8 +11,8 @@ import {
   SwapSubmitSchema,
 } from "./validator.js";
 
-// Standard PORT env var for cloud platforms, then RELAYER_PORT, finally default to 3001
-const RELAYER_PORT = parseInt(process.env.PORT || "3001", 10)
+// Standard PORT env var for cloud platforms, then PORT, finally default to 8080
+const PORT = parseInt(process.env.PORT || "8080", 10)
 
 async function main(): Promise<void> {
   const configs = loadAllConfigs();
@@ -163,8 +163,8 @@ async function main(): Promise<void> {
   });
 
   const activeNetworks = Object.keys(relayers).join(", ");
-  app.listen(RELAYER_PORT, () => {
-    console.log(`Relayer running on port ${RELAYER_PORT}`);
+  app.listen(PORT, () => {
+    console.log(`Relayer running on port ${PORT}`);
     console.log(`Active networks: ${activeNetworks}`);
     for (const [network, relayer] of Object.entries(relayers) as [Network, Relayer][]) {
       console.log(`  ${network} relayer address: ${relayer.address}`);

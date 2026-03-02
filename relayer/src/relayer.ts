@@ -135,9 +135,15 @@ export class Relayer {
 
     // Pass the full DEEP coin so DeepBook has enough to cover the actual fee.
     // Unused DEEP is returned to the relayer by the contract after the swap.
-    const deepCoinId = deepCoins.data.reduce((max, coin) =>
+    const bestCoin = deepCoins.data.reduce((max, coin) =>
       BigInt(coin.balance) > BigInt(max.balance) ? coin : max
-    ).coinObjectId;
+    );
+    if (BigInt(bestCoin.balance) < this.config.estimatedDeepFee) {
+      throw new Error(
+        `Relayer DEEP balance (${bestCoin.balance}) is below estimated fee (${this.config.estimatedDeepFee}). Please fund the relayer with more DEEP.`,
+      );
+    }
+    const deepCoinId = bestCoin.coinObjectId;
 
     // isBid=false → ask (base→quote): pool::swap<TokenIn, TokenOut>
     // isBid=true  → bid (quote→base): pool::swap_bid<TokenOut, TokenIn> (type args reversed)
