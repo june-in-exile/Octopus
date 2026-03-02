@@ -150,14 +150,17 @@ recipient_hash = Poseidon(addr_lo, addr_hi)          // public output in unshiel
 * Amount is extracted from public inputs (no separate parameter needed)
 * Verifies proof, marks nullifier spent, transfers tokens, creates change note if needed
 
-**Transfer** (private transfer): `pool::transfer<T>(pool, proof_bytes, public_inputs_bytes, encrypted_notes, ctx)`
+**Transfer** (private transfer): `pool::transfer<T>(pool, proof_bytes, public_inputs_bytes, nullifiers, encrypted_notes, ctx)`
 
 * Requires Groth16 proof for a 2-input, 2-output private transfer.
-* Public inputs (160 bytes): root, 2 input nullifiers, 2 output commitments.
+* Public inputs (160 bytes, 5 × 32 bytes): `[nullifiers_hash, recipient_commitment, change_commitment, token, merkle_root]`
+* `nullifiers` are passed explicitly (not embedded in public inputs) and verified against `nullifiers_hash` in the proof.
 * Spends two input notes and creates two new output notes within the pool.
 
-**Swap** (private swap): `pool::swap<TokenIn, TokenOut>(pool_in, pool_out, deepbook_pool, proof_bytes, public_inputs_bytes, amount_in, min_amount_out, encrypted_output_note, encrypted_change_note, ctx)`
+**Swap** (private swap): `pool::swap<TokenIn, TokenOut>(pool_in, pool_out, deepbook_pool, proof_bytes, public_inputs_bytes, nullifiers, deep_in, clock, encrypted_output_note, encrypted_change_note, ctx)`
 
-* Requires Groth16 proof for a private swap. Public inputs (256 bytes, 8 field elements): `token_in, token_out, merkle_root` (public inputs) + `nullifiers[2], swap_data_hash, output_commitment, change_commitment` (public outputs).
+* Requires Groth16 proof for a private swap. Public inputs (256 bytes, 8 field elements): `[nullifiers_hash, swap_commitment, change_commitment, token_in, token_out, amount_in, min_amount_out, merkle_root]`
+* `nullifiers` are passed explicitly and verified against `nullifiers_hash` in the proof; `deep_in` is a `Coin<DEEP>` for DeepBook fees; `clock` is the Sui `Clock` object.
+* `amount_in` and `min_amount_out` are extracted from the verified public inputs (not separate parameters).
 * Verifies proof, spends input notes, executes swap via DeepBook pool, creates output and change notes.
 * For testing without a real DeepBook pool, use `pool::swap_for_testing` (skips proof verification, uses 1:1 mock swap).
