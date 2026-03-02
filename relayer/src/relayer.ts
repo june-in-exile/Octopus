@@ -1,4 +1,4 @@
-import { SuiClient } from "@mysten/sui/client";
+import { SuiJsonRpcClient as SuiClient } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 import type { RelayerConfig } from "../config/relayer-config.js";
@@ -26,7 +26,7 @@ export class Relayer {
   private readonly startTime: number;
 
   constructor(private readonly config: RelayerConfig) {
-    this.client = new SuiClient({ url: config.rpcUrl });
+    this.client = new SuiClient({ url: config.rpcUrl, network: config.network });
     this.startTime = Date.now();
   }
 
