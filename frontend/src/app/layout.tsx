@@ -6,10 +6,6 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Octopus",
   description: "On-Chain Confidential Transaction Omni-directional Privacy-enhanced Underlying Sui - Shield and unshield tokens with ZK proofs",
-  icons: {
-    icon: "/favicon.ico",
-    apple: "/apple-touch-icon.png",
-  },
 };
 
 export default function RootLayout({
